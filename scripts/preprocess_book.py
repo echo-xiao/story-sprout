@@ -52,6 +52,12 @@ def main():
     sanitized = re.sub(r'[^\w\s\u4e00-\u9fff-]', '', title)
     book_id = re.sub(r'\s+', '_', sanitized.strip())[:60] or input_path.stem
 
+    # Filter out empty/stub chapters (TOC entries, headers with no body)
+    real_chapters = [ch for ch in chapters if len(ch.get("text", "")) > 200]
+    if len(real_chapters) < len(chapters):
+        print(f"  Filtered {len(chapters) - len(real_chapters)} stub chapters (TOC entries)")
+        chapters = real_chapters
+
     print(f"  Title: {title}")
     print(f"  Book ID: {book_id}")
     print(f"  Chapters: {len(chapters)}")
@@ -92,24 +98,16 @@ def main():
     _save("full_text", {"text": full_text})
     _save("analysis", analysis)
 
-    # Per-chapter segment breakdown
+    # Per-chapter segment breakdown (using chapter_idx from segmentation)
     chapter_segments = {}
     segments = analysis.get("segments", [])
     if chapters:
         for ch_idx, ch in enumerate(chapters):
-            ch_text = ch.get("text", "")
-            ch_segs = [s for s in segments if s.get("text", "") and s["text"] in ch_text]
-            # If no match by substring, assign by position
-            if not ch_segs:
-                n = len(segments)
-                nc = len(chapters)
-                start = ch_idx * n // nc
-                end = (ch_idx + 1) * n // nc
-                ch_segs = segments[start:end]
+            ch_segs = [s for s in segments if s.get("chapter_idx") == ch_idx]
             chapter_segments[str(ch_idx)] = {
                 "chapter_title": ch.get("title", f"Chapter {ch_idx + 1}"),
                 "num_segments": len(ch_segs),
-                "segment_ids": [s.get("id", i) for i, s in enumerate(ch_segs)],
+                "segment_ids": [s.get("id") for s in ch_segs],
             }
     _save("chapter_segments", chapter_segments)
 

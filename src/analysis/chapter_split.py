@@ -154,21 +154,60 @@ def split_into_segments(
     if not text or not text.strip():
         return []
 
-    # If chapters are provided, use them directly
+    # If chapters are provided, segment WITHIN each chapter using TextTiling
     if chapters:
         segments: list[dict] = []
-        for i, ch in enumerate(chapters):
+        seg_id = 0
+        for ch_idx, ch in enumerate(chapters):
             ch_text = ch.get("text", "")
-            start = text.find(ch_text) if ch_text else -1
-            if start == -1:
-                start = 0
-            segments.append({
-                "id": i,
-                "text": ch_text,
-                "title": ch.get("title"),
-                "start_char": start,
-                "end_char": start + len(ch_text),
-            })
+            ch_title = ch.get("title", f"Chapter {ch_idx + 1}")
+            if not ch_text or not ch_text.strip():
+                continue
+
+            ch_start = text.find(ch_text) if ch_text else 0
+            if ch_start == -1:
+                ch_start = 0
+
+            # Run TextTiling within this chapter
+            ch_sentences = _tokenize_sentences(ch_text)
+            block_size = min(3, max(1, len(ch_sentences) // 6))
+            scores = _compute_block_scores(ch_sentences, block_size=block_size)
+            boundaries = _find_boundaries(scores)
+
+            if boundaries and len(ch_sentences) >= 6:
+                boundary_indices = [b + block_size for b in boundaries]
+                prev = 0
+                sub_segments: list[str] = []
+                for bi in boundary_indices:
+                    if prev < bi <= len(ch_sentences):
+                        seg = ' '.join(ch_sentences[prev:bi])
+                        if seg.strip():
+                            sub_segments.append(seg)
+                        prev = bi
+                remaining = ' '.join(ch_sentences[prev:])
+                if remaining.strip():
+                    sub_segments.append(remaining)
+            else:
+                # Fallback: split by paragraphs or length
+                sub_segments = _rule_based_split(ch_text)
+
+            # Build segment dicts
+            for sub_text in sub_segments:
+                if len(sub_text.split()) < 10:
+                    continue
+                sub_start = ch_text.find(sub_text[:50])
+                abs_start = ch_start + (sub_start if sub_start >= 0 else 0)
+                segments.append({
+                    "id": seg_id,
+                    "text": sub_text,
+                    "title": ch_title if seg_id == 0 or sub_text == sub_segments[0] else None,
+                    "chapter_idx": ch_idx,
+                    "chapter_title": ch_title,
+                    "start_char": abs_start,
+                    "end_char": abs_start + len(sub_text),
+                })
+                seg_id += 1
+
         return segments
 
     # Try TextTiling first
