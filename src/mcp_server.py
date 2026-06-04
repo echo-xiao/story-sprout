@@ -561,38 +561,68 @@ def _tool_analyze_book(args: dict) -> dict:
 
 # --- Layer 3: Scene Selection ---
 def _tool_select_scenes(args: dict) -> dict:
-    from src.agent.story_arc_selector import select_story_arc
     from src.state_store import save, load
 
     book_id = args.get("book_id", "default")
 
-    # Always read full analysis from state store (Gemini only passes summary)
+    # Always read full analysis from state store
     analysis = load(book_id, "analysis", None)
     if not analysis:
         analysis_raw = args.get("analysis_json", "")
         analysis = _safe_json_parse(analysis_raw, {})
 
-    num_pages = int(args.get("num_pages", 10))
-    age_group = args.get("age_group", "4-6")
-    template = args.get("template", "classic")
-    title = load(book_id, "title", "Untitled")
+    segments = analysis.get("segments", [])
+    characters = analysis.get("characters", [])
+    sentiment = analysis.get("sentiment", {})
+    sentiment_scores = sentiment.get("scores", [])
 
-    # Use LLM-powered story arc selection for narrative coherence
-    scenes = select_story_arc(analysis, num_pages, age_group, template, title)
+    # Use ALL segments — no filtering, no LLM selection
+    # Every analyzed segment becomes a page
+    scenes = []
+    char_names = [c["name"] for c in characters[:10]]
+
+    for i, seg in enumerate(segments):
+        seg_text = seg.get("text", "")
+        if len(seg_text.split()) < 10:
+            continue  # Skip truly empty segments
+
+        # Find characters in this segment
+        text_lower = seg_text.lower()
+        present_chars = [n for n in char_names if n.lower() in text_lower]
+
+        # First 2 sentences as summary
+        sentences = [s.strip() for s in seg_text.replace("\n", " ").split(".") if s.strip()]
+        summary = ". ".join(sentences[:2]) + "." if sentences else seg_text[:200]
+
+        # Sentiment tone
+        sent_val = sentiment_scores[i] if i < len(sentiment_scores) else 0.0
+        if sent_val > 0.3: tone = "joyful"
+        elif sent_val > 0.1: tone = "hopeful"
+        elif sent_val > -0.1: tone = "neutral"
+        elif sent_val > -0.3: tone = "worried"
+        else: tone = "sad"
+
+        scenes.append({
+            "page_number": len(scenes) + 1,
+            "source_segment_id": seg.get("id", i),
+            "template_beat": f"scene_{len(scenes) + 1}",
+            "scene_summary": summary[:300],
+            "emotional_tone": tone,
+            "key_characters": present_chars[:5],
+            "original_text": seg_text,
+        })
 
     # Save to state store
     save(book_id, "scenes", scenes)
 
     return {
         "num_scenes": len(scenes),
-        "method": "LLM story arc selection (narrative coherence)",
-        "main_storyline": scenes[0].get("main_storyline", "") if scenes else "",
+        "method": "all_segments (no filtering)",
         "scenes_preview": [
             {
                 "page": s.get("page_number"),
-                "beat": s.get("template_beat", ""),
-                "role": s.get("narrative_role", ""),
                 "tone": s.get("emotional_tone", ""),
+                "chars": s.get("key_characters", [])[:3],
                 "summary": s.get("scene_summary", "")[:100],
             }
             for s in scenes
