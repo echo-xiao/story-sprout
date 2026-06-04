@@ -7,3 +7,7 @@ __pycache__/
 .eggs/
 venv/
 .venv/
+node_modules/
+*.node
+.next/
+.idea/
