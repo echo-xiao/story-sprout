@@ -57,6 +57,11 @@ or characters that are not in the original. Adapt what's there, don't make thing
 (e.g., "Once upon a time, in a big city called Paris...")
 - If a page has a "story_beat", follow that beat to maintain story coherence across pages.
 - A child who has NEVER read this book should be able to follow the story.
+- If a page has "famous_quotes", you MUST include the EXACT original quote on that page. \
+Put the original quote first (it will appear on a scroll/banner in the illustration), \
+then add a simple child-friendly explanation below it. \
+Example: '"It was the best of times, it was the worst of times." \
+That means some days were super sunny and happy, but other days felt dark and scary!'
 
 ## Original Story Context (adapt freely, don't copy)
 {original_text}
@@ -162,6 +167,9 @@ def simplify_text(
         # Include setup context for first page
         if s.get("setup_context"):
             entry["setup_context"] = s["setup_context"]
+        # Include famous quotes that MUST be preserved as original text
+        if s.get("famous_quotes"):
+            entry["famous_quotes"] = s["famous_quotes"]
         scenes_data.append(entry)
 
     prompt = REWRITE_PROMPT.format(

@@ -329,12 +329,16 @@ IMPORTANT: If this chapter contains famous or iconic quotes (e.g., "It was the b
     # Inject outline context into scenes for better rewriting
     setup_context = outline.get("setup_context", "")
     story_beats = outline.get("story_beats", [])
+    famous_quotes = outline.get("famous_quotes", [])
     beat_map = {b.get("page", 0): b.get("beat", "") for b in story_beats}
     for s in scenes:
         pn = s.get("page_number", 0)
         s["story_beat"] = beat_map.get(pn, "")
-        if pn == 1 and setup_context:
-            s["setup_context"] = setup_context
+        if pn == 1:
+            if setup_context:
+                s["setup_context"] = setup_context
+            if famous_quotes:
+                s["famous_quotes"] = famous_quotes
 
     # Step 2: Simplify text
     print(f"\n[2/5] Simplifying text ({len(scenes)} pages)...")
