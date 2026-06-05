@@ -142,14 +142,14 @@ CONSISTENCY IS THE #1 PRIORITY:
 - Do NOT change any character's appearance — refer to the character sheets above
 
 CHARACTER NAME LABELS (MANDATORY for every named character):
-- Add a LARGE, CLEAR colored ribbon or banner BELOW each named character
-- The name must be BIG ENOUGH for a child to read easily
-- Style: bright colored ribbon with bold text — NOT a speech bubble
-- Place it directly below each character so it's obvious who is who
-- A child seeing this page for the first time must immediately know each character's name
+- Add a small, neat colored ribbon or tag directly below or beside each named character
+- Size: small but clearly readable — about the width of the character's body
+- Style: a subtle colored ribbon or small wooden sign — NOT a speech bubble, NOT oversized
+- The label should feel like a natural part of the illustration, not dominating the scene
+- Must be immediately clear which label belongs to which character (close proximity)
 
-TEXT STYLE GUIDE (3 distinct styles, must be visually VERY different):
-1. CHARACTER NAMES → LARGE bright colored ribbons BELOW each character (bold, big font)
+TEXT STYLE GUIDE (3 distinct styles, must be visually different):
+1. CHARACTER NAMES → small neat colored ribbons near each character (moderate font, subtle)
 2. DIALOGUE → speech bubbles with tails pointing to the speaker (white background)
 3. NARRATION → scrolls, banners, or cloud shapes at top/bottom of page (parchment color)
 
