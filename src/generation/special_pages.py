@@ -175,11 +175,12 @@ CHARACTERS:
 {char_desc or "Draw characters in a reflective or transitional moment."}
 
 REQUIREMENTS:
-- This marks the END of a chapter — create a sense of pause and reflection
-- The mood should be contemplative or transitional
-- Include a small decorative "End of Chapter {chapter_num}" text element
+- This is a TRANSITION page between chapters — create a sense of anticipation
+- The mood should be contemplative but forward-looking ("what happens next?")
+- Include a small decorative "To be continued..." or "..." text element
+- Do NOT write "End of Chapter" or "The End" — the story continues!
 - Use softer, more muted colors than the main pages
-- The composition should feel like a gentle fade-out
+- The composition should feel like a gentle pause before the next adventure
 - Add small decorative elements (a small ornament, a trailing vine, etc.)
 
 Style: {active_style}

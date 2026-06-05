@@ -189,14 +189,34 @@ def extract_characters(
         "bah", "yo", "hooray", "hooroar", "yaha", "tst",
         # Place names / institutions commonly misclassified
         "calais", "boulogne", "gaul", "soho", "tellson", "whitefriars",
-        # Objects / concepts
+        "devonshire", "hilary", "redheads",
+        # Objects / concepts / roles
         "guillotine", "bust", "ghost", "messenger", "porter", "spy",
         "blacksmith", "sawyer", "shooter", "ogreish", "bench",
         "lucifer", "judas", "brutus", "samson",
+        "postmaster", "godmother", "fairy", "destiny", "citizeness",
+        "woodman", "accursed", "thenceforth", "deep",
         # Time/date references
-        "michaelmas", "anno", "dominoe",
+        "michaelmas", "anno", "dominoe", "domini",
         # Nationalities/roles
-        "briton", "jacobin",
+        "briton", "jacobin", "citizen",
+        # Common nouns / adjectives
+        "death", "chin", "down", "smith", "baker", "lewis", "pitt",
+        "fire", "rise", "crunches",
+    }
+
+    # Multi-word non-names that spaCy misclassifies
+    _SKIP_MULTI_WORD = {
+        "chapter xxiii", "chapter xxii", "chapter xxi", "chapter xx",
+        "chapter xix", "chapter xviii", "chapter xvii", "chapter xvi",
+        "chapter xv", "chapter xiv", "chapter xiii", "chapter xii",
+        "chapter xi", "chapter x", "chapter ix", "chapter viii",
+        "chapter vii", "chapter vi", "chapter v", "chapter iv",
+        "chapter iii", "chapter ii", "chapter i",
+        "anno domini", "anna dominoe", "every drinking age",
+        "la guillotine", "sainte guillotine", "saint antoine",
+        "fire rise", "whom defarge", "solomon john",
+        "george washington", "izaak walton",
     }
 
     # Additional filter: single-word "names" that are too common to be characters
@@ -234,15 +254,23 @@ def extract_characters(
         # Skip single-character or number-like names
         if len(name) < 3:
             continue
-        # Skip names with punctuation inside (e.g., "D. I. C", "I. '", "Cruncher!--Don'T")
+        # Skip names with punctuation inside
         if any(c in name for c in "!@#$%^&*(){}[]|\\<>?/~`"):
             continue
         # Skip names that are ALL CAPS (likely headings)
         if name == name.upper() and len(name) > 3:
             continue
+        # Skip known multi-word non-names
+        if name.lower() in _SKIP_MULTI_WORD:
+            continue
+        # Skip names starting with "Chapter" (chapter references)
+        if name.lower().startswith("chapter"):
+            continue
+        # Skip names starting with "--" or containing "--"
+        if name.startswith("--") or "--" in name:
+            continue
         # Skip single common English words with low mention potential
         if len(words) == 1 and name.lower() in _COMMON_ENGLISH_WORDS:
-            # Only keep if it appears many times (likely a real character)
             count_in_raw = sum(1 for n in raw_names if _normalize_name(n) == name)
             if count_in_raw < 5:
                 continue
