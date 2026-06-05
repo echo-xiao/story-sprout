@@ -142,11 +142,16 @@ CONSISTENCY IS THE #1 PRIORITY:
 - Do NOT change any character's appearance — refer to the character sheets above
 
 CHARACTER NAME LABELS:
-- Add a small, cute name label near each character who appears in this scene
-- Use a tiny banner, ribbon, or floating text bubble with their name (e.g., "Mr. Lorry", "Lucie")
-- The labels should be part of the illustration style — playful and hand-drawn looking
+- Add a small name tag near each character's feet or below them
+- Style: a small colored ribbon or wooden sign — NOT a speech bubble, NOT a dialogue box
+- Example: a tiny curved ribbon with "Mr. Lorry" written on it, placed below the character
+- Name labels must look DIFFERENT from dialogue and narration text
 - Make sure the name spelling is CORRECT
-- Labels help young readers identify who is who
+
+TEXT STYLE GUIDE (3 distinct styles, must be visually different):
+1. CHARACTER NAMES → small ribbons/signs BELOW characters (subtle, small font)
+2. DIALOGUE → speech bubbles with tails pointing to the speaker
+3. NARRATION → scrolls, banners, or cloud shapes at top/bottom of page
 
 TEXT IN IMAGE:
 - Embed the story text naturally into the illustration as part of the art

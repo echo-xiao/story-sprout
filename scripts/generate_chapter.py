@@ -419,6 +419,35 @@ IMPORTANT: If this chapter contains famous or iconic quotes (e.g., "It was the b
         chapter_num=chapter_idx + 1,
     )
     _save_step("pdf_export", {"path": pdf_path, "num_pages": len(pdf_pages)})
+
+    # Save to MongoDB
+    try:
+        import pymongo
+        from src.config import MONGODB_URI, MONGODB_DB
+        client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+        db = client[MONGODB_DB]
+        book_doc = {
+            "book_id": book_id,
+            "title": title,
+            "chapter": chapter_idx,
+            "chapter_title": ch_title,
+            "num_pages": len(pdf_pages),
+            "pages": [
+                {"page_number": i + 1, "text": p.get("text", ""), "image_path": p.get("image_path", "")}
+                for i, p in enumerate(pdf_pages)
+            ],
+            "character_sheets": [
+                {"name": s.get("character_name", ""), "path": s.get("sheet_path", ""),
+                 "visual_identity": s.get("visual_identity", "")}
+                for s in character_sheets
+            ],
+        }
+        db.books.update_one({"book_id": book_id, "chapter": chapter_idx}, {"$set": book_doc}, upsert=True)
+        client.close()
+        print(f"  MongoDB: saved to Atlas ✓")
+    except Exception as e:
+        print(f"  MongoDB: skipped ({e})")
+
     print(f"\n=== Done! ===")
     print(f"  PDF: {pdf_path}")
     print(f"  Pages: {len(pdf_pages)}")
