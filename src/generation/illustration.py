@@ -141,6 +141,13 @@ CONSISTENCY IS THE #1 PRIORITY:
 - If a character has a red sweater, they MUST have a red sweater in EVERY scene
 - Do NOT change any character's appearance — refer to the character sheets above
 
+CHARACTER NAME LABELS:
+- Add a small, cute name label near each character who appears in this scene
+- Use a tiny banner, ribbon, or floating text bubble with their name (e.g., "Mr. Lorry", "Lucie")
+- The labels should be part of the illustration style — playful and hand-drawn looking
+- Make sure the name spelling is CORRECT
+- Labels help young readers identify who is who
+
 TEXT IN IMAGE:
 - Embed the story text naturally into the illustration as part of the art
 - Use creative placements: inside clouds, on scrolls, in speech bubbles, on banners, in open sky areas
