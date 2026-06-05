@@ -152,11 +152,15 @@ BACKGROUND AND SETTING:
 - Draw a RICH, DETAILED background — NOT just white/empty space
 - Include environmental details: furniture, plants, sky, weather, textures
 - Use warm, inviting colors that set the mood of the scene
+- The setting must be HISTORICALLY ACCURATE — buildings, streets, interiors should match the time period
+- NO modern objects (no cars, no electricity, no phones, no plastic)
 
 RULES:
 - Characters MUST be HUMAN, matching reference sheets exactly
 - Characters should be expressive — show emotions through face and body
 - Fill the ENTIRE image with illustration — no empty white areas
+- Clothing MUST be period-appropriate (match the era of the story, not modern clothes)
+- Each character must wear the SAME outfit in EVERY illustration (consistency!)
 
 Style: {DEFAULT_STYLE}
 Do NOT include: {NEGATIVE_PROMPT}"""
@@ -221,8 +225,8 @@ def generate_illustrations(
     character_sheets: list[dict],
     book_id: str,
     style_ref_path: str | None = None,
-    consistency_threshold: float = 0.45,
-    max_consistency_retries: int = 1,
+    consistency_threshold: float = 0.55,
+    max_consistency_retries: int = 2,
 ) -> list[dict]:
     """Generate illustrations with automatic consistency checking.
 

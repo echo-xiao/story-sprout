@@ -81,6 +81,8 @@ CRITICAL RULES:
 - The visual identity above is MANDATORY — use exactly those colors and features.
 - The character must be INSTANTLY recognizable and DIFFERENT from other characters.
 - Draw in children's picture book style: cute, big eyes, expressive face.
+- CLOTHING MUST match the historical period of the story (e.g., 1780s France = frock coats, bonnets, cravats; NOT modern clothes like hoodies or jeans)
+- If book descriptions mention specific clothing or appearance, follow them exactly.
 
 Draw on a clean WHITE background:
 1. FRONT VIEW — full body, arms slightly out
@@ -96,35 +98,68 @@ Do NOT include any text or labels."""
 
 
 # Predefined visual identities — ensures each character looks completely different
+# Fallback visual identities — used ONLY when book text has no appearance descriptions.
+# Designed to be period-neutral and distinctive from each other.
 _VISUAL_IDENTITIES = [
-    {"hair": "short straight dark brown hair", "outfit": "bright red sweater and blue jeans", "feature": "round glasses", "colors": "red, blue, brown"},
-    {"hair": "long curly golden blonde hair with a big pink bow", "outfit": "yellow polka-dot dress with white collar", "feature": "rosy cheeks and a tiny mole near her mouth", "colors": "yellow, pink, white"},
-    {"hair": "short spiky ginger/orange hair", "outfit": "green polo shirt and khaki shorts", "feature": "freckles across nose and cheeks", "colors": "green, orange, khaki"},
-    {"hair": "sleek black bob haircut", "outfit": "purple turtleneck and dark pants", "feature": "sharp confident eyes, athletic posture", "colors": "purple, black"},
-    {"hair": "wavy light brown hair, slightly messy", "outfit": "blue blazer with white shirt and brown boots", "feature": "friendly smile, slightly shy posture", "colors": "blue, white, brown"},
-    {"hair": "long straight silver-white hair in a ponytail", "outfit": "dark green coat with gold buttons", "feature": "thin mustache, tall and dignified", "colors": "green, gold, silver"},
-    {"hair": "curly dark red hair with a headband", "outfit": "orange overalls with a striped shirt", "feature": "big dimples, gap in front teeth", "colors": "orange, red, white"},
-    {"hair": "short neat black hair, parted to the side", "outfit": "grey vest over light blue shirt, dark trousers", "feature": "wire-rimmed glasses, serious expression", "colors": "grey, blue, black"},
-    {"hair": "long wavy auburn hair, loose", "outfit": "teal dress with lace trim", "feature": "a small scar on her chin, kind eyes", "colors": "teal, cream, auburn"},
-    {"hair": "buzzcut sandy hair", "outfit": "brown leather jacket and dark jeans", "feature": "broad shoulders, square jaw", "colors": "brown, tan, dark blue"},
-    {"hair": "thick curly black hair, big and fluffy", "outfit": "pink cardigan with flower embroidery", "feature": "round face, always smiling", "colors": "pink, black, green"},
-    {"hair": "straight platinum blonde hair, shoulder length", "outfit": "navy sailor suit with white stripes", "feature": "pale blue eyes, pointed nose", "colors": "navy, white, blonde"},
-    {"hair": "messy dark brown curls under a flat cap", "outfit": "patched brown waistcoat and rolled-up sleeves", "feature": "smudgy face, mischievous grin", "colors": "brown, beige, grey"},
-    {"hair": "neat grey hair in a bun", "outfit": "maroon shawl over a cream blouse", "feature": "wrinkled smile, reading spectacles on chain", "colors": "maroon, cream, grey"},
-    {"hair": "shaggy dirty blonde hair", "outfit": "olive military-style jacket and cargo pants", "feature": "bandaged hand, intense stare", "colors": "olive, blonde, khaki"},
+    {"hair": "short straight dark brown hair", "outfit": "a dark coat with brass buttons and a white cravat", "feature": "round spectacles, kind eyes", "colors": "brown, white, brass"},
+    {"hair": "long curly golden blonde hair with a ribbon", "outfit": "a soft blue dress with white lace collar", "feature": "rosy cheeks, gentle expression", "colors": "gold, blue, white"},
+    {"hair": "short spiky ginger/orange hair", "outfit": "a patched brown waistcoat and rolled-up sleeves", "feature": "freckles across nose, mischievous grin", "colors": "orange, brown, beige"},
+    {"hair": "sleek black hair in a neat bun", "outfit": "a dark purple dress with a shawl", "feature": "sharp confident eyes, stern posture", "colors": "purple, black"},
+    {"hair": "wavy light brown hair, slightly messy", "outfit": "a navy blue coat with silver buttons and brown boots", "feature": "friendly smile, slightly shy posture", "colors": "blue, silver, brown"},
+    {"hair": "long straight silver-white hair tied back", "outfit": "a dark green frock coat with gold trim", "feature": "thin mustache, tall and dignified", "colors": "green, gold, silver"},
+    {"hair": "curly dark red hair under a bonnet", "outfit": "a cream-colored dress with floral embroidery", "feature": "big dimples, warm smile", "colors": "cream, red, green"},
+    {"hair": "short neat black hair, parted to the side", "outfit": "a grey waistcoat over white shirt, dark trousers", "feature": "wire-rimmed glasses, serious expression", "colors": "grey, white, black"},
+    {"hair": "long wavy auburn hair, loose", "outfit": "a teal dress with lace trim and a cameo brooch", "feature": "kind eyes, delicate features", "colors": "teal, cream, auburn"},
+    {"hair": "messy dark brown curls under a flat cap", "outfit": "a threadbare brown jacket and muddy boots", "feature": "smudgy face, watchful eyes", "colors": "brown, beige, grey"},
+    {"hair": "neat grey hair in a bun", "outfit": "a maroon shawl over a cream blouse", "feature": "wrinkled smile, reading spectacles on chain", "colors": "maroon, cream, grey"},
+    {"hair": "thick curly black hair", "outfit": "a dark red vest over a loose white shirt", "feature": "broad shoulders, commanding presence", "colors": "red, white, black"},
+    {"hair": "straight platinum blonde hair, shoulder length", "outfit": "a pale blue military-style jacket with epaulettes", "feature": "pale blue eyes, pointed nose", "colors": "blue, white, blonde"},
+    {"hair": "wild grey-streaked hair, unkempt", "outfit": "a tattered old coat, bare feet", "feature": "haunted hollow eyes, gaunt face", "colors": "grey, brown, pale"},
+    {"hair": "short sandy hair under a tricorn hat", "outfit": "a leather apron over a rough linen shirt", "feature": "strong jaw, calloused hands", "colors": "tan, brown, white"},
 ]
 
 
 def _assign_visual_identities(profiles: list[dict]) -> list[dict]:
-    """Assign distinct visual identities to each character."""
+    """Assign distinct visual identities to each character.
+
+    Uses book descriptions (appearance_description) when available,
+    falls back to predefined identities when the book doesn't describe the character.
+    """
+    used_fallback_indices = set()
+
     for i, profile in enumerate(profiles):
-        vi = _VISUAL_IDENTITIES[i % len(_VISUAL_IDENTITIES)]
-        identity = (
-            f"{vi['hair']}, wearing {vi['outfit']}, "
-            f"distinctive feature: {vi['feature']}"
-        )
-        profile["visual_identity"] = identity
-        profile["visual_colors"] = vi["colors"]
+        # Check if we have appearance descriptions from the book text
+        book_desc = profile.get("appearance_description", [])
+        if isinstance(book_desc, str):
+            book_desc = [book_desc] if book_desc else []
+
+        if book_desc and any(len(d) > 10 for d in book_desc):
+            # Use book description as the primary visual identity
+            desc_text = "; ".join(d for d in book_desc[:3] if len(d) > 5)
+            # Still assign a fallback for colors/outfit structure
+            fallback_idx = i % len(_VISUAL_IDENTITIES)
+            vi = _VISUAL_IDENTITIES[fallback_idx]
+            identity = (
+                f"Based on book description: {desc_text}. "
+                f"If not described in book, use: {vi['hair']}, wearing {vi['outfit']}, "
+                f"distinctive feature: {vi['feature']}"
+            )
+            profile["visual_identity"] = identity
+            profile["visual_colors"] = vi["colors"]
+        else:
+            # No book description — use predefined fallback
+            fallback_idx = i % len(_VISUAL_IDENTITIES)
+            while fallback_idx in used_fallback_indices and len(used_fallback_indices) < len(_VISUAL_IDENTITIES):
+                fallback_idx = (fallback_idx + 1) % len(_VISUAL_IDENTITIES)
+            used_fallback_indices.add(fallback_idx)
+            vi = _VISUAL_IDENTITIES[fallback_idx]
+            identity = (
+                f"{vi['hair']}, wearing {vi['outfit']}, "
+                f"distinctive feature: {vi['feature']}"
+            )
+            profile["visual_identity"] = identity
+            profile["visual_colors"] = vi["colors"]
+
     return profiles
 
 

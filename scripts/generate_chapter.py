@@ -308,10 +308,13 @@ The outline must:
 Return JSON:
 {{"chapter_summary": "2-3 sentence summary of what happens",
   "setup_context": "1-2 sentences a child needs to know before this chapter starts",
+  "famous_quotes": ["any famous/iconic lines from this chapter that should be preserved (adapted for children)"],
   "story_beats": [
     {{"page": 1, "beat": "what happens on this page in 1 sentence"}}
   ]
-}}"""
+}}
+
+IMPORTANT: If this chapter contains famous or iconic quotes (e.g., "It was the best of times, it was the worst of times"), include them in famous_quotes and work them into the appropriate story beat."""
     try:
         outline = _gen_json(outline_prompt)
     except Exception as e:

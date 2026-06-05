@@ -22,7 +22,7 @@ try:
 except ImportError:
     CLIP_AVAILABLE = False
 
-SIMILARITY_THRESHOLD = 0.50
+SIMILARITY_THRESHOLD = 0.65
 
 # CLIP model to use — ViT-B-32 is small and fast enough for a QA check.
 _CLIP_MODEL_NAME = "ViT-B-32"

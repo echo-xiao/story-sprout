@@ -113,6 +113,11 @@ def generate_json(
             )
             return json.loads(response.text)
         except json.JSONDecodeError as e:
+            # Try to fix common JSON issues (trailing commas, unescaped quotes)
+            if attempt < max_retries - 1:
+                logger.warning("JSON parse failed (attempt %d), retrying: %s", attempt + 1, e)
+                time.sleep(2)
+                continue
             logger.error("Failed to parse JSON from Gemini response: %s", e)
             raise ValueError(f"Gemini returned invalid JSON: {e}") from e
         except Exception as e:
