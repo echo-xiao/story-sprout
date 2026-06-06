@@ -45,6 +45,36 @@ export async function listBooks(): Promise<PictureBook[]> {
   return data;
 }
 
+export async function listPreprocessedBooks() {
+  const { data } = await api.get("/books/preprocessed");
+  return data;
+}
+
+export async function getPreprocessProgress(bookId: string) {
+  const { data } = await api.get(`/book/${bookId}/preprocess/progress`);
+  return data;
+}
+
+export async function generateSimplifiedText(bookId: string, segId: number) {
+  const { data } = await api.post(`/book/${bookId}/segment/${segId}/simplify`);
+  return data;
+}
+
+export async function generateSceneBackground(bookId: string, segId: number) {
+  const { data } = await api.post(`/book/${bookId}/segment/${segId}/background`);
+  return data;
+}
+
+export async function generateSummary(bookId: string, segId: number) {
+  const { data } = await api.post(`/book/${bookId}/segment/${segId}/summarize`);
+  return data;
+}
+
+export async function getSegmentHistory(bookId: string, segId: number) {
+  const { data } = await api.get(`/book/${bookId}/segment/${segId}/history`);
+  return data;
+}
+
 export async function deleteBook(bookId: string): Promise<void> {
   await api.delete(`/book/${bookId}`);
 }
@@ -89,4 +119,32 @@ export async function generateChapter(bookId: string, chapterIdx: number) {
 export async function getChapterProgress(bookId: string, chapterIdx: number) {
   const { data } = await api.get(`/book/${bookId}/chapter/${chapterIdx}/progress`);
   return data;
+}
+
+export async function checkSegmentQuality(bookId: string, segId: number) {
+  const { data } = await api.post(`/book/${bookId}/segment/${segId}/quality`);
+  return data;
+}
+
+export async function getChapterConsistency(bookId: string, chapterIdx: number) {
+  const { data } = await api.get(`/book/${bookId}/chapter/${chapterIdx}/consistency`);
+  return data;
+}
+
+export async function checkChapterConsistency(bookId: string, chapterIdx: number) {
+  const { data } = await api.post(`/book/${bookId}/chapter/${chapterIdx}/consistency`);
+  return data;
+}
+
+export async function chatWithAI(
+  bookId: string,
+  segId: number,
+  message: string,
+  history: Array<{ role: string; content: string }>
+) {
+  const { data } = await api.post(`/book/${bookId}/segment/${segId}/chat`, {
+    message,
+    history,
+  });
+  return data as { reply: string; updates: Record<string, unknown> };
 }

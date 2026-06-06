@@ -75,28 +75,58 @@ def _build_reference_content(
             parts.append({"text": "[STYLE REFERENCE — match this art style]"})
             parts.append(img_part)
 
-    # Character sheets — ONLY in-scene characters, with strong anchoring language
+    # Character sheets — prioritize in-scene characters, then add others for style consistency
     sheet_images_added = 0
+    matched_sheets = []
+    unmatched_sheets = []
+
     for sheet in character_sheets:
         char_name = sheet.get("character_name", "character")
-        if in_scene_names:
-            name_lower = char_name.lower()
-            first_name = name_lower.split()[0]
-            if not any(
-                name_lower == n.lower() or first_name == n.lower().split()[0]
-                for n in in_scene_names
-            ):
-                continue
         sheet_path = sheet.get("sheet_path", "")
         if not sheet_path:
             continue
-        img_part = _load_image_part(sheet_path)
+        if in_scene_names:
+            name_lower = char_name.lower()
+            name_parts = name_lower.split()
+            first_name = name_parts[0]
+            last_name = name_parts[-1] if len(name_parts) > 1 else ""
+            is_match = any(
+                name_lower == n.lower()
+                or first_name == n.lower().split()[0]
+                or (last_name and last_name == n.lower().split()[-1])
+                or any(p in n.lower() for p in name_parts if len(p) > 2)
+                or any(p in name_lower for p in n.lower().split() if len(p) > 2)
+                for n in in_scene_names
+            )
+            if is_match:
+                matched_sheets.append(sheet)
+            else:
+                unmatched_sheets.append(sheet)
+        else:
+            matched_sheets.append(sheet)
+
+    # Add matched sheets first (in-scene characters)
+    for sheet in matched_sheets:
+        char_name = sheet.get("character_name", "character")
+        img_part = _load_image_part(sheet["sheet_path"])
         if img_part:
             parts.append({"text": f"[CHARACTER SHEET: {char_name}] — COPY this character's hair, face, outfit, and colors EXACTLY as shown. Do NOT change any detail."})
             parts.append(img_part)
             sheet_images_added += 1
             if sheet_images_added >= 5:
                 break
+
+    # If fewer than 2 matched, add unmatched sheets as style references to keep consistency
+    if sheet_images_added < 2:
+        for sheet in unmatched_sheets:
+            if sheet_images_added >= 3:
+                break
+            char_name = sheet.get("character_name", "character")
+            img_part = _load_image_part(sheet["sheet_path"])
+            if img_part:
+                parts.append({"text": f"[STYLE REFERENCE from {char_name}] — Match this art style, colors, and line quality."})
+                parts.append(img_part)
+                sheet_images_added += 1
 
     # Prompt text last
     parts.append({"text": prompt_text})
@@ -134,7 +164,14 @@ def _build_page_prompt(page: dict, character_sheets: list[dict]) -> tuple[str, l
 
     background = page.get("scene_background", "")
 
+    summary = page.get("scene_summary", "")
+
     prompt = f"""Children's picture book illustration, page {page_num}.
+
+IMPORTANT: Draw ONE single scene, ONE single moment in time. Do NOT split the image into multiple panels or scenes.
+
+SCENE:
+{summary}
 
 BACKGROUND/SETTING:
 {background or scene_direction or scene}
