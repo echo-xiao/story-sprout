@@ -244,10 +244,41 @@ export default function EditorPage() {
               setSelectedSegment(updated);
               setRegenerating(false);
               clearInterval(pollInterval);
-              // Auto quality check
+              // Auto quality check → auto fix if low score
               setCheckingQuality(true);
               checkSegmentQuality(bookId, selectedSegment.id)
-                .then((result) => setQualityResult(result))
+                .then(async (result) => {
+                  setQualityResult(result);
+                  // Auto-fix: if score < 70 and has feedback, send to AI chat to fix prompts
+                  if (result.overall_score < 70 && result.regeneration_feedback) {
+                    const fixMsg = `Quality check found issues (score: ${result.overall_score}%). Please fix the prompts based on this feedback:\n${result.regeneration_feedback}`;
+                    setChatOpen(true);
+                    const msgs = [{ role: "user" as string, content: fixMsg }];
+                    setChatMessages(msgs);
+                    setChatLoading(true);
+                    try {
+                      const res = await chatWithAI(bookId, selectedSegment.id, fixMsg, []);
+                      setChatMessages([...msgs, { role: "assistant", content: res.reply }]);
+                      if (res.updates && Object.keys(res.updates).length > 0) {
+                        let fix = { ...updated! };
+                        if (res.updates.simplified_text !== undefined) fix.simplified_text = res.updates.simplified_text as string;
+                        if (res.updates.scene_background !== undefined) fix.scene_background = res.updates.scene_background as string;
+                        if (res.updates.scene_summary !== undefined) fix.scene_summary = res.updates.scene_summary as string;
+                        if (res.updates.sentiment !== undefined) fix.sentiment = res.updates.sentiment as string;
+                        if (res.updates.character_actions !== undefined) {
+                          fix.character_actions = res.updates.character_actions as any;
+                          fix.characters_in_scene = (res.updates.character_actions as any[]).map((a: any) => a.name).filter(Boolean);
+                        }
+                        setSelectedSegment(fix);
+                        setSegments((prev) => prev.map((s) => (s.id === selectedSegment.id ? fix : s)));
+                      }
+                    } catch (e) {
+                      console.error("Auto-fix failed:", e);
+                    } finally {
+                      setChatLoading(false);
+                    }
+                  }
+                })
                 .catch((e) => console.error("Auto quality check failed:", e))
                 .finally(() => setCheckingQuality(false));
             }
