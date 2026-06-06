@@ -48,3 +48,45 @@ export async function listBooks(): Promise<PictureBook[]> {
 export async function deleteBook(bookId: string): Promise<void> {
   await api.delete(`/book/${bookId}`);
 }
+
+// ── Editor APIs ──
+
+export async function getChapters(bookId: string) {
+  const { data } = await api.get(`/book/${bookId}/preprocess/chapters`);
+  return data;
+}
+
+export async function getCharacters(bookId: string) {
+  const { data } = await api.get(`/book/${bookId}/preprocess/characters`);
+  return data;
+}
+
+export async function getChapterSegments(bookId: string, chapterIdx: number) {
+  const { data } = await api.get(`/book/${bookId}/preprocess/chapter/${chapterIdx}/segments`);
+  return data;
+}
+
+export async function updateSegment(bookId: string, segId: number, updates: Record<string, unknown>) {
+  const { data } = await api.put(`/book/${bookId}/segment/${segId}`, updates);
+  return data;
+}
+
+export async function regenerateSegment(bookId: string, segId: number) {
+  const { data } = await api.post(`/book/${bookId}/segment/${segId}/regenerate`);
+  return data;
+}
+
+export async function regenerateCharacterSheet(bookId: string, charName: string) {
+  const { data } = await api.post(`/book/${bookId}/characters/${encodeURIComponent(charName)}/regenerate`);
+  return data;
+}
+
+export async function generateChapter(bookId: string, chapterIdx: number) {
+  const { data } = await api.post(`/book/${bookId}/chapter/${chapterIdx}/generate`);
+  return data;
+}
+
+export async function getChapterProgress(bookId: string, chapterIdx: number) {
+  const { data } = await api.get(`/book/${bookId}/chapter/${chapterIdx}/progress`);
+  return data;
+}

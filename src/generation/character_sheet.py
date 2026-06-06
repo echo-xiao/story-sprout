@@ -65,9 +65,12 @@ def _build_sheet_prompt(profile: dict, style: str, all_profiles: list[dict] | No
             )
             other_chars = f"\nOTHER CHARACTERS (this character must look DIFFERENT from them): {other_desc}"
 
+    gender = profile.get("gender", "unknown")
+
     prompt = f"""Detailed Character Reference Sheet for children's picture book.
 
 CHARACTER NAME: {name}
+GENDER: {gender} — this character MUST look {gender}. {'Draw as a MAN/BOY.' if gender == 'male' else 'Draw as a WOMAN/GIRL.' if gender == 'female' else ''}
 ROLE: {role}
 
 BOOK DESCRIPTION:
@@ -322,6 +325,9 @@ def generate_character_sheets(
                     contents=prompt,
                     config=genai.types.GenerateContentConfig(
                         response_modalities=["TEXT", "IMAGE"],
+                        image_config=genai.types.ImageConfig(
+                            aspect_ratio="1:1",
+                        ),
                     ),
                 )
 

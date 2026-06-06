@@ -48,3 +48,40 @@ export interface BookAnalysis {
   complexity: { flesch_kincaid_grade: number; avg_sentence_length: number };
   key_events: Array<{ segment_id: number; summary: string; importance_score: number }>;
 }
+
+// Editor types
+export interface CharacterAction {
+  name: string;
+  action: string;
+}
+
+export interface Segment {
+  id: number;
+  chapter_idx: number;
+  text: string;
+  simplified_text?: string;
+  characters_in_scene: string[];
+  character_actions: CharacterAction[];
+  scene_background: string;
+  scene_summary: string;
+  sentiment: string;
+  is_key_event: boolean;
+  event_description?: string;
+  illustration_url?: string;
+}
+
+export interface ChapterInfo {
+  chapter_title: string;
+  num_segments: number;
+  segment_ids: number[];
+}
+
+export interface CharacterInfo {
+  canonical_name: string;
+  aliases: string[];
+  gender: string;
+  role: string;
+  description: string;
+  appearance: string;
+  sheet_url?: string;
+}

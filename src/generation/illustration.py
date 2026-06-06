@@ -59,125 +59,109 @@ def _build_reference_content(
     prompt_text: str,
     character_sheets: list[dict],
     style_ref_path: str | None = None,
+    in_scene_names: list[str] | None = None,
 ) -> list[dict]:
-    """Build multi-part content with text prompt + reference images.
+    """Build multi-part content: reference images FIRST, then prompt.
 
-    This passes character sheet images and style reference directly to
-    Gemini so it can visually reference them, not just read text descriptions.
+    Character sheets go first so Gemini treats them as primary visual anchors.
+    Only includes sheets for characters actually in the scene.
     """
     parts = []
 
-    # Add character sheet images as references
+    # Style reference first (sets overall look)
+    if style_ref_path:
+        img_part = _load_image_part(style_ref_path)
+        if img_part:
+            parts.append({"text": "[STYLE REFERENCE — match this art style]"})
+            parts.append(img_part)
+
+    # Character sheets — ONLY in-scene characters, with strong anchoring language
     sheet_images_added = 0
     for sheet in character_sheets:
+        char_name = sheet.get("character_name", "character")
+        if in_scene_names:
+            name_lower = char_name.lower()
+            first_name = name_lower.split()[0]
+            if not any(
+                name_lower == n.lower() or first_name == n.lower().split()[0]
+                for n in in_scene_names
+            ):
+                continue
         sheet_path = sheet.get("sheet_path", "")
         if not sheet_path:
             continue
         img_part = _load_image_part(sheet_path)
         if img_part:
-            char_name = sheet.get("character_name", "character")
-            parts.append({"text": f"[Reference: character sheet for {char_name}]"})
+            parts.append({"text": f"[CHARACTER SHEET: {char_name}] — COPY this character's hair, face, outfit, and colors EXACTLY as shown. Do NOT change any detail."})
             parts.append(img_part)
             sheet_images_added += 1
             if sheet_images_added >= 5:
                 break
 
-    # Add style reference image if provided
-    if style_ref_path:
-        img_part = _load_image_part(style_ref_path)
-        if img_part:
-            parts.append({"text": "[Reference: target art style - match this visual style exactly]"})
-            parts.append(img_part)
-
-    # Add the actual generation prompt
+    # Prompt text last
     parts.append({"text": prompt_text})
 
     return parts
 
 
-def _build_page_prompt(page: dict, character_sheets: list[dict]) -> str:
-    """Build the text prompt with detailed scene + character identity."""
+def _build_page_prompt(page: dict, character_sheets: list[dict]) -> tuple[str, list[str]]:
+    """Build a concise, prioritized prompt for page illustration.
+
+    Uses key_characters from LLM annotation (only physically present characters).
+    """
     scene = page.get("scene_description", page.get("prompt", ""))
     text = page.get("text", "")
     scene_direction = page.get("scene_direction", "")
     page_num = page.get("page_number", "?")
     key_characters = page.get("key_characters", [])
 
-    # Build character identity descriptions from sheets, prioritizing characters in this scene
-    char_identities = []
-    scene_text_lower = (scene_direction + " " + text + " " + scene).lower()
-    for sheet in character_sheets:
-        name = sheet.get("character_name", "")
-        vi = sheet.get("visual_identity", "")
-        if not name or not vi:
-            continue
-        # Check if this character appears in the scene
-        name_lower = name.lower()
-        first_name = name_lower.split()[0]
-        in_scene = (
-            name_lower in scene_text_lower
-            or first_name in scene_text_lower
-            or name in key_characters
-            or any(first_name == kc.lower().split()[0] for kc in key_characters if kc)
-        )
-        if in_scene:
-            char_identities.insert(0, f"- {name} (IN THIS SCENE): {vi}")
-        else:
-            char_identities.append(f"- {name}: {vi}")
+    # Use LLM-annotated characters directly (only physically present + their actions)
+    in_scene_names = list(key_characters)
+    character_actions = page.get("character_actions", [])
 
-    char_block = "\n".join(char_identities) if char_identities else "See reference images above."
+    # Build character + action description
+    if character_actions:
+        char_lines = []
+        for ca in character_actions:
+            name = ca.get("name", "") if isinstance(ca, dict) else ca
+            action = ca.get("action", "") if isinstance(ca, dict) else ""
+            char_lines.append(f"- {name}: {action}" if action else f"- {name}")
+            if name not in in_scene_names:
+                in_scene_names.append(name)
+        char_block = "\n".join(char_lines)
+    else:
+        char_block = "\n".join(f"- {n}" for n in in_scene_names) if in_scene_names else "no specific characters"
 
-    prompt = f"""Generate a children's picture book illustration for page {page_num}.
+    background = page.get("scene_background", "")
 
-SCENE: {scene_direction or scene}
-STORY TEXT (embed this naturally into the illustration): "{text}"
+    prompt = f"""Children's picture book illustration, page {page_num}.
 
-CHARACTER VISUAL IDENTITIES — MANDATORY, MUST match EXACTLY in every detail:
+BACKGROUND/SETTING:
+{background or scene_direction or scene}
+Draw a rich, detailed environment. Fill the ENTIRE image. Historically accurate, no modern objects.
+
+CHARACTERS AND ACTIONS:
 {char_block}
+- ONLY draw these characters. No one else.
+- EACH CHARACTER APPEARS EXACTLY ONCE. NEVER draw the same person twice. Count the characters listed above — that is the exact number of people in the image.
+- Each character MUST be performing their described action — show movement, expression, body language.
 
-CONSISTENCY IS THE #1 PRIORITY:
-- Each character MUST have the EXACT same hair color, hairstyle, clothing, and features as described above
-- If a character wears glasses, they MUST wear glasses in EVERY scene
-- If a character has a red sweater, they MUST have a red sweater in EVERY scene
-- Do NOT change any character's appearance — refer to the character sheets above
+CHARACTER APPEARANCE (match reference sheets EXACTLY):
+- COPY each character's hair color, hairstyle, outfit, accessories from their reference sheet above.
+- Do NOT change any visual detail. The reference sheets are the ground truth.
 
-CHARACTER NAME LABELS (MANDATORY for every named character):
-- Add a small, neat colored ribbon or tag directly below or beside each named character
-- Size: small but clearly readable — about the width of the character's body
-- Style: a subtle colored ribbon or small wooden sign — NOT a speech bubble, NOT oversized
-- The label should feel like a natural part of the illustration, not dominating the scene
-- Must be immediately clear which label belongs to which character (close proximity)
+NAME LABELS:
+- Small wooden sign or ribbon on the ground directly below each character's feet.
+- Every character MUST have a name label.
 
-TEXT STYLE GUIDE (3 distinct styles, must be visually different):
-1. CHARACTER NAMES → small neat colored ribbons near each character (moderate font, subtle)
-2. DIALOGUE → speech bubbles with tails pointing to the speaker (white background)
-3. NARRATION → scrolls, banners, or cloud shapes at top/bottom of page (parchment color)
-
-TEXT IN IMAGE:
-- Embed the story text naturally into the illustration as part of the art
-- Use creative placements: inside clouds, on scrolls, in speech bubbles, on banners, in open sky areas
-- The text should feel like a natural part of the scene, not a separate overlay
-- Make sure the text is LEGIBLE and CORRECTLY SPELLED
-- Double-check every word for spelling accuracy
-
-BACKGROUND AND SETTING:
-- Draw a RICH, DETAILED background — NOT just white/empty space
-- Include environmental details: furniture, plants, sky, weather, textures
-- Use warm, inviting colors that set the mood of the scene
-- The setting must be HISTORICALLY ACCURATE — buildings, streets, interiors should match the time period
-- NO modern objects (no cars, no electricity, no phones, no plastic)
-
-RULES:
-- Characters MUST be HUMAN, matching reference sheets exactly
-- Characters should be expressive — show emotions through face and body
-- Fill the ENTIRE image with illustration — no empty white areas
-- Clothing MUST be period-appropriate (match the era of the story, not modern clothes)
-- Each character must wear the SAME outfit in EVERY illustration (consistency!)
+STORY TEXT:
+"{text}"
+Embed naturally: speech bubbles for dialogue, scrolls/banners for narration. Spell every word correctly.
 
 Style: {DEFAULT_STYLE}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
-    return prompt
+    return prompt, in_scene_names
 
 
 def _extract_image(response: object, save_path: Path) -> bool:
@@ -204,9 +188,9 @@ def _generate_single_page(
     style_ref_path: str | None = None,
 ) -> tuple[bool, str, str]:
     """Generate a single page illustration. Returns (success, image_path, prompt_used)."""
-    prompt_text = _build_page_prompt(page, valid_sheets)
+    prompt_text, in_scene_names = _build_page_prompt(page, valid_sheets)
 
-    contents = _build_reference_content(prompt_text, valid_sheets, style_ref_path)
+    contents = _build_reference_content(prompt_text, valid_sheets, style_ref_path, in_scene_names)
 
     try:
         response = client.models.generate_content(
@@ -214,6 +198,9 @@ def _generate_single_page(
             contents=contents,
             config=genai.types.GenerateContentConfig(
                 response_modalities=["TEXT", "IMAGE"],
+                image_config=genai.types.ImageConfig(
+                    aspect_ratio="1:1",
+                ),
             ),
         )
 
@@ -237,29 +224,19 @@ def generate_illustrations(
     character_sheets: list[dict],
     book_id: str,
     style_ref_path: str | None = None,
-    consistency_threshold: float = 0.55,
-    max_consistency_retries: int = 5,
+    pages_dir: str | Path | None = None,
 ) -> list[dict]:
-    """Generate illustrations with automatic consistency checking.
-
-    For each page:
-    1. Generate the illustration
-    2. Check CLIP similarity against character sheets
-    3. If below threshold, regenerate (up to max_consistency_retries times)
-    4. Keep the best version
+    """Generate illustrations — one shot per page, no retries.
 
     Args:
         page_prompts: List of page dicts.
         character_sheets: Character sheet dicts with 'sheet_path'.
         book_id: Unique book identifier.
         style_ref_path: Optional style reference image.
-        consistency_threshold: CLIP similarity threshold (0-1).
-        max_consistency_retries: Max regeneration attempts per page.
+        pages_dir: Override output directory for pages.
     """
-    from src.generation.consistency_check import check_consistency, CLIP_AVAILABLE
-
     client = _get_client()
-    output_dir = GENERATED_DIR / book_id / "pages"
+    output_dir = Path(pages_dir) if pages_dir else GENERATED_DIR / book_id / "pages"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     valid_sheets = [s for s in character_sheets if s.get("sheet_path") and Path(s["sheet_path"]).exists()]
@@ -271,91 +248,37 @@ def generate_illustrations(
         page_num = page.get("page_number", len(results) + 1)
         save_path = output_dir / f"page_{page_num:03d}"
 
-        best_path = ""
-        best_score = -1.0
-        best_prompt = ""
-
-        gemini_feedback = ""  # Accumulate feedback from Gemini self-check
-
-        for attempt in range(max_consistency_retries + 1):
-            # Generate
-            if attempt > 0:
-                save_path_retry = output_dir / f"page_{page_num:03d}_v{attempt}"
-                logger.info("Page %d: regenerating (attempt %d, prev score=%.3f)",
-                           page_num, attempt + 1, best_score)
-                # If we have Gemini feedback, inject it into the page for better retry
-                if gemini_feedback:
-                    page = {**page, "prompt": page.get("prompt", "") + f"\n\nFIX REQUIRED: {gemini_feedback}"}
-            else:
-                save_path_retry = save_path
-
-            success, image_path, prompt = _generate_single_page(
-                client, page, valid_sheets, save_path_retry, style_ref_path
-            )
-
-            if not success:
-                continue
-
-            # Check consistency with CLIP first (fast)
-            if CLIP_AVAILABLE and valid_sheets:
-                result = check_consistency(
-                    [{"page_number": page_num, "image_path": image_path}],
-                    valid_sheets,
-                )
-                score = result.get("per_page_scores", [-1])[0]
-            else:
-                score = 1.0
-
-            logger.info("Page %d attempt %d: CLIP score=%.3f (threshold=%.2f)",
-                       page_num, attempt + 1, score, consistency_threshold)
-
-            # Gemini Vision self-check (more accurate, runs after CLIP)
-            if valid_sheets and score < consistency_threshold and attempt < max_consistency_retries:
-                try:
-                    from src.generation.gemini_consistency_check import check_character_consistency
-                    gemini_result = check_character_consistency(image_path, valid_sheets, page_num)
-                    if not gemini_result.get("consistent", True):
-                        gemini_feedback = gemini_result.get("feedback", "")
-                        logger.info("Page %d Gemini check: inconsistent — %s",
-                                   page_num, "; ".join(gemini_result.get("issues", [])[:2]))
-                    else:
-                        gemini_feedback = ""
-                        score = max(score, gemini_result.get("score", score))
-                except Exception as e:
-                    logger.debug("Gemini self-check skipped: %s", e)
-
-            # Keep the best version
-            if score > best_score:
-                best_score = score
-                best_path = image_path
-                best_prompt = prompt
-
-            # Good enough — stop retrying
-            if score >= consistency_threshold:
+        # Checkpoint: skip if image already exists
+        existing = None
+        for ext in (".png", ".jpg"):
+            candidate = save_path.with_suffix(ext)
+            if candidate.exists():
+                existing = str(candidate)
                 break
 
-        # If best version is a retry file, copy it to the canonical path
-        canonical = save_path.with_suffix(Path(best_path).suffix if best_path else ".png")
-        if best_path and best_path != str(canonical):
-            import shutil
-            shutil.copy2(best_path, canonical)
-            best_path = str(canonical)
+        if existing:
+            logger.info("Page %d: already exists, skipping (%s)", page_num, existing)
+            results.append({
+                "page_number": page_num,
+                "image_path": existing,
+                "prompt_used": "(cached)",
+            })
+            continue
+
+        success, image_path, prompt = _generate_single_page(
+            client, page, valid_sheets, save_path, style_ref_path
+        )
 
         results.append({
             "page_number": page_num,
-            "image_path": best_path,
-            "prompt_used": best_prompt,
-            "consistency_score": best_score,
+            "image_path": image_path if success else "",
+            "prompt_used": prompt,
         })
 
-        if best_score < consistency_threshold and best_score >= 0:
-            logger.warning("Page %d: best consistency score %.3f still below threshold %.2f",
-                         page_num, best_score, consistency_threshold)
+        if success:
+            logger.info("Page %d: saved to %s", page_num, image_path)
+        else:
+            logger.warning("Page %d: generation failed", page_num)
 
-    # Summary
-    scores = [r["consistency_score"] for r in results if r["consistency_score"] >= 0]
-    avg = sum(scores) / len(scores) if scores else 0
-    flagged = sum(1 for s in scores if s < consistency_threshold)
-    logger.info("Consistency summary: avg=%.3f, %d/%d pages flagged", avg, flagged, len(scores))
-
+    logger.info("Generated %d/%d illustrations", sum(1 for r in results if r["image_path"]), len(results))
     return results

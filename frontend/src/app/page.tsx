@@ -60,6 +60,12 @@ export default function Home() {
             >
               Create
             </button>
+            <a
+              href="/editor/A_TALE_OF_TWO_CITIES"
+              className="px-4 py-2 rounded-xl text-sm font-semibold text-gray-600 hover:bg-peach/50 transition-all"
+            >
+              Editor
+            </a>
             <button
               onClick={() => setView("library")}
               className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${

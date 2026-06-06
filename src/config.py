@@ -11,10 +11,18 @@ SAMPLE_BOOKS_DIR = DATA_DIR / "sample_books"
 
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
-# Gemini
+# Gemini (image generation only)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
+
+# DeepSeek (text analysis — cheaper alternative to Gemini for non-image tasks)
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+# Which LLM to use for text tasks (set to "gemini" for hackathon submission)
+TEXT_LLM = os.getenv("TEXT_LLM", "deepseek")  # "deepseek" or "gemini"
 
 # MongoDB
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")

@@ -98,12 +98,25 @@ _VALID_LY_NAMES = {
 }
 
 
+_HONORIFICS = {
+    "monsieur", "madame", "mademoiselle", "monseigneur",
+    "mr", "mrs", "ms", "miss", "dr", "sir", "lord", "lady",
+    "captain", "colonel", "major", "general", "sergeant",
+    "citizen", "comrade", "father", "mother", "brother", "sister",
+    "uncle", "aunt", "king", "queen", "prince", "princess",
+    "duke", "duchess", "count", "countess", "baron", "baroness",
+    "don", "doña", "señor", "señora",
+    "saint", "old", "young", "little", "big",
+}
+
+
 def _merge_aliases(names: list[str]) -> dict[str, str]:
     """Map variant names to a canonical form.
 
     Heuristic: if one name is a substring of another (e.g. "Tom" in
     "Tom Buchanan"), merge under the longer form. Also merges when
-    first names match (e.g. "Tom" and "Tom Buchanan").
+    first names match (e.g. "Tom" and "Tom Buchanan"), but NOT when
+    the shared first word is a title/honorific (e.g. "Monsieur").
     """
     canonical: dict[str, str] = {}
     sorted_names = sorted(names, key=len, reverse=True)
@@ -126,9 +139,14 @@ def _merge_aliases(names: list[str]) -> dict[str, str]:
                 merged = True
                 break
             # Check if first names match (e.g. "Tom" == first word of "Tom Buchanan")
+            # but SKIP if the first word is a title/honorific
             norm_first = norm.split()[0].lower()
             canon_first = canon.split()[0].lower()
-            if len(norm_first) >= 3 and norm_first == canon_first:
+            if (
+                len(norm_first) >= 3
+                and norm_first == canon_first
+                and norm_first not in _HONORIFICS
+            ):
                 # Merge under the longer (more specific) form
                 target = canon if len(canon) >= len(norm) else norm
                 canonical[norm] = target
