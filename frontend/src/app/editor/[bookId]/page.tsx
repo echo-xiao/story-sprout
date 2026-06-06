@@ -32,14 +32,17 @@ export default function EditorPage() {
   const bookId = params.bookId as string;
   const initApplied = useRef(false);
 
-  // Read initial chapter/segment from URL (avoid useSearchParams Suspense issue)
-  const initialChapter = useRef<number | null>(null);
-  const initialSegment = useRef<number | null>(null);
-  useEffect(() => {
+  // Read initial chapter/segment from URL (sync, no useSearchParams)
+  const [initialChapter] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
     const sp = new URLSearchParams(window.location.search);
-    if (sp.get("ch")) initialChapter.current = +sp.get("ch")!;
-    if (sp.get("seg")) initialSegment.current = +sp.get("seg")!;
-  }, []);
+    return sp.get("ch") ? +sp.get("ch")! : null;
+  });
+  const [initialSegment] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const sp = new URLSearchParams(window.location.search);
+    return sp.get("seg") ? +sp.get("seg")! : null;
+  });
 
   const [chapters, setChapters] = useState<Record<string, ChapterInfo>>({});
   const [meta, setMeta] = useState<{ title?: string }>({});
@@ -127,8 +130,8 @@ export default function EditorPage() {
           setSheets(charData.sheets || {});
 
           const sortedKeys = chapKeys.sort((a, b) => +a - +b);
-          const startCh = initialChapter.current !== null && chapKeys.includes(String(initialChapter.current))
-            ? initialChapter.current
+          const startCh = initialChapter !== null && chapKeys.includes(String(initialChapter))
+            ? initialChapter
             : +sortedKeys[0];
           setSelectedChapter(startCh);
           setLoading(false);
@@ -155,8 +158,8 @@ export default function EditorPage() {
         setSegments(data.segments || []);
         if (data.segments?.length > 0) {
           // On first load, restore segment from URL
-          if (!initApplied.current && initialSegment.current !== null) {
-            const match = data.segments.find((s: Segment) => s.id === initialSegment.current);
+          if (!initApplied.current && initialSegment !== null) {
+            const match = data.segments.find((s: Segment) => s.id === initialSegment);
             setSelectedSegment(match || data.segments[0]);
             initApplied.current = true;
           } else {
