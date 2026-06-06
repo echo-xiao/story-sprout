@@ -480,6 +480,16 @@ def main():
     _save("chapter_segments", chapter_segments_map)
 
     # ═══════════════════════════════════════════════════
+    # Save to MongoDB
+    # ═══════════════════════════════════════════════════
+    from src.db import save_preprocess, is_available as mongo_available
+    if mongo_available():
+        save_preprocess(book_id, title, characters, final_segments, alias_map, gender_map)
+        print(f"\n  MongoDB: saved ({len(characters)} characters, {len(final_segments)} segments)")
+    else:
+        print(f"\n  MongoDB: not available (data saved to files only)")
+
+    # ═══════════════════════════════════════════════════
     # Summary
     # ═══════════════════════════════════════════════════
     print(f"\n{'='*50}")

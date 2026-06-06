@@ -259,22 +259,16 @@ TOOL_DEFINITIONS = [
             "required": [],
         },
     },
-    # --- MongoDB tools ---
+    # --- MongoDB tools (MCP-exposed for Agent) ---
     {
         "name": "save_book_to_db",
-        "description": (
-            "Save the completed picture book to MongoDB. "
-            "Stores the full book document including pages, config, and QA results."
-        ),
+        "description": "Save book metadata and preprocess results to MongoDB Atlas.",
         "parameters": {
             "type": "object",
             "properties": {
-                "book_json": {
-                    "type": "string",
-                    "description": "JSON string of the full PictureBook document.",
-                },
+                "book_id": {"type": "string", "description": "Book identifier."},
             },
-            "required": ["book_json"],
+            "required": ["book_id"],
         },
     },
     {
@@ -283,20 +277,65 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "book_id": {
-                    "type": "string",
-                    "description": "The book's unique identifier.",
-                },
+                "book_id": {"type": "string", "description": "The book's unique identifier."},
             },
             "required": ["book_id"],
         },
     },
     {
         "name": "list_books_from_db",
-        "description": "List all picture books stored in MongoDB. Returns metadata only (id, title, date).",
+        "description": "List all picture books stored in MongoDB Atlas.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_characters_from_db",
+        "description": "Get all characters for a book from MongoDB, including aliases, gender, appearance, and sheet paths.",
         "parameters": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "book_id": {"type": "string", "description": "Book identifier."},
+            },
+            "required": ["book_id"],
+        },
+    },
+    {
+        "name": "get_segments_from_db",
+        "description": "Get all segments for a book chapter from MongoDB, with characters_in_scene, actions, background, sentiment.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "book_id": {"type": "string", "description": "Book identifier."},
+                "chapter_idx": {"type": "integer", "description": "Chapter index (0-based). Omit for all chapters."},
+            },
+            "required": ["book_id"],
+        },
+    },
+    {
+        "name": "update_segment_in_db",
+        "description": "Update a segment's fields in MongoDB (text, characters, actions, background, sentiment).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "book_id": {"type": "string", "description": "Book identifier."},
+                "segment_id": {"type": "integer", "description": "Segment ID."},
+                "updates": {"type": "string", "description": "JSON string of fields to update."},
+            },
+            "required": ["book_id", "segment_id", "updates"],
+        },
+    },
+    {
+        "name": "log_generation",
+        "description": "Log an LLM call (prompt, response, tokens, duration) to MongoDB for tracking and debugging.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "book_id": {"type": "string", "description": "Book identifier."},
+                "step": {"type": "string", "description": "Pipeline step name."},
+                "model": {"type": "string", "description": "Model used."},
+                "input_text": {"type": "string", "description": "Input prompt (preview)."},
+                "output_text": {"type": "string", "description": "Output response (preview)."},
+            },
+            "required": ["book_id", "step", "model", "input_text", "output_text"],
         },
     },
 ]
@@ -435,6 +474,14 @@ def _dispatch(name: str, args: dict[str, Any]) -> Any:
         return _tool_get_book_from_db(args)
     elif name == "list_books_from_db":
         return _tool_list_books_from_db(args)
+    elif name == "get_characters_from_db":
+        return _tool_get_characters_from_db(args)
+    elif name == "get_segments_from_db":
+        return _tool_get_segments_from_db(args)
+    elif name == "update_segment_in_db":
+        return _tool_update_segment_in_db(args)
+    elif name == "log_generation":
+        return _tool_log_generation(args)
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -907,86 +954,74 @@ def _tool_render_book(args: dict) -> dict:
     }
 
 
-# --- MongoDB tools ---
+# --- MongoDB tools (using src.db) ---
 def _tool_save_book_to_db(args: dict) -> dict:
-    from src.state_store import load
-
+    from src import db
     book_id = args.get("book_id", "default")
 
-    # Build book document from state store
-    simplified = load(book_id, "simplified_scenes", [])
-    image_result = load(book_id, "image_result", {})
-    illustrations = image_result.get("illustrations", [])
+    # Load preprocess data from files and save to MongoDB
+    preprocess_dir = GENERATED_DIR / book_id / "preprocess"
+    if preprocess_dir.exists():
+        analysis_path = preprocess_dir / "analysis.json"
+        llm_chars_path = preprocess_dir / "llm_characters.json"
+        alias_map_path = preprocess_dir / "alias_map.json"
+        gender_path = preprocess_dir / "character_genders.json"
+        meta_path = preprocess_dir / "meta.json"
 
-    pages = []
-    for idx, scene in enumerate(simplified):
-        ill = illustrations[idx] if idx < len(illustrations) else {}
-        pages.append({
-            "page_number": idx + 1,
-            "text": scene.get("page_text", scene.get("text", "")),
-            "image_path": ill.get("image_path", ""),
-        })
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        characters = json.loads(llm_chars_path.read_text()).get("characters", []) if llm_chars_path.exists() else []
+        analysis = json.loads(analysis_path.read_text()) if analysis_path.exists() else {}
+        alias_map = json.loads(alias_map_path.read_text()) if alias_map_path.exists() else {}
+        gender_map = json.loads(gender_path.read_text()) if gender_path.exists() else {}
 
-    book_doc = _safe_json_parse(args.get("book_json", ""), {})
-    book_doc.update({
-        "book_id": book_id,
-        "title": load(book_id, "title", "Untitled"),
-        "pages": pages,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+        db.save_preprocess(
+            book_id, meta.get("title", "Untitled"),
+            characters, analysis.get("segments", []),
+            alias_map, gender_map,
+        )
+        return {"saved": True, "book_id": book_id, "storage": "mongodb"}
 
-    # Save to file (always works)
-    output_dir = GENERATED_DIR / book_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-    book_path = output_dir / "book.json"
-    book_path.write_text(json.dumps(book_doc, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
-
-    # Save to MongoDB (best effort)
-    try:
-        import pymongo
-        client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
-        db = client[MONGODB_DB]
-        db.books.update_one({"book_id": book_id}, {"$set": book_doc}, upsert=True)
-        client.close()
-        return {"saved": True, "book_id": book_id, "storage": "mongodb+file"}
-    except Exception as e:
-        logger.debug("MongoDB save skipped: %s", e)
-        return {"saved": True, "book_id": book_id, "storage": "file_only", "file": str(book_path)}
+    return {"saved": False, "error": "No preprocess data found"}
 
 
 def _tool_get_book_from_db(args: dict) -> dict:
-    book_id = args["book_id"]
-    # Try file first
-    book_path = GENERATED_DIR / book_id / "book.json"
-    if book_path.exists():
-        return json.loads(book_path.read_text(encoding="utf-8"))
-    # Try MongoDB
-    try:
-        import pymongo
-        client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
-        db = client[MONGODB_DB]
-        book = db.books.find_one({"book_id": book_id}, {"_id": 0})
-        client.close()
-        if book:
-            return book
-    except Exception:
-        pass
-    return {"error": f"Book {book_id} not found"}
+    from src import db
+    book = db.get_book(args["book_id"])
+    if book:
+        return book
+    return {"error": f"Book {args['book_id']} not found"}
 
 
 def _tool_list_books_from_db(args: dict) -> dict:
-    books = []
-    # Scan generated directory
-    for d in sorted(GENERATED_DIR.iterdir()):
-        book_json = d / "book.json"
-        if book_json.exists():
-            try:
-                doc = json.loads(book_json.read_text(encoding="utf-8"))
-                books.append({
-                    "book_id": doc.get("book_id", d.name),
-                    "title": doc.get("title", "Untitled"),
-                    "created_at": doc.get("created_at", ""),
-                })
-            except Exception:
-                continue
+    from src import db
+    books = db.list_books()
     return {"books": books, "count": len(books)}
+
+
+def _tool_get_characters_from_db(args: dict) -> dict:
+    from src import db
+    chars = db.get_characters(args["book_id"])
+    return {"characters": chars, "count": len(chars)}
+
+
+def _tool_get_segments_from_db(args: dict) -> dict:
+    from src import db
+    chapter_idx = args.get("chapter_idx")
+    segs = db.get_segments(args["book_id"], chapter_idx)
+    return {"segments": segs, "count": len(segs)}
+
+
+def _tool_update_segment_in_db(args: dict) -> dict:
+    from src import db
+    updates = _safe_json_parse(args.get("updates", "{}"), {})
+    db.update_segment(args["book_id"], args["segment_id"], updates)
+    return {"updated": True, "segment_id": args["segment_id"]}
+
+
+def _tool_log_generation(args: dict) -> dict:
+    from src import db
+    db.log_llm_call(
+        args["book_id"], args["step"], args["model"],
+        args["input_text"], args["output_text"],
+    )
+    return {"logged": True}
