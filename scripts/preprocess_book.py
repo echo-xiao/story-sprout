@@ -23,6 +23,8 @@ import sys
 import time
 from pathlib import Path
 
+from tqdm import tqdm
+
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
@@ -208,27 +210,24 @@ Return JSON with "annotations" array."""
 # Main
 # ═══════════════════════════════════════════════════════════════
 
-def main():
-    parser = argparse.ArgumentParser(description="Preprocess a book (6-layer pipeline).")
-    parser.add_argument("--input", required=True, help="Path to book .txt file")
-    parser.add_argument("--skip-sheets", action="store_true", help="Skip character sheet generation (layer 3)")
-    args = parser.parse_args()
+def _save(preprocess_dir, name, data, subdir=None):
+    """Save data as JSON to the preprocess directory."""
+    target = preprocess_dir / subdir if subdir else preprocess_dir
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / f"{name}.json"
+    path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    print(f"  → {path.relative_to(GENERATED_DIR)}")
 
-    input_path = Path(args.input).resolve()
-    if not input_path.exists():
-        print(f"Error: file not found: {input_path}", file=sys.stderr)
-        sys.exit(1)
 
-    source = input_path.read_text(encoding="utf-8", errors="replace")
-    print(f"Loaded {len(source)} chars from {input_path.name}")
-
-    # ═══════════════════════════════════════════════════
-    # Layer 1: Raw text → chapters
-    # ═══════════════════════════════════════════════════
+def _layer1_extract_text(input_path, book_id, preprocess_dir):
+    """Layer 1: Text extraction + chapter split."""
     print("\n[Layer 1/6] Extracting text...")
     t0 = time.time()
     from src.extraction import extract_text
     from src.mcp_server import _strip_book_metadata
+
+    source = input_path.read_text(encoding="utf-8", errors="replace")
+    print(f"Loaded {len(source)} chars from {input_path.name}")
 
     result = extract_text(source)
     full_text = _strip_book_metadata(result.get("full_text", ""))
@@ -242,10 +241,9 @@ def main():
 
     # Fix chapter titles: extract subtitle from text if missing
     # e.g., "CHAPTER I." + text starts with "CHAPTER I. The Period" → title = "CHAPTER I. The Period"
-    import re as _re
     for ch in chapters:
         text = ch.get("text", "")
-        title_match = _re.match(r'(CHAPTER\s+[IVXLC]+\.?\s+[A-Z][^\n]+)', text)
+        title_match = re.match(r'(CHAPTER\s+[IVXLC]+\.?\s+[A-Z][^\n]+)', text)
         if title_match:
             ch["title"] = title_match.group(1).strip()
 
@@ -257,21 +255,16 @@ def main():
     preprocess_dir = GENERATED_DIR / book_id / "preprocess"
     preprocess_dir.mkdir(parents=True, exist_ok=True)
 
-    def _save(name, data, subdir=None):
-        target = preprocess_dir / subdir if subdir else preprocess_dir
-        target.mkdir(parents=True, exist_ok=True)
-        path = target / f"{name}.json"
-        path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
-        print(f"  → {path.relative_to(GENERATED_DIR)}")
-
-    _save("meta", {"title": title, "book_id": book_id, "source_file": str(input_path),
+    _save(preprocess_dir, "meta", {"title": title, "book_id": book_id, "source_file": str(input_path),
                     "num_chapters": len(chapters), "text_length": len(full_text)})
-    _save("chapters", chapters)
-    _save("full_text", {"text": full_text})
+    _save(preprocess_dir, "chapters", chapters)
+    _save(preprocess_dir, "full_text", {"text": full_text})
 
-    # ═══════════════════════════════════════════════════
-    # Layer 2: LLM character identification
-    # ═══════════════════════════════════════════════════
+    return title, book_id, full_text, chapters, preprocess_dir
+
+
+def _layer2_identify_characters(book_id, preprocess_dir, chapters, title):
+    """Layer 2: LLM character identification."""
     provider = "DeepSeek" if os.getenv("TEXT_LLM", "deepseek") == "deepseek" else "Gemini"
     print(f"\n[Layer 2/6] LLM character identification ({provider})...")
     t0 = time.time()
@@ -284,46 +277,49 @@ def main():
     alias_map = _build_alias_map(characters)
     gender_map = {c["canonical_name"]: c.get("gender", "unknown") for c in characters}
 
-    _save("llm_characters", {"characters": characters})
-    _save("alias_map", alias_map)
-    _save("character_genders", gender_map)
+    _save(preprocess_dir, "llm_characters", {"characters": characters})
+    _save(preprocess_dir, "alias_map", alias_map)
+    _save(preprocess_dir, "character_genders", gender_map)
 
-    # ═══════════════════════════════════════════════════
-    # Layer 3: Character sheets (Gemini Image)
-    # ═══════════════════════════════════════════════════
-    if args.skip_sheets:
+    return characters, alias_map, gender_map
+
+
+def _layer3_build_sheets(book_id, preprocess_dir, characters, skip_sheets):
+    """Layer 3: Character sheet generation (Gemini Image)."""
+    if skip_sheets:
         print(f"\n[Layer 3/6] Character sheets — SKIPPED (--skip-sheets)")
-    else:
-        print(f"\n[Layer 3/6] Generating character sheets (Gemini Image)...")
-        t0 = time.time()
-        from src.generation.character_sheet import generate_character_sheets
+        return
 
-        # Build profiles for sheet generation (main + supporting only)
-        sheet_profiles = []
-        for c in characters:
-            if c.get("role") in ("main", "supporting"):
-                sheet_profiles.append({
-                    "name": c["canonical_name"],
-                    "role": c.get("role", "supporting"),
-                    "personality_traits": [],
-                    "appearance_description": [
-                        c.get("appearance", ""),
-                        c.get("description", ""),
-                    ],
-                })
+    print(f"\n[Layer 3/6] Generating character sheets (Gemini Image)...")
+    t0 = time.time()
+    from src.generation.character_sheet import generate_character_sheets
 
-        print(f"  Generating sheets for {len(sheet_profiles)} characters (main + supporting)...")
-        sheets = generate_character_sheets(sheet_profiles, book_id, max_characters=0)
-        dt = time.time() - t0
-        print(f"  Generated {len(sheets)} sheets in {dt:.1f}s")
-        for s in sheets:
-            print(f"    {s['character_name']}: {s.get('sheet_path', 'FAILED')}")
+    # Build profiles for sheet generation (main + supporting only)
+    sheet_profiles = []
+    for c in characters:
+        if c.get("role") in ("main", "supporting"):
+            sheet_profiles.append({
+                "name": c["canonical_name"],
+                "role": c.get("role", "supporting"),
+                "personality_traits": [],
+                "appearance_description": [
+                    c.get("appearance", ""),
+                    c.get("description", ""),
+                ],
+            })
 
-        _save("character_sheets", sheets)
+    print(f"  Generating sheets for {len(sheet_profiles)} characters (main + supporting)...")
+    sheets = generate_character_sheets(sheet_profiles, book_id, max_characters=0)
+    dt = time.time() - t0
+    print(f"  Generated {len(sheets)} sheets in {dt:.1f}s")
+    for s in sheets:
+        print(f"    {s['character_name']}: {s.get('sheet_path', 'FAILED')}")
 
-    # ═══════════════════════════════════════════════════
-    # Layer 4: Alias replacement → cleaned text
-    # ═══════════════════════════════════════════════════
+    _save(preprocess_dir, "character_sheets", sheets)
+
+
+def _layer4_replace_aliases(book_id, preprocess_dir, chapters, full_text, alias_map):
+    """Layer 4: Alias replacement in text."""
     print(f"\n[Layer 4/6] Replacing aliases in text...")
     t0 = time.time()
     print(f"  {len(alias_map)} alias mappings")
@@ -337,12 +333,14 @@ def main():
     dt = time.time() - t0
     print(f"  Done in {dt:.1f}s")
 
-    _save("cleaned_full_text", {"text": cleaned_full_text})
-    _save("cleaned_chapters", cleaned_chapters)
+    _save(preprocess_dir, "cleaned_full_text", {"text": cleaned_full_text})
+    _save(preprocess_dir, "cleaned_chapters", cleaned_chapters)
 
-    # ═══════════════════════════════════════════════════
-    # Layer 5: TextTiling segmentation (on cleaned text)
-    # ═══════════════════════════════════════════════════
+    return cleaned_chapters, cleaned_full_text
+
+
+def _layer5_segment_text_pipeline(book_id, preprocess_dir, cleaned_chapters, cleaned_full_text, chapters):
+    """Layer 5: TextTiling segmentation."""
     print(f"\n[Layer 5/6] TextTiling segmentation...")
     t0 = time.time()
     all_segments = _segment_text(cleaned_full_text, cleaned_chapters)
@@ -360,13 +358,14 @@ def main():
         ch_title = chapters[ch_idx].get("title", f"Ch {ch_idx}") if ch_idx < len(chapters) else "?"
         print(f"    Chapter {ch_idx} ({ch_title}): {len(segs)} segments")
 
-    _save("segments_raw", all_segments)
+    _save(preprocess_dir, "segments_raw", all_segments)
 
-    # ═══════════════════════════════════════════════════
-    # Layer 6: LLM annotation per chapter
-    # ═══════════════════════════════════════════════════
+    return all_segments, ch_seg_groups
+
+
+def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_seg_groups, skip_sheets):
+    """Layer 6: LLM annotation per segment."""
     print(f"\n[Layer 6/6] LLM annotation (characters, sentiment, events)...")
-    from tqdm import tqdm
     all_events = []
     chapter_segments_map = {}
     segment_id = 0
@@ -476,12 +475,47 @@ def main():
         "key_events": all_events,
         "character_profiles": character_profiles,
     }
-    _save("analysis", analysis)
-    _save("chapter_segments", chapter_segments_map)
+    _save(preprocess_dir, "analysis", analysis)
+    _save(preprocess_dir, "chapter_segments", chapter_segments_map)
 
-    # ═══════════════════════════════════════════════════
+    return final_segments, final_characters, all_events
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Preprocess a book (6-layer pipeline).")
+    parser.add_argument("--input", required=True, help="Path to book .txt file")
+    parser.add_argument("--skip-sheets", action="store_true", help="Skip character sheet generation (layer 3)")
+    args = parser.parse_args()
+
+    input_path = Path(args.input).resolve()
+    if not input_path.exists():
+        print(f"Error: file not found: {input_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Layer 1: Text extraction + chapter split
+    title, book_id, full_text, chapters, preprocess_dir = _layer1_extract_text(
+        input_path, None, None)
+
+    # Layer 2: LLM character identification
+    characters, alias_map, gender_map = _layer2_identify_characters(
+        book_id, preprocess_dir, chapters, title)
+
+    # Layer 3: Character sheets
+    _layer3_build_sheets(book_id, preprocess_dir, characters, args.skip_sheets)
+
+    # Layer 4: Alias replacement
+    cleaned_chapters, cleaned_full_text = _layer4_replace_aliases(
+        book_id, preprocess_dir, chapters, full_text, alias_map)
+
+    # Layer 5: TextTiling segmentation
+    all_segments, ch_seg_groups = _layer5_segment_text_pipeline(
+        book_id, preprocess_dir, cleaned_chapters, cleaned_full_text, chapters)
+
+    # Layer 6: LLM annotation
+    final_segments, final_characters, all_events = _layer6_annotate(
+        book_id, preprocess_dir, chapters, characters, title, ch_seg_groups, args.skip_sheets)
+
     # Save to MongoDB
-    # ═══════════════════════════════════════════════════
     from src.db import save_preprocess, is_available as mongo_available
     if mongo_available():
         save_preprocess(book_id, title, characters, final_segments, alias_map, gender_map)
@@ -489,9 +523,7 @@ def main():
     else:
         print(f"\n  MongoDB: not available (data saved to files only)")
 
-    # ═══════════════════════════════════════════════════
     # Summary
-    # ═══════════════════════════════════════════════════
     print(f"\n{'='*50}")
     print(f"Preprocess complete: {title}")
     print(f"  Output: {preprocess_dir}")
