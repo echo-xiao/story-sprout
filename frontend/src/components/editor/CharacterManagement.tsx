@@ -226,7 +226,7 @@ export default function CharacterManagement({
               <textarea
                 value={editing.appearance || ""}
                 onChange={e => setEditing(prev => ({ ...prev, appearance: e.target.value }))}
-                rows={4}
+                rows={Math.max(2, Math.ceil((editing.appearance || "").length / 35) + 1)}
                 className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm resize-y"
                 placeholder="Physical description: hair color, face shape, clothing, accessories..."
               />
@@ -237,7 +237,7 @@ export default function CharacterManagement({
               <textarea
                 value={editing.description || ""}
                 onChange={e => setEditing(prev => ({ ...prev, description: e.target.value }))}
-                rows={3}
+                rows={Math.max(2, Math.ceil((editing.description || "").length / 35) + 1)}
                 className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm resize-y"
                 placeholder="Character background, personality, role in the story..."
               />
