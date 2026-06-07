@@ -110,12 +110,38 @@ export default function CharacterManagement({
         ))}
       </div>
 
-      {/* Right: Detail + Sheet */}
+      {/* Middle + Right */}
       {selected ? (
         <div className="flex-1 flex overflow-hidden">
-          {/* Middle: Edit Fields */}
+          {/* Middle: Character Sheet Image */}
+          <div className="w-80 shrink-0 overflow-y-auto p-6 border-r border-peach/20">
+            <h2 className="font-display text-lg font-bold text-gray-800 mb-3">{selected.canonical_name}</h2>
+            {sheets[selected.canonical_name] ? (
+              <img
+                src={`${API_BASE}${sheets[selected.canonical_name]}`}
+                alt={selected.canonical_name}
+                className="w-full rounded-xl shadow-md mb-3"
+              />
+            ) : regenning ? (
+              <div className="w-full aspect-square bg-peach/10 rounded-xl flex flex-col items-center justify-center gap-3 mb-3">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-coral" />
+                <p className="text-sm text-gray-500">Generating sheet...</p>
+                <p className="text-xs text-gray-400">~30 seconds</p>
+              </div>
+            ) : (
+              <div className="w-full aspect-square bg-peach/20 rounded-xl flex flex-col items-center justify-center text-gray-400 gap-2 mb-3">
+                <Users size={32} />
+                <p className="text-xs">No sheet yet</p>
+              </div>
+            )}
+            <button onClick={handleRegenSheet} disabled={regenning} className="w-full btn-secondary text-xs !px-3 !py-1.5 flex items-center justify-center gap-1">
+              <RefreshCw size={12} className={regenning ? "animate-spin" : ""} />
+              {regenning ? "Generating..." : "Regenerate Sheet"}
+            </button>
+          </div>
+
+          {/* Right: Edit Fields */}
           <div className="flex-1 overflow-y-auto p-6 space-y-4">
-            <h2 className="font-display text-lg font-bold text-gray-800">{selected.canonical_name}</h2>
 
             <div className="flex gap-4">
               <div className="flex-1">
@@ -187,35 +213,7 @@ export default function CharacterManagement({
                 <Save size={14} />
                 {saving ? "Saving..." : "Save Changes"}
               </button>
-              <button onClick={handleRegenSheet} disabled={regenning} className="btn-secondary text-sm !px-4 !py-2 flex items-center gap-1.5">
-                <RefreshCw size={14} className={regenning ? "animate-spin" : ""} />
-                {regenning ? "Generating..." : "Regenerate Sheet"}
-              </button>
             </div>
-          </div>
-
-          {/* Right: Character Sheet Image */}
-          <div className="w-80 shrink-0 overflow-y-auto p-6 border-l border-peach/20 bg-cream/30">
-            <label className="text-xs text-gray-500 font-semibold mb-2 block">Character Sheet</label>
-            {sheets[selected.canonical_name] ? (
-              <img
-                src={`${API_BASE}${sheets[selected.canonical_name]}`}
-                alt={selected.canonical_name}
-                className="w-full rounded-xl shadow-md"
-              />
-            ) : regenning ? (
-              <div className="w-full aspect-square bg-peach/10 rounded-xl flex flex-col items-center justify-center gap-3">
-                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-coral" />
-                <p className="text-sm text-gray-500">Generating sheet...</p>
-                <p className="text-xs text-gray-400">~30 seconds</p>
-              </div>
-            ) : (
-              <div className="w-full aspect-square bg-peach/20 rounded-xl flex flex-col items-center justify-center text-gray-400 gap-2">
-                <Users size={32} />
-                <p className="text-xs">No sheet yet</p>
-                <p className="text-[10px]">Click "Regenerate Sheet" to create</p>
-              </div>
-            )}
           </div>
         </div>
       ) : (
