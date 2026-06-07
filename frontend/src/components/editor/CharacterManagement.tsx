@@ -31,14 +31,6 @@ export default function CharacterManagement({
   const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
 
-  // Navigate to specific character when triggered from editor
-  useEffect(() => {
-    if (navigateToChar) {
-      const char = characters.find(c => c.canonical_name === navigateToChar);
-      if (char) selectChar(char);
-    }
-  }, [navigateToChar]);
-
   const selected = characters.find(c => c.canonical_name === selectedChar);
 
   const selectChar = (char: CharacterInfo) => {
@@ -49,8 +41,18 @@ export default function CharacterManagement({
       role: char.role || "supporting",
       appearance: char.appearance || "",
       description: char.description || "",
+      visual_details: (char as any).visual_details || {},
     });
   };
+
+  // Navigate to specific character when triggered from editor
+  useEffect(() => {
+    if (!navigateToChar) return;
+    const char = characters.find(c => c.canonical_name === navigateToChar);
+    if (char) {
+      selectChar(char);
+    }
+  }, [navigateToChar]);
 
   // Load sheet history when character changes
   useEffect(() => {
@@ -221,14 +223,43 @@ export default function CharacterManagement({
             </div>
 
             <div>
-              <label className="text-xs text-gray-500 font-semibold mb-1 block">Appearance</label>
+              <label className="text-xs text-gray-500 font-semibold mb-1 block">Appearance (from book)</label>
               <textarea
                 value={editing.appearance || ""}
                 onChange={e => setEditing(prev => ({ ...prev, appearance: e.target.value }))}
                 rows={Math.max(2, Math.ceil((editing.appearance || "").length / 35) + 1)}
                 className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm resize-y"
-                placeholder="Physical description: hair color, face shape, clothing, accessories..."
+                placeholder="Physical description from the book..."
               />
+            </div>
+
+            {/* Structured appearance fields */}
+            <div className="border border-peach/30 rounded-lg p-3 space-y-2">
+              <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Visual Details</p>
+              {[
+                { key: "age", label: "Age", placeholder: "e.g. 60, elderly, young" },
+                { key: "ethnicity", label: "Ethnicity", placeholder: "e.g. European, French" },
+                { key: "skin_tone", label: "Skin Tone", placeholder: "e.g. fair, rosy cheeks" },
+                { key: "hair", label: "Hair", placeholder: "e.g. flaxen wig, curly dark hair" },
+                { key: "eyes", label: "Eyes", placeholder: "e.g. bright moist eyes, brown" },
+                { key: "build", label: "Build", placeholder: "e.g. stout, tall and thin" },
+                { key: "clothing", label: "Clothing", placeholder: "e.g. brown suit, large square cuffs" },
+                { key: "accessories", label: "Accessories", placeholder: "e.g. spectacles, cane, bonnet" },
+                { key: "distinctive", label: "Distinctive Feature", placeholder: "e.g. big red nose, scar" },
+              ].map(({ key, label, placeholder }) => (
+                <div key={key} className="flex items-center gap-2">
+                  <label className="text-[10px] text-gray-500 w-20 shrink-0 text-right">{label}</label>
+                  <input
+                    value={(editing.visual_details || {})[key] || ""}
+                    onChange={e => setEditing(prev => ({
+                      ...prev,
+                      visual_details: { ...(prev.visual_details || {}), [key]: e.target.value }
+                    }))}
+                    className="flex-1 rounded-md border border-peach/40 px-2 py-1 text-xs"
+                    placeholder={placeholder}
+                  />
+                </div>
+              ))}
             </div>
 
             <div>
