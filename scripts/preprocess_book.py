@@ -274,23 +274,29 @@ def _layer2_identify_characters(book_id, preprocess_dir, chapters, title):
         aliases = ", ".join(c.get("aliases", [])[:3])
         print(f"    {c['canonical_name']} ({c['gender']}, {c['role']}) [{aliases}]")
 
+    _save(preprocess_dir, "llm_characters", {"characters": characters})
+
+    return characters
+
+
+def _layer3_build_aliases(book_id, preprocess_dir, characters):
+    """Layer 3: Alias map building."""
     alias_map = _build_alias_map(characters)
     gender_map = {c["canonical_name"]: c.get("gender", "unknown") for c in characters}
 
-    _save(preprocess_dir, "llm_characters", {"characters": characters})
     _save(preprocess_dir, "alias_map", alias_map)
     _save(preprocess_dir, "character_genders", gender_map)
 
-    return characters, alias_map, gender_map
+    return alias_map, gender_map
 
 
-def _layer3_build_sheets(book_id, preprocess_dir, characters, skip_sheets):
-    """Layer 3: Character sheet generation (Gemini Image)."""
+def _generate_character_sheets(book_id, preprocess_dir, characters, skip_sheets):
+    """Character sheet generation (Gemini Image) — optional step between layers."""
     if skip_sheets:
-        print(f"\n[Layer 3/6] Character sheets — SKIPPED (--skip-sheets)")
+        print(f"\n[Character Sheets] SKIPPED (--skip-sheets)")
         return
 
-    print(f"\n[Layer 3/6] Generating character sheets (Gemini Image)...")
+    print(f"\n[Character Sheets] Generating character sheets (Gemini Image)...")
     t0 = time.time()
     from src.generation.character_sheet import generate_character_sheets
 
@@ -339,7 +345,7 @@ def _layer4_replace_aliases(book_id, preprocess_dir, chapters, full_text, alias_
     return cleaned_chapters, cleaned_full_text
 
 
-def _layer5_segment_text_pipeline(book_id, preprocess_dir, cleaned_chapters, cleaned_full_text, chapters):
+def _layer5_segment_text(book_id, preprocess_dir, cleaned_chapters, cleaned_full_text, chapters):
     """Layer 5: TextTiling segmentation."""
     print(f"\n[Layer 5/6] TextTiling segmentation...")
     t0 = time.time()
@@ -497,18 +503,22 @@ def main():
         input_path, None, None)
 
     # Layer 2: LLM character identification
-    characters, alias_map, gender_map = _layer2_identify_characters(
+    characters = _layer2_identify_characters(
         book_id, preprocess_dir, chapters, title)
 
-    # Layer 3: Character sheets
-    _layer3_build_sheets(book_id, preprocess_dir, characters, args.skip_sheets)
+    # Layer 3: Alias map building
+    alias_map, gender_map = _layer3_build_aliases(
+        book_id, preprocess_dir, characters)
+
+    # Character sheets (between layer 3 and 4)
+    _generate_character_sheets(book_id, preprocess_dir, characters, args.skip_sheets)
 
     # Layer 4: Alias replacement
     cleaned_chapters, cleaned_full_text = _layer4_replace_aliases(
         book_id, preprocess_dir, chapters, full_text, alias_map)
 
     # Layer 5: TextTiling segmentation
-    all_segments, ch_seg_groups = _layer5_segment_text_pipeline(
+    all_segments, ch_seg_groups = _layer5_segment_text(
         book_id, preprocess_dir, cleaned_chapters, cleaned_full_text, chapters)
 
     # Layer 6: LLM annotation

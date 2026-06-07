@@ -555,19 +555,20 @@ def _tool_extract_text(args: dict) -> dict:
 
 # --- Layer 2: Analysis ---
 def _tool_analyze_book(args: dict) -> dict:
-    from src.analysis import analyze_text
+    from src.analysis.chapter_split import split_into_segments
+    from src.analysis.visual_score import score_visual_concreteness
+    from src.analysis.complexity import assess_complexity
+    from src.analysis.key_events import extract_key_events
     from src.state_store import save, load
 
     book_id = args.get("book_id", "default")
 
-    # ALWAYS prefer state store (full text), agent args may be truncated previews
     text = load(book_id, "full_text", "") or args.get("text", "")
     chapters = load(book_id, "chapters", None)
     if not chapters:
         chapters_raw = args.get("chapters", "")
         chapters = _safe_json_parse(chapters_raw, [])
 
-    # Filter chapters if selected_chapters is specified
     selected_chapters_raw = args.get("selected_chapters")
     if selected_chapters_raw:
         if isinstance(selected_chapters_raw, str):
@@ -578,11 +579,22 @@ def _tool_analyze_book(args: dict) -> dict:
             selected_indices = None
         if selected_indices and chapters:
             chapters = [ch for i, ch in enumerate(chapters) if i in selected_indices]
-            # Also filter text to only include selected chapter text
             text = "\n\n".join(ch.get("text", "") for ch in chapters)
             logger.info("Filtered to %d chapters (indices: %s)", len(chapters), selected_indices)
 
-    result = analyze_text(text, chapters if chapters else None)
+    segments = split_into_segments(text, chapters=chapters if chapters else None)
+    visual_scores = score_visual_concreteness(segments)
+    complexity = assess_complexity(text)
+    key_events = extract_key_events(segments, [], {})
+    result = {
+        "segments": segments,
+        "characters": [],
+        "sentiment": {"scores": [], "peaks": [], "valleys": [], "overall_arc": "flat"},
+        "visual_scores": visual_scores,
+        "complexity": complexity,
+        "key_events": key_events,
+        "character_profiles": [],
+    }
 
     # Save full analysis to state store
     save(book_id, "analysis", result)
