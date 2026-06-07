@@ -19,6 +19,7 @@ import {
   checkSegmentQuality,
   chatWithAI,
   getRegenStatus,
+  getLocations,
 } from "@/lib/api";
 import type { Segment, ChapterInfo, CharacterInfo } from "@/types";
 
@@ -57,6 +58,8 @@ export default function EditorPage() {
   const [sheets, setSheets] = useState<Record<string, string>>({});
   const [portraits, setPortraits] = useState<Record<string, string>>({});
   const [aliasMap, setAliasMap] = useState<Record<string, string>>({});
+  const [locations, setLocations] = useState<any[]>([]);
+  const [sceneSheets, setSceneSheets] = useState<Record<string, string>>({});
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
@@ -141,6 +144,11 @@ export default function EditorPage() {
           setCharacters(charData.characters || []);
           setSheets(charData.sheets || {});
           setPortraits(charData.portraits || {});
+          // Load locations (best-effort)
+          getLocations(bookId).then(d => {
+            setLocations(d.locations || []);
+            setSceneSheets(d.scene_sheets || {});
+          }).catch(() => {});
           setAliasMap(charData.alias_map || {});
 
           const sortedKeys = chapKeys.sort((a, b) => +a - +b);
@@ -873,11 +881,16 @@ export default function EditorPage() {
                   characters={characters}
                   sheets={sheets}
                   portraits={portraits}
+                  locations={locations}
+                  sceneSheets={sceneSheets}
                   bookId={bookId}
                   onRegenerateSheet={handleRegenerateSheet}
                   onNavigateToCharacter={(charName) => {
                     setNavigateToChar(charName);
                     setActiveTab("characters");
+                  }}
+                  onNavigateToScene={() => {
+                    setActiveTab("scenes");
                   }}
                 />
               </div>
