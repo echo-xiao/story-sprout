@@ -5,7 +5,6 @@ Core modules used by the pipeline:
 - visual_score: Visual concreteness scoring
 - complexity: Reading level assessment
 - key_events: Key event extraction
-- coreference: Coreference utilities
 """
 
 from src.analysis.chapter_split import split_into_segments
