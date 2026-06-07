@@ -183,16 +183,14 @@ export default function CharacterManagement({
 
           {/* Right: Portrait + Edit Fields */}
           <div className="w-[320px] shrink-0 overflow-y-auto p-5 space-y-3">
-            {/* Portrait (cropped from sheet - top-left FRONT view) */}
+            {/* Portrait (cropped from sheet - FRONT view, square, full width) */}
             {sheets[selected.canonical_name] && (
-              <div className="flex justify-center mb-2">
-                <div className="w-24 h-24 rounded-full overflow-hidden border-3 border-peach/50 shadow-md">
-                  <img
-                    src={`${API_BASE}${sheets[selected.canonical_name]}?t=${Date.now()}`}
-                    alt={`${selected.canonical_name} portrait`}
-                    className="w-[300%] h-[300%] object-cover object-[15%_8%]"
-                  />
-                </div>
+              <div className="w-full aspect-square rounded-xl overflow-hidden shadow-md mb-1">
+                <img
+                  src={`${API_BASE}${sheets[selected.canonical_name]}?t=${Date.now()}`}
+                  alt={`${selected.canonical_name} portrait`}
+                  className="w-[300%] h-[300%] object-cover object-[15%_5%]"
+                />
               </div>
             )}
 
