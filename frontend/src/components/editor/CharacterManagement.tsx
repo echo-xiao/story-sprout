@@ -13,6 +13,7 @@ interface CharacterManagementProps {
   sheets: Record<string, string>;
   aliasMap: Record<string, string>;
   onCharactersUpdate: (characters: CharacterInfo[], sheets: Record<string, string>) => void;
+  navigateToChar?: string | null;
 }
 
 export default function CharacterManagement({
@@ -21,6 +22,7 @@ export default function CharacterManagement({
   sheets,
   aliasMap,
   onCharactersUpdate,
+  navigateToChar,
 }: CharacterManagementProps) {
   const [selectedChar, setSelectedChar] = useState<string | null>(characters[0]?.canonical_name || null);
   const [editing, setEditing] = useState<Record<string, any>>({});
@@ -28,6 +30,14 @@ export default function CharacterManagement({
   const [regenning, setRegenning] = useState(false);
   const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
+
+  // Navigate to specific character when triggered from editor
+  useEffect(() => {
+    if (navigateToChar) {
+      const char = characters.find(c => c.canonical_name === navigateToChar);
+      if (char) selectChar(char);
+    }
+  }, [navigateToChar]);
 
   const selected = characters.find(c => c.canonical_name === selectedChar);
 
@@ -158,22 +168,22 @@ export default function CharacterManagement({
 
             {/* History thumbnails (vertical, right side of sheet) */}
             {sheetHistory.length > 1 && (
-              <div className="w-20 shrink-0 overflow-y-auto p-2 space-y-2 border-l border-peach/10">
-                <p className="text-[9px] text-gray-400 font-semibold text-center">History</p>
+              <div className="w-[320px] shrink-0 overflow-y-auto p-4 space-y-3 border-l border-peach/20">
+                <p className="text-xs text-gray-500 font-semibold">Versions ({sheetHistory.length})</p>
                 {sheetHistory.map((img, idx) => (
                   <div key={idx}>
                     <img
                       src={`${API_BASE}${img.url}?t=${img.timestamp}`}
                       alt={img.version === "current" ? "Current" : `v${sheetHistory.length - idx}`}
                       onClick={() => setActiveSheetUrl(img.url)}
-                      className={`w-full aspect-square object-cover rounded-lg cursor-pointer border-2 transition-colors ${
+                      className={`w-full rounded-xl cursor-pointer border-2 transition-colors ${
                         (activeSheetUrl || sheets[selected.canonical_name]) === img.url
-                          ? "border-coral"
+                          ? "border-coral shadow-md"
                           : "border-transparent hover:border-coral/50"
                       }`}
                     />
-                    <p className="text-[8px] text-gray-400 text-center mt-0.5">
-                      {img.version === "current" ? "Now" : `v${sheetHistory.length - idx}`}
+                    <p className="text-[10px] text-gray-400 text-center mt-1">
+                      {img.version === "current" ? "Current" : `Version ${sheetHistory.length - idx}`}
                     </p>
                   </div>
                 ))}

@@ -49,6 +49,7 @@ export default function EditorPage() {
   });
 
   const [activeTab, setActiveTab] = useState<"editor" | "characters">("editor");
+  const [navigateToChar, setNavigateToChar] = useState<string | null>(null);
   const [chapters, setChapters] = useState<Record<string, ChapterInfo>>({});
   const [meta, setMeta] = useState<{ title?: string }>({});
   const [characters, setCharacters] = useState<CharacterInfo[]>([]);
@@ -557,9 +558,11 @@ export default function EditorPage() {
           characters={characters}
           sheets={sheets}
           aliasMap={aliasMap}
+          navigateToChar={navigateToChar}
           onCharactersUpdate={(chars, newSheets) => {
             setCharacters(chars);
             setSheets(newSheets);
+            setNavigateToChar(null);
           }}
         />
       )}
@@ -859,12 +862,8 @@ export default function EditorPage() {
                   bookId={bookId}
                   onRegenerateSheet={handleRegenerateSheet}
                   onNavigateToCharacter={(charName) => {
+                    setNavigateToChar(charName);
                     setActiveTab("characters");
-                    // CharacterManagement will auto-select via its own state
-                    setTimeout(() => {
-                      const el = document.querySelector(`[data-char="${charName}"]`);
-                      el?.scrollIntoView({ behavior: "smooth" });
-                    }, 100);
                   }}
                 />
               </div>
