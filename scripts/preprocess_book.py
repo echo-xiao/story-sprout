@@ -36,17 +36,26 @@ from src.config import GENERATED_DIR
 # ═══════════════════════════════════════════════════════════════
 
 def _llm_identify_characters(title: str, chapters: list[dict]) -> list[dict]:
-    """LLM reads full chapter text → character list with aliases, gender, role, appearance."""
+    """LLM reads chapters in batches of 5 → merge and deduplicate characters."""
     from src.llm_client import generate_json
 
-    chapter_text = "\n\n".join(
-        f"[{ch.get('title', f'Chapter {i+1}')}]\n{ch.get('text', '')}"
-        for i, ch in enumerate(chapters)
-    )
+    BATCH_SIZE = 5
+    all_raw_characters = []
 
-    result = generate_json(f"""Analyze the novel "{title}" and list ALL named characters.
+    for batch_start in range(0, len(chapters), BATCH_SIZE):
+        batch = chapters[batch_start:batch_start + BATCH_SIZE]
+        batch_end = min(batch_start + BATCH_SIZE, len(chapters))
+        print(f"    Batch {batch_start}-{batch_end - 1} / {len(chapters) - 1}...")
 
-Full text:
+        chapter_text = "\n\n".join(
+            f"[{ch.get('title', f'Chapter {batch_start + j + 1}')}]\n{ch.get('text', '')}"
+            for j, ch in enumerate(batch)
+        )
+
+        try:
+            result = generate_json(f"""Analyze these chapters from the novel "{title}" and list ALL named characters that APPEAR.
+
+Text:
 {chapter_text}
 
 For each character provide:
@@ -74,8 +83,107 @@ Rules:
 - For visual_details, extract ONLY what the text actually describes. Leave fields empty if not mentioned.
 
 Return JSON: {{"characters": [{{...}}]}}""")
+            all_raw_characters.extend(result.get("characters", []))
+        except Exception as e:
+            print(f"    WARNING: Batch {batch_start}-{batch_end - 1} failed: {e}")
 
-    return result.get("characters", [])
+    # Merge and deduplicate by canonical_name (case-insensitive)
+    merged: dict[str, dict] = {}
+    for c in all_raw_characters:
+        name = c.get("canonical_name", "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key not in merged:
+            merged[key] = c
+        else:
+            # Merge: keep the longer/richer version of each field
+            existing = merged[key]
+            for field in ("description", "appearance"):
+                if len(c.get(field) or "") > len(existing.get(field) or ""):
+                    existing[field] = c[field]
+            # Merge aliases
+            existing_aliases = set(a.lower() for a in existing.get("aliases", []))
+            for alias in c.get("aliases", []):
+                if alias.lower() not in existing_aliases:
+                    existing.setdefault("aliases", []).append(alias)
+            # Upgrade role: main > supporting > minor
+            role_priority = {"main": 3, "supporting": 2, "minor": 1}
+            if role_priority.get(c.get("role", ""), 0) > role_priority.get(existing.get("role", ""), 0):
+                existing["role"] = c["role"]
+            # Merge visual_details
+            if c.get("visual_details"):
+                existing.setdefault("visual_details", {})
+                for vk, vv in c["visual_details"].items():
+                    if vv and not existing["visual_details"].get(vk):
+                        existing["visual_details"][vk] = vv
+
+    characters = list(merged.values())
+    print(f"    Merged → {len(characters)} characters (pre-dedup)")
+
+    # Second pass: LLM deduplicates and unifies naming across batches
+    if len(characters) > 3:
+        char_summary = "\n".join(
+            f"- {c['canonical_name']} (aliases: {', '.join(c.get('aliases', [])[:5])}; role: {c.get('role','?')}; desc: {c.get('description','')[:80]})"
+            for c in characters
+        )
+        try:
+            dedup_result = generate_json(f"""You are given a list of characters extracted from the novel "{title}" in batches.
+Some characters may be duplicated under different names. Merge them.
+
+Characters found:
+{char_summary}
+
+Return a JSON object with:
+- "merge_map": a dict mapping each duplicate canonical_name to the CORRECT canonical_name it should merge into.
+  Only include entries that need merging. If "Sydney Carton" and "Carton" are the same person, return {{"Carton": "Sydney Carton"}}.
+  The target name should be the most complete/recognizable form.
+- "role_updates": a dict mapping canonical_name to corrected role ("main"/"supporting"/"minor") based on overall importance in the full novel, not just one chapter.
+
+Example: {{"merge_map": {{"Carton": "Sydney Carton"}}, "role_updates": {{"Sydney Carton": "main"}}}}
+
+Only merge characters that are truly the SAME PERSON. Do NOT merge different people (e.g. "Monsieur Defarge" and "Madame Defarge" are different).
+Return JSON: {{"merge_map": {{}}, "role_updates": {{}}}}""")
+
+            merge_map = dedup_result.get("merge_map", {})
+            role_updates = dedup_result.get("role_updates", {})
+
+            if merge_map:
+                print(f"    Dedup merges: {merge_map}")
+                # Apply merges
+                final = {}
+                for c in characters:
+                    name = c["canonical_name"]
+                    target = merge_map.get(name, name)
+                    if target not in final:
+                        final[target] = {**c, "canonical_name": target}
+                    else:
+                        # Merge fields into target
+                        existing = final[target]
+                        for field in ("description", "appearance"):
+                            if len(c.get(field) or "") > len(existing.get(field) or ""):
+                                existing[field] = c[field]
+                        existing_aliases = set(a.lower() for a in (existing.get("aliases") or []))
+                        for alias in c.get("aliases", []):
+                            if alias.lower() not in existing_aliases:
+                                existing.setdefault("aliases", []).append(alias)
+                        if c.get("visual_details"):
+                            existing.setdefault("visual_details", {})
+                            for vk, vv in c["visual_details"].items():
+                                if vv and not existing["visual_details"].get(vk):
+                                    existing["visual_details"][vk] = vv
+                characters = list(final.values())
+
+            # Apply role updates
+            for c in characters:
+                if c["canonical_name"] in role_updates:
+                    c["role"] = role_updates[c["canonical_name"]]
+
+            print(f"    After dedup → {len(characters)} unique characters")
+        except Exception as e:
+            print(f"    WARNING: Dedup pass failed (using raw merge): {e}")
+
+    return characters
 
 
 def _llm_identify_locations(title: str, chapters: list[dict]) -> list[dict]:
@@ -310,7 +418,7 @@ def _layer1_extract_text(input_path, book_id, preprocess_dir):
     title = result.get("title", input_path.stem)
 
     sanitized = re.sub(r'[^\w\s\u4e00-\u9fff-]', '', title)
-    book_id = re.sub(r'\s+', '_', sanitized.strip())[:60] or input_path.stem
+    book_id = re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or input_path.stem.lower()
 
     chapters = [ch for ch in chapters if len(ch.get("text", "")) > 200]
 

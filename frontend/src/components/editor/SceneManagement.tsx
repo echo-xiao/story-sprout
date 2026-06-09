@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { MapPin } from "lucide-react";
-import { getLocations } from "@/lib/api";
+import { MapPin, RefreshCw } from "lucide-react";
+import { getLocations, regenerateSceneSheet } from "@/lib/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -15,6 +15,7 @@ export default function SceneManagement({ bookId }: SceneManagementProps) {
   const [sceneSheets, setSceneSheets] = useState<Record<string, string>>({});
   const [selectedLoc, setSelectedLoc] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState<string | null>(null);
 
   useEffect(() => {
     getLocations(bookId)
@@ -51,12 +52,43 @@ export default function SceneManagement({ bookId }: SceneManagementProps) {
     );
   }
 
+  const handleGenerateAll = async () => {
+    for (const loc of locations) {
+      if (sceneSheets[loc.name]) continue;
+      setGenerating(loc.name);
+      setSelectedLoc(loc.name);
+      try {
+        await regenerateSceneSheet(bookId, loc.name);
+        // Wait for it to complete
+        await new Promise<void>((resolve) => {
+          const poll = setInterval(async () => {
+            const data = await getLocations(bookId);
+            if (data.scene_sheets?.[loc.name]) {
+              setSceneSheets(data.scene_sheets || {});
+              clearInterval(poll);
+              resolve();
+            }
+          }, 5000);
+          setTimeout(() => { clearInterval(poll); resolve(); }, 120000);
+        });
+      } catch {}
+    }
+    setGenerating(null);
+  };
+
   return (
     <div className="flex flex-1 overflow-hidden">
       {/* Left: Location List */}
       <div className="w-64 bg-white border-r border-peach/30 overflow-y-auto shrink-0">
-        <div className="px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-cream/50">
-          Major Locations ({majorLocs.length})
+        <div className="px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-cream/50 flex items-center justify-between">
+          <span>Major Locations ({majorLocs.length})</span>
+          <button
+            onClick={handleGenerateAll}
+            disabled={generating !== null}
+            className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
+          >
+            {generating ? "Generating..." : "Gen All"}
+          </button>
         </div>
         {majorLocs.map(loc => (
           <LocListItem
@@ -91,16 +123,63 @@ export default function SceneManagement({ bookId }: SceneManagementProps) {
           <h2 className="font-display text-lg font-bold text-gray-800 mb-3 shrink-0">{selected.name}</h2>
           <div className="flex-1 flex items-center justify-center min-h-0">
             {sceneSheets[selected.name] ? (
-              <img
-                src={`${API_BASE}${sceneSheets[selected.name]}`}
-                alt={selected.name}
-                className="max-h-[calc(100vh-180px)] max-w-full rounded-xl shadow-md object-contain"
-              />
+              <div className="flex flex-col items-center gap-3">
+                <img
+                  src={`${API_BASE}${sceneSheets[selected.name]}?t=${Date.now()}`}
+                  alt={selected.name}
+                  className="max-h-[calc(100vh-220px)] max-w-full rounded-xl shadow-md object-contain"
+                />
+                <button
+                  onClick={async () => {
+                    setGenerating(selected.name);
+                    try {
+                      await regenerateSceneSheet(bookId, selected.name);
+                      // Poll for completion
+                      const poll = setInterval(async () => {
+                        const data = await getLocations(bookId);
+                        if (data.scene_sheets?.[selected.name] !== sceneSheets[selected.name]) {
+                          setSceneSheets(data.scene_sheets || {});
+                          setGenerating(null);
+                          clearInterval(poll);
+                        }
+                      }, 5000);
+                      setTimeout(() => { clearInterval(poll); setGenerating(null); }, 120000);
+                    } catch { setGenerating(null); }
+                  }}
+                  disabled={generating !== null}
+                  className="btn-secondary text-xs !px-3 !py-1.5 flex items-center gap-1"
+                >
+                  <RefreshCw size={12} className={generating === selected.name ? "animate-spin" : ""} />
+                  {generating === selected.name ? "Regenerating..." : "Regenerate"}
+                </button>
+              </div>
             ) : (
-              <div className="w-full max-w-md aspect-video bg-peach/20 rounded-xl flex flex-col items-center justify-center text-gray-400 gap-2">
+              <div className="w-full max-w-md aspect-video bg-peach/20 rounded-xl flex flex-col items-center justify-center text-gray-400 gap-3">
                 <MapPin size={32} />
                 <p className="text-xs">No scene reference yet</p>
-                <p className="text-[10px]">Scene images will be generated in a future update</p>
+                <button
+                  onClick={async () => {
+                    setGenerating(selected.name);
+                    try {
+                      await regenerateSceneSheet(bookId, selected.name);
+                      // Poll for completion
+                      const poll = setInterval(async () => {
+                        const data = await getLocations(bookId);
+                        if (data.scene_sheets?.[selected.name]) {
+                          setSceneSheets(data.scene_sheets || {});
+                          setGenerating(null);
+                          clearInterval(poll);
+                        }
+                      }, 5000);
+                      setTimeout(() => { clearInterval(poll); setGenerating(null); }, 120000);
+                    } catch { setGenerating(null); }
+                  }}
+                  disabled={generating !== null}
+                  className="btn-primary text-xs !px-4 !py-2 flex items-center gap-1.5"
+                >
+                  <RefreshCw size={14} className={generating === selected.name ? "animate-spin" : ""} />
+                  {generating === selected.name ? "Generating..." : "Generate Scene"}
+                </button>
               </div>
             )}
           </div>

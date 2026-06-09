@@ -76,7 +76,7 @@ async def start_generation(
     # Quick book_id from first line (no heavy parsing)
     first_line = request.source_text.strip().split("\n")[0].strip()[:100]
     sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', first_line)
-    book_id = _re.sub(r'\s+', '_', sanitized.strip())[:60] or "untitled"
+    book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
 
     # Run preprocess as a separate process (non-blocking)
     import subprocess
@@ -105,7 +105,7 @@ async def start_generation_upload(
     import re as _re
     stem = Path(file.filename or "upload").stem
     sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', stem)
-    book_id = _re.sub(r'\s+', '_', sanitized.strip()).upper()[:60] or "UNTITLED"
+    book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
 
     # Run preprocess as a separate process (non-blocking)
     import subprocess

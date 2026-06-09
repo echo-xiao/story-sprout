@@ -463,6 +463,79 @@ async def check_chapter_consistency(book_id: str, ch_idx: int) -> dict[str, Any]
     return consistency_result
 
 
+@router.post("/api/book/{book_id}/scenes/{scene_name}/regenerate")
+async def regenerate_scene_sheet(
+    book_id: str, scene_name: str, background_tasks: BackgroundTasks
+) -> dict[str, Any]:
+    """Generate/regenerate a scene reference image for a location."""
+    import re as _re
+    import time as _time
+
+    scenes_dir = GENERATED_DIR / book_id / "scenes"
+    scenes_dir.mkdir(parents=True, exist_ok=True)
+
+    # Safe filename
+    safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', scene_name)
+    safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
+
+    # Move existing to history
+    history_dir = scenes_dir / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    ts = int(_time.time())
+    for ext in (".png", ".jpg"):
+        old = scenes_dir / f"{safe}_scene{ext}"
+        if old.exists():
+            old.rename(history_dir / f"{safe}_scene_{ts}{ext}")
+
+    async def _gen():
+        from google import genai
+        from src.config import GEMINI_API_KEY, GEMINI_IMAGE_MODEL, DEFAULT_STYLE, NEGATIVE_PROMPT
+
+        # Load location details
+        llm_locs = _load_json(book_id, "llm_locations.json") or {}
+        locations = llm_locs.get("locations", [])
+        loc = next((l for l in locations if l.get("name") == scene_name), None)
+        if not loc:
+            logger.error("Location %s not found", scene_name)
+            return
+
+        vd = loc.get("visual_details", {})
+        details = ", ".join(f"{k}: {v}" for k, v in vd.items() if v) if vd else ""
+
+        prompt = (
+            f"A background scene for a children's picture book: {scene_name}. "
+            f"{loc.get('description', '')}. "
+            f"Visual details: {details}. "
+            f"This is a BACKGROUND ONLY — NO people, NO characters, NO figures, NO animals. "
+            f"Just the empty environment, architecture, landscape, and objects. "
+            f"Single clean illustration, not a grid or collage. "
+            f"Style: {DEFAULT_STYLE}. "
+            f"NOT: {NEGATIVE_PROMPT}, people, characters, figures, silhouettes"
+        )
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_IMAGE_MODEL,
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"],
+                ),
+            )
+            for part in response.candidates[0].content.parts:
+                if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                    ext = ".png" if "png" in part.inline_data.mime_type else ".jpg"
+                    out_path = scenes_dir / f"{safe}_scene{ext}"
+                    out_path.write_bytes(part.inline_data.data)
+                    logger.info("Scene sheet saved: %s", out_path)
+                    break
+        except Exception as e:
+            logger.error("Scene generation failed for %s: %s", scene_name, e)
+
+    background_tasks.add_task(_gen)
+    return {"status": "generating", "scene": scene_name}
+
+
 @router.post("/api/book/{book_id}/characters/{char_name}/regenerate")
 async def regenerate_character_sheet(
     book_id: str, char_name: str, background_tasks: BackgroundTasks

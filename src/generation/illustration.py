@@ -29,6 +29,7 @@ def _build_reference_content(
     character_sheets: list[dict],
     style_ref_path: str | None = None,
     in_scene_names: list[str] | None = None,
+    scene_sheet_path: str | None = None,
 ) -> list[dict]:
     """Build multi-part content: reference images FIRST, then prompt.
 
@@ -96,6 +97,13 @@ def _build_reference_content(
                 parts.append({"text": f"[STYLE REFERENCE from {char_name}] — Match this art style, colors, and line quality."})
                 parts.append(img_part)
                 sheet_images_added += 1
+
+    # Scene background reference (if available)
+    if scene_sheet_path:
+        img_part = _load_image_part(scene_sheet_path)
+        if img_part:
+            parts.append({"text": "[SCENE BACKGROUND REFERENCE — Use this image as the background/setting for this scene. Match the architecture, lighting, colors, and atmosphere EXACTLY.]"})
+            parts.append(img_part)
 
     # Prompt text last
     parts.append({"text": prompt_text})
@@ -192,11 +200,12 @@ def _generate_single_page(
     valid_sheets: list[dict],
     save_path: Path,
     style_ref_path: str | None = None,
+    scene_sheet_path: str | None = None,
 ) -> tuple[bool, str, str]:
     """Generate a single page illustration. Returns (success, image_path, prompt_used)."""
     prompt_text, in_scene_names = _build_page_prompt(page, valid_sheets)
 
-    contents = _build_reference_content(prompt_text, valid_sheets, style_ref_path, in_scene_names)
+    contents = _build_reference_content(prompt_text, valid_sheets, style_ref_path, in_scene_names, scene_sheet_path)
 
     try:
         response = client.models.generate_content(
@@ -223,6 +232,46 @@ def _generate_single_page(
             time.sleep(3 + random.uniform(0, 2))
         logger.warning("Generation failed for %s: %s", save_path.name, e)
         return False, "", prompt_text
+
+
+def _find_scene_sheet(book_id: str, scene_background: str) -> str | None:
+    """Find the best matching scene sheet for a given scene_background description."""
+    import json
+    import re
+
+    scenes_dir = GENERATED_DIR / book_id / "scenes"
+    if not scenes_dir.exists():
+        return None
+
+    # Load locations
+    locs_path = GENERATED_DIR / book_id / "preprocess" / "llm_locations.json"
+    if not locs_path.exists():
+        return None
+
+    try:
+        locations = json.loads(locs_path.read_text(encoding="utf-8")).get("locations", [])
+    except Exception:
+        return None
+
+    bg_lower = scene_background.lower()
+
+    # Match location by name or aliases appearing in the scene_background
+    for loc in locations:
+        name = loc.get("name", "")
+        aliases = loc.get("aliases", [])
+        all_names = [name] + aliases
+
+        for n in all_names:
+            if n.lower() in bg_lower:
+                safe = re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
+                safe = re.sub(r'\s+', '_', safe.strip()).lower()[:50]
+                for ext in (".png", ".jpg"):
+                    path = scenes_dir / f"{safe}_scene{ext}"
+                    if path.exists():
+                        return str(path)
+                break
+
+    return None
 
 
 def generate_illustrations(
@@ -271,8 +320,14 @@ def generate_illustrations(
             })
             continue
 
+        # Find matching scene background sheet
+        scene_bg = page.get("scene_background", "")
+        scene_sheet = _find_scene_sheet(book_id, scene_bg) if scene_bg else None
+        if scene_sheet:
+            logger.info("Page %d: using scene sheet %s", page_num, Path(scene_sheet).name)
+
         success, image_path, prompt = _generate_single_page(
-            client, page, valid_sheets, save_path, style_ref_path
+            client, page, valid_sheets, save_path, style_ref_path, scene_sheet
         )
 
         results.append({

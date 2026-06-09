@@ -61,7 +61,7 @@ export default function Home() {
               Create
             </button>
             <a
-              href="/editor/A_TALE_OF_TWO_CITIES"
+              href="/editor/a_tale_of_two_cities"
               className="px-4 py-2 rounded-xl text-sm font-semibold text-gray-600 hover:bg-peach/50 transition-all"
             >
               Editor

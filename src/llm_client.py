@@ -23,7 +23,7 @@ from src.config import (
 logger = logging.getLogger(__name__)
 
 
-def _call_deepseek(prompt: str, system: str = "", max_retries: int = 3) -> str:
+def _call_deepseek(prompt: str, system: str = "", max_retries: int = 3, max_tokens: int = 8192) -> str:
     """Call DeepSeek API (OpenAI-compatible)."""
     from openai import OpenAI
 
@@ -40,6 +40,7 @@ def _call_deepseek(prompt: str, system: str = "", max_retries: int = 3) -> str:
                 model=DEEPSEEK_MODEL,
                 messages=messages,
                 response_format={"type": "json_object"},
+                max_tokens=max_tokens,
             )
             return response.choices[0].message.content
         except Exception as e:
