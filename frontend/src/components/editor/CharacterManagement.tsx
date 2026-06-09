@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Users, RefreshCw, Save } from "lucide-react";
-import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory } from "@/lib/api";
+import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails } from "@/lib/api";
 import type { CharacterInfo } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -35,16 +35,21 @@ export default function CharacterManagement({
 
   const selected = characters.find(c => c.canonical_name === selectedChar);
 
+  // Report selected char to parent via effect (avoids setState-during-render)
+  useEffect(() => {
+    if (selectedChar) onSelectChar?.(selectedChar);
+  }, [selectedChar]);
+
   const selectChar = (char: CharacterInfo) => {
     setSelectedChar(char.canonical_name);
-    onSelectChar?.(char.canonical_name);
     setActiveSheetUrl(null);
     setEditing({
+      canonical_name: char.canonical_name,
       gender: char.gender || "unknown",
       role: char.role || "supporting",
       appearance: char.appearance || "",
       description: char.description || "",
-      visual_details: (char as any).visual_details || {},
+      visual_details: char.visual_details || {},
     });
   };
 
@@ -63,10 +68,9 @@ export default function CharacterManagement({
     getCharacterSheetHistory(bookId, selectedChar)
       .then(data => {
         setSheetHistory(data.images || []);
-        const current = data.images?.find(i => i.version === "current");
-        setActiveSheetUrl(current?.url || null);
+        // Don't override activeSheetUrl — let sheets[name] be the default
       })
-      .catch(() => { setSheetHistory([]); setActiveSheetUrl(null); });
+      .catch(() => { setSheetHistory([]); });
   }, [bookId, selectedChar, regenning]);
 
   // Auto-select first character on mount
@@ -106,14 +110,81 @@ export default function CharacterManagement({
 
   const mainChars = characters.filter(c => c.role === "main");
   const otherChars = characters.filter(c => c.role !== "main");
+  const [genAllRunning, setGenAllRunning] = useState(false);
+  const [genAllProgress, setGenAllProgress] = useState("");
+  const [genAllCurrentChar, setGenAllCurrentChar] = useState<string | null>(null);
+  const [autoFilling, setAutoFilling] = useState(false);
+
+  const handleGenerateAll = async () => {
+    const toGenerate = characters.filter(c => !sheets[c.canonical_name]);
+    if (toGenerate.length === 0) {
+      alert("All characters already have sheets!");
+      return;
+    }
+    setGenAllRunning(true);
+    for (let i = 0; i < toGenerate.length; i++) {
+      const char = toGenerate[i];
+      setGenAllProgress(`${i + 1}/${toGenerate.length}: ${char.canonical_name}`);
+      setGenAllCurrentChar(char.canonical_name);
+      try {
+        await regenerateCharacterSheet(bookId, char.canonical_name);
+        // Wait for sheet to appear by checking history (lightweight)
+        await new Promise<void>((resolve) => {
+          const poll = setInterval(async () => {
+            try {
+              const hist = await getCharacterSheetHistory(bookId, char.canonical_name);
+              if (hist.images?.some(img => img.version === "current")) {
+                clearInterval(poll);
+                resolve();
+              }
+            } catch {}
+          }, 8000);
+          setTimeout(() => { clearInterval(poll); resolve(); }, 120000);
+        });
+      } catch {}
+    }
+    // Final refresh to make sure all sheets are loaded
+    const finalData = await getCharacters(bookId);
+    onCharactersUpdate(finalData.characters || [], finalData.sheets || {});
+    setGenAllRunning(false);
+    setGenAllProgress("");
+    setGenAllCurrentChar(null);
+  };
+
+  const handleAutoFill = async () => {
+    if (!selectedChar) return;
+    setAutoFilling(true);
+    try {
+      const result = await autofillCharacterDetails(bookId, selectedChar);
+      setEditing(prev => ({
+        ...prev,
+        appearance: result.appearance || prev.appearance,
+        visual_details: result.visual_details || prev.visual_details,
+      }));
+      // Refresh character data
+      const data = await getCharacters(bookId);
+      onCharactersUpdate(data.characters || [], data.sheets || {});
+    } catch (e) {
+      console.error("Auto fill failed:", e);
+    } finally {
+      setAutoFilling(false);
+    }
+  };
 
   return (
     <div className="flex flex-1 overflow-hidden">
       {/* Left: Character List */}
       <div className="w-64 bg-white border-r border-peach/30 overflow-y-auto shrink-0">
         {/* Main Characters */}
-        <div className="px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-cream/50">
-          Main ({mainChars.length})
+        <div className="px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-cream/50 flex items-center justify-between">
+          <span>Main ({mainChars.length})</span>
+          <button
+            onClick={handleGenerateAll}
+            disabled={genAllRunning || regenning}
+            className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
+          >
+            {genAllRunning ? genAllProgress || "Generating..." : "Gen All"}
+          </button>
         </div>
         {mainChars.map(char => (
           <CharListItem
@@ -121,6 +192,7 @@ export default function CharacterManagement({
             char={char}
             selected={selectedChar === char.canonical_name}
             hasSheet={!!sheets[char.canonical_name]}
+            generating={genAllCurrentChar === char.canonical_name}
             onClick={() => selectChar(char)}
           />
         ))}
@@ -135,6 +207,7 @@ export default function CharacterManagement({
             char={char}
             selected={selectedChar === char.canonical_name}
             hasSheet={!!sheets[char.canonical_name]}
+            generating={genAllCurrentChar === char.canonical_name}
             onClick={() => selectChar(char)}
           />
         ))}
@@ -149,9 +222,9 @@ export default function CharacterManagement({
             <div className="flex-1 overflow-y-auto p-6 flex flex-col">
               <h2 className="font-display text-lg font-bold text-gray-800 mb-3 shrink-0">{selected.canonical_name}</h2>
               <div className="flex-1 flex items-center justify-center min-h-0">
-                {(activeSheetUrl || sheets[selected.canonical_name]) ? (
+                {(sheets[selected.canonical_name] || activeSheetUrl) ? (
                   <img
-                    src={`${API_BASE}${activeSheetUrl || sheets[selected.canonical_name]}?t=${Date.now()}`}
+                    src={`${API_BASE}${activeSheetUrl || sheets[selected.canonical_name]}`}
                     alt={selected.canonical_name}
                     className="max-h-[calc(100vh-180px)] max-w-full rounded-xl shadow-md object-contain"
                   />
@@ -172,7 +245,7 @@ export default function CharacterManagement({
             </div>
 
             {/* History thumbnails (vertical, right side of sheet) */}
-            {sheetHistory.length > 1 && (
+            {sheetHistory.length > 0 && (
               <div className="w-[320px] shrink-0 overflow-y-auto p-4 space-y-3 border-l border-peach/20">
                 <p className="text-xs text-gray-500 font-semibold">Versions ({sheetHistory.length})</p>
                 {sheetHistory.map((img, idx) => (
@@ -198,6 +271,15 @@ export default function CharacterManagement({
 
           {/* Right: Portrait + Edit Fields */}
           <div className="w-[320px] shrink-0 overflow-y-auto p-5 space-y-3">
+            {/* Editable Name */}
+            <div>
+              <label className="text-xs text-gray-500 font-semibold mb-1 block">Name</label>
+              <input
+                value={editing.canonical_name ?? selected.canonical_name}
+                onChange={e => setEditing(prev => ({ ...prev, canonical_name: e.target.value }))}
+                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm font-bold"
+              />
+            </div>
             <div className="flex gap-4">
               <div className="flex-1">
                 <label className="text-xs text-gray-500 font-semibold mb-1 block">Gender</label>
@@ -226,7 +308,16 @@ export default function CharacterManagement({
             </div>
 
             <div>
-              <label className="text-xs text-gray-500 font-semibold mb-1 block">Appearance (from book)</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs text-gray-500 font-semibold">Appearance (from book)</label>
+                <button
+                  onClick={handleAutoFill}
+                  disabled={autoFilling}
+                  className="text-[10px] bg-sky/50 hover:bg-sky text-gray-700 px-2 py-0.5 rounded font-semibold disabled:opacity-50"
+                >
+                  {autoFilling ? "Filling..." : "Auto Fill"}
+                </button>
+              </div>
               <textarea
                 value={editing.appearance || ""}
                 onChange={e => setEditing(prev => ({ ...prev, appearance: e.target.value }))}
@@ -331,11 +422,13 @@ function CharListItem({
   char,
   selected,
   hasSheet,
+  generating,
   onClick,
 }: {
   char: CharacterInfo;
   selected: boolean;
   hasSheet: boolean;
+  generating?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -343,14 +436,16 @@ function CharListItem({
       data-char={char.canonical_name}
       onClick={onClick}
       className={`w-full text-left px-3 py-2.5 border-b border-gray-50 transition-colors ${
+        generating ? "bg-amber-50 border-l-2 border-l-amber-400" :
         selected ? "bg-coral/10 border-l-2 border-l-coral" : "hover:bg-peach/20"
       }`}
     >
       <div className="flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${hasSheet ? "bg-green-400" : "bg-gray-300"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${generating ? "bg-amber-400 animate-pulse" : hasSheet ? "bg-green-400" : "bg-gray-300"}`} />
         <span className={`text-sm truncate ${selected ? "font-bold text-gray-800" : "text-gray-700"}`}>
           {char.canonical_name}
         </span>
+        {generating && <span className="text-[9px] text-amber-600 animate-pulse ml-auto shrink-0">generating...</span>}
       </div>
       <p className="text-[10px] text-gray-400 ml-4 truncate">
         {char.gender || "?"} / {char.role || "?"}{char.description ? ` — ${char.description.slice(0, 40)}...` : ""}

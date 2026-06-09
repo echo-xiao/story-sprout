@@ -41,76 +41,71 @@ def _get_client() -> genai.Client:
 
 
 def _build_sheet_prompt(profile: dict, style: str, all_profiles: list[dict] | None = None) -> str:
-    """Build a detailed character sheet prompt with strong visual identity."""
+    """Build a character sheet prompt that prioritizes concrete physical details."""
     name = profile.get("name", "Character")
-    appearance_desc_sentences = profile.get("appearance_description", [])
-    traits = profile.get("personality_traits", [])
-    role = profile.get("role", "")
-    visual_identity = profile.get("visual_identity", "")
-
-    # Book descriptions
-    if appearance_desc_sentences:
-        book_desc = "\n".join(f"  - {s}" for s in appearance_desc_sentences[:3])
-    else:
-        book_desc = "  - Design a friendly, memorable HUMAN character."
-
-    # List other characters so this one looks DIFFERENT
-    other_chars = ""
-    if all_profiles:
-        others = [p for p in all_profiles if p.get("name") != name]
-        if others:
-            other_desc = ", ".join(
-                f"{p.get('name')} ({p.get('visual_identity', 'unknown look')})"
-                for p in others[:4]
-            )
-            other_chars = f"\nOTHER CHARACTERS (this character must look DIFFERENT from them): {other_desc}"
-
     gender = profile.get("gender", "unknown")
+    role = profile.get("role", "")
 
-    prompt = f"""Detailed Character Reference Sheet for children's picture book.
+    # Extract concrete visual details (highest priority)
+    vd = profile.get("visual_details", {})
+    if not vd and hasattr(profile, 'get'):
+        # Try from appearance_description
+        pass
 
-CHARACTER NAME: {name}
-GENDER: {gender} — this character MUST look {gender}. {'Draw as a MAN/BOY.' if gender == 'male' else 'Draw as a WOMAN/GIRL.' if gender == 'female' else ''}
-ROLE: {role}
+    # Build the MUST-HAVE physical spec from visual_details
+    physical_specs = []
+    for key, label in [("hair", "HAIR"), ("eyes", "EYES"), ("skin_tone", "SKIN"),
+                       ("age", "AGE"), ("build", "BUILD"), ("clothing", "CLOTHING"),
+                       ("accessories", "ACCESSORIES"), ("distinctive", "DISTINCTIVE FEATURE")]:
+        val = vd.get(key, "")
+        if val and val.lower() not in ("not described", "unknown", ""):
+            physical_specs.append(f"  {label}: {val}")
 
-BOOK DESCRIPTION:
-{book_desc}
+    # Fallback to appearance text
+    appearance = profile.get("appearance_description", [])
+    if isinstance(appearance, str):
+        appearance = [appearance] if appearance else []
+    appearance_text = "\n".join(f"  - {s}" for s in appearance[:2]) if appearance else ""
 
-ASSIGNED VISUAL IDENTITY: {visual_identity}
-{other_chars}
+    physical_block = "\n".join(physical_specs) if physical_specs else appearance_text or "  Design a friendly, memorable character."
 
-CRITICAL RULES:
-- This character MUST be a HUMAN child or adult. NOT an animal, NOT a creature.
-- The visual identity above is MANDATORY — use exactly those colors and features.
-- The character must be INSTANTLY recognizable and DIFFERENT from other characters.
-- Draw in children's picture book style: cute, big eyes, expressive face.
-- CLOTHING MUST match the historical period of the story (e.g., 1780s France = frock coats, bonnets, cravats; NOT modern clothes like hoodies or jeans)
-- If book descriptions mention specific clothing or appearance, follow them exactly.
+    # Key features to repeat for emphasis
+    hair_desc = vd.get("hair", "")
+    eyes_desc = vd.get("eyes", "")
+    emphasis = ""
+    if hair_desc or eyes_desc:
+        parts = []
+        if hair_desc:
+            parts.append(f"{hair_desc}")
+        if eyes_desc:
+            parts.append(f"{eyes_desc}")
+        emphasis = f"\n\nREPEAT — THE MOST IMPORTANT FEATURES TO GET RIGHT:\n  " + ", ".join(parts)
 
-Draw on a clean WHITE background, organized in a clear grid layout:
+    gender_note = "Draw as a MAN/BOY." if gender == "male" else "Draw as a WOMAN/GIRL." if gender == "female" else ""
 
-ROW 1 — FULL BODY VIEWS:
-1. FRONT VIEW — full body, arms slightly out, showing complete outfit
-2. THREE-QUARTER VIEW — full body, turned right
-3. SIDE VIEW — profile facing right
+    prompt = f"""Character Reference Sheet — children's picture book.
 
-ROW 2 — CLOSE-UP DETAILS:
-4. FACE CLOSE-UP — showing hair style, eye color, facial features clearly
-5. OUTFIT CLOSE-UP — chest/torso area showing clothing details: buttons, collar, fabric pattern, scarf, tie, brooch, etc.
-6. ACCESSORIES CLOSE-UP — hat, glasses, gloves, bag, shoes, or other distinctive items (draw only items this character has)
+CHARACTER: {name} ({gender}). {gender_note}
 
-ROW 3 — EXPRESSIONS:
-7. Happy expression (head only)
-8. Sad expression (head only)
-9. Surprised expression (head only)
-10. Angry expression (head only)
+MANDATORY PHYSICAL APPEARANCE — follow EXACTLY:
+{physical_block}
+{emphasis}
 
-BOTTOM — COLOR PALETTE:
-Draw 4-5 colored circles showing this character's exact colors (hair, skin, outfit main color, outfit accent color, accessory color)
+LAYOUT (clean WHITE background, NO text labels, NO words anywhere):
+
+Row 1: FRONT view (full body) | THREE-QUARTER view | SIDE profile
+Row 2: FACE close-up | OUTFIT close-up | ACCESSORIES close-up
+Row 3: Happy expression | Sad | Surprised | Angry (head only each)
+Bottom: 4-5 color swatches (circles showing exact hair, skin, outfit colors)
+
+RULES:
+- HUMAN character only. NOT an animal.
+- DO NOT add ANY text, labels, or words to the image. No "FRONT", no names, nothing.
+- Historical period clothing (NOT modern).
+- Cute children's book style, big expressive eyes.
 
 Style: {style}
-Do NOT include: {NEGATIVE_PROMPT}
-Label each section with small text (e.g., "FRONT", "SIDE", "OUTFIT", "Happy")."""
+Do NOT include: {NEGATIVE_PROMPT}"""
 
     return prompt
 
@@ -182,13 +177,15 @@ def _assign_visual_identities(profiles: list[dict]) -> list[dict]:
 
 
 def _add_labels_to_sheet(image_path: str, name: str, profile: dict) -> str:
-    """Add clear labels to a character sheet image using Pillow."""
+    """Add clear labels to a character sheet image using Pillow.
+
+    Adds a bottom banner with character name and key physical details.
+    """
     from PIL import Image, ImageDraw, ImageFont
 
     try:
         img = Image.open(image_path)
         w, h = img.size
-        draw = ImageDraw.Draw(img)
 
         # Find a font
         font_paths = [
@@ -203,7 +200,7 @@ def _add_labels_to_sheet(image_path: str, name: str, profile: dict) -> str:
             if Path(fp).exists():
                 try:
                     title_font = ImageFont.truetype(fp, 28)
-                    detail_font = ImageFont.truetype(fp, 16)
+                    detail_font = ImageFont.truetype(fp, 14)
                     break
                 except Exception:
                     continue
@@ -211,36 +208,37 @@ def _add_labels_to_sheet(image_path: str, name: str, profile: dict) -> str:
             title_font = ImageFont.load_default()
             detail_font = ImageFont.load_default()
 
-        # Add a banner at the bottom with name + visual identity
-        banner_h = 80
-        # Semi-transparent white banner
+        # Build detail text from visual_details
+        vd = profile.get("visual_details", {})
+        detail_parts = []
+        for key in ("hair", "eyes", "clothing", "distinctive"):
+            val = vd.get(key, "")
+            if val and val.lower() not in ("not described", "unknown"):
+                detail_parts.append(val)
+        detail = " | ".join(detail_parts)[:120] if detail_parts else ""
+
+        banner_h = 70 if detail else 50
         banner = Image.new("RGBA", (w, banner_h), (255, 255, 255, 220))
         if img.mode != "RGBA":
             img = img.convert("RGBA")
         img.paste(banner, (0, h - banner_h), banner)
-
         draw = ImageDraw.Draw(img)
 
-        # Character name (bold, centered)
-        vi = profile.get("visual_identity", "")
-        traits = profile.get("personality_traits", [])
-        trait_text = ", ".join(traits[:4]) if traits else ""
-
-        # Title line
+        # Character name
         try:
             tw = draw.textlength(name, font=title_font)
         except Exception:
             tw = len(name) * 16
-        draw.text(((w - tw) // 2, h - banner_h + 8), name, fill=(40, 40, 40), font=title_font)
+        draw.text(((w - tw) // 2, h - banner_h + 6), name, fill=(40, 40, 40), font=title_font)
 
-        # Detail line (visual identity summary)
-        detail = vi[:80] if vi else trait_text[:80]
+        # Key physical details
         if detail:
             try:
                 dw = draw.textlength(detail, font=detail_font)
             except Exception:
-                dw = len(detail) * 9
-            draw.text(((w - dw) // 2, h - banner_h + 42), detail, fill=(100, 90, 80), font=detail_font)
+                dw = len(detail) * 8
+            x = max(10, (w - dw) // 2)
+            draw.text((x, h - banner_h + 40), detail, fill=(100, 90, 80), font=detail_font)
 
         img = img.convert("RGB")
         img.save(image_path, quality=95)
@@ -348,6 +346,13 @@ RULES:
 Style: {style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
+    from src.config import IMAGE_LLM
+
+    if IMAGE_LLM == "alicloud":
+        from src.generation.alicloud_image import generate_image_alicloud
+        result = generate_image_alicloud(prompt, portrait_path)
+        return result
+
     for attempt in range(2):
         try:
             response = client.models.generate_content(
@@ -432,45 +437,53 @@ def generate_character_sheets(
 
         if not sheet_path:
             prompt = _build_sheet_prompt(profile, active_style, all_profiles=main_chars)
+            from src.config import IMAGE_LLM
 
-            # Build content with portrait as reference
-            import base64
-            contents: list = []
-            if portrait_path:
-                try:
-                    img_data = Path(portrait_path).read_bytes()
-                    mime = "image/png" if portrait_path.endswith(".png") else "image/jpeg"
-                    contents.append({"text": f"[REFERENCE PORTRAIT of {name}] — Match this character's face, hair, outfit EXACTLY in all views below."})
-                    contents.append({"inline_data": {"mime_type": mime, "data": base64.b64encode(img_data).decode()}})
-                except Exception:
-                    pass
-            contents.append({"text": prompt})
+            if IMAGE_LLM == "alicloud":
+                from src.generation.alicloud_image import generate_image_alicloud
+                ref_images = [portrait_path] if portrait_path else []
+                result = generate_image_alicloud(prompt, save_path, reference_images=ref_images)
+                if result:
+                    sheet_path = result
+            else:
+                # Gemini
+                import base64
+                contents: list = []
+                if portrait_path:
+                    try:
+                        img_data = Path(portrait_path).read_bytes()
+                        mime = "image/png" if portrait_path.endswith(".png") else "image/jpeg"
+                        contents.append({"text": f"[REFERENCE PORTRAIT of {name}] — Match this character's face, hair, outfit EXACTLY in all views below."})
+                        contents.append({"inline_data": {"mime_type": mime, "data": base64.b64encode(img_data).decode()}})
+                    except Exception:
+                        pass
+                contents.append({"text": prompt})
 
-            for attempt in range(2):
-                try:
-                    response = client.models.generate_content(
-                        model=GEMINI_IMAGE_MODEL,
-                        contents=contents,
-                        config=genai.types.GenerateContentConfig(
-                            response_modalities=["TEXT", "IMAGE"],
-                            image_config=genai.types.ImageConfig(aspect_ratio="1:1"),
-                        ),
-                    )
-                    if response.candidates:
-                        for part in response.candidates[0].content.parts:
-                            if hasattr(part, "inline_data") and part.inline_data is not None:
-                                mime = part.inline_data.mime_type or "image/png"
-                                ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
-                                final = save_path.with_suffix(ext)
-                                final.write_bytes(part.inline_data.data)
-                                sheet_path = str(final)
-                                break
-                    if sheet_path:
-                        break
-                except Exception as e:
-                    logger.warning("Sheet attempt %d for '%s' failed: %s", attempt + 1, name, e)
-                    if attempt == 0:
-                        time.sleep(2)
+                for attempt in range(2):
+                    try:
+                        response = client.models.generate_content(
+                            model=GEMINI_IMAGE_MODEL,
+                            contents=contents,
+                            config=genai.types.GenerateContentConfig(
+                                response_modalities=["TEXT", "IMAGE"],
+                                image_config=genai.types.ImageConfig(aspect_ratio="1:1"),
+                            ),
+                        )
+                        if response.candidates:
+                            for part in response.candidates[0].content.parts:
+                                if hasattr(part, "inline_data") and part.inline_data is not None:
+                                    mime = part.inline_data.mime_type or "image/png"
+                                    ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
+                                    final = save_path.with_suffix(ext)
+                                    final.write_bytes(part.inline_data.data)
+                                    sheet_path = str(final)
+                                    break
+                        if sheet_path:
+                            break
+                    except Exception as e:
+                        logger.warning("Sheet attempt %d for '%s' failed: %s", attempt + 1, name, e)
+                        if attempt == 0:
+                            time.sleep(2)
 
         role = profile.get("role", "unknown")
         results.append({

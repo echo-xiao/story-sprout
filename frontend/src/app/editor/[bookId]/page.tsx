@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type TextareaHTMLAttributes } from "react";
 import { useParams } from "next/navigation";
 import { RefreshCw, Save, Users, MapPin, Smile, BookOpen, Image } from "lucide-react";
 import {
@@ -20,6 +20,8 @@ import {
   chatWithAI,
   getRegenStatus,
   getLocations,
+  getSpecialPages,
+  regenerateSpecialPage,
 } from "@/lib/api";
 import type { Segment, ChapterInfo, CharacterInfo } from "@/types";
 
@@ -32,6 +34,19 @@ import CharacterManagement from "@/components/editor/CharacterManagement";
 import SceneManagement from "@/components/editor/SceneManagement";
 
 const SENTIMENTS = ["positive", "negative", "neutral", "tense", "emotional"];
+
+/** Auto-resizing textarea that grows with content */
+function AutoTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const resize = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = el.scrollHeight + "px";
+  };
+  useEffect(resize, [props.value]);
+  return <textarea ref={ref} {...props} onInput={resize} style={{ ...props.style, overflow: "hidden" }} />;
+}
 
 export default function EditorPage() {
   const params = useParams();
@@ -77,6 +92,9 @@ export default function EditorPage() {
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
+  const [specialPages, setSpecialPages] = useState<Array<{ type: string; label: string; url: string | null; chapter?: number; chapter_title?: string; chapter_summary?: string }>>([]);
+  const [selectedSpecial, setSelectedSpecial] = useState<{ type: string; label: string; url: string | null; chapter?: number } | null>(null);
+  const [regenSpecial, setRegenSpecial] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
@@ -110,7 +128,8 @@ export default function EditorPage() {
     if (generatingChapter === null) return;
     const interval = setInterval(async () => {
       try {
-        const prog = await getChapterProgress(bookId, generatingChapter);
+        const prog = await getChapterProgress(bookId, generatingChapter).catch(() => null);
+        if (!prog) return; // Skip this poll cycle on error
         setChapterProgress(prog);
         if (prog.status === "complete") {
           setGeneratingChapter(null);
@@ -158,10 +177,13 @@ export default function EditorPage() {
           setCharacters(charData.characters || []);
           setSheets(charData.sheets || {});
           setPortraits(charData.portraits || {});
-          // Load locations (best-effort)
+          // Load locations + special pages (best-effort)
           getLocations(bookId).then(d => {
             setLocations(d.locations || []);
             setSceneSheets(d.scene_sheets || {});
+          }).catch(() => {});
+          getSpecialPages(bookId).then(d => {
+            setSpecialPages(d.pages || []);
           }).catch(() => {});
           setAliasMap(charData.alias_map || {});
 
@@ -362,6 +384,36 @@ export default function EditorPage() {
     );
   };
 
+  // Debounce timer for auto-regenerating scene_background after character changes
+  const sceneRegenTimer = useRef<NodeJS.Timeout | null>(null);
+  const [regenningBg, setRegenningBg] = useState(false);
+
+  const triggerSceneBackgroundRegen = useCallback((segId: number) => {
+    if (sceneRegenTimer.current) clearTimeout(sceneRegenTimer.current);
+    sceneRegenTimer.current = setTimeout(async () => {
+      try {
+        setRegenningBg(true);
+        // Save current segment first so backend has latest characters
+        const seg = segments.find(s => s.id === segId);
+        if (seg) {
+          await updateSegment(bookId, segId, {
+            characters_in_scene: seg.characters_in_scene,
+            character_actions: seg.character_actions,
+          });
+        }
+        const res = await generateSceneBackground(bookId, segId);
+        // Update local state with new background
+        const newBg = res.scene_background;
+        setSelectedSegment(prev => prev && prev.id === segId ? { ...prev, scene_background: newBg } : prev);
+        setSegments(prev => prev.map(s => s.id === segId ? { ...s, scene_background: newBg } : s));
+      } catch (e) {
+        console.error("Auto scene_background regen failed:", e);
+      } finally {
+        setRegenningBg(false);
+      }
+    }, 2000);
+  }, [bookId, segments]);
+
   // Update character action — must update both fields in one setState call
   const updateAction = (idx: number, field: "name" | "action", value: string) => {
     if (!selectedSegment) return;
@@ -374,6 +426,10 @@ export default function EditorPage() {
     };
     setSelectedSegment(updated);
     setSegments((prev) => prev.map((s) => (s.id === selectedSegment.id ? updated : s)));
+    // Auto-regenerate scene_background after character changes
+    if (field === "name" && value.trim()) {
+      triggerSceneBackgroundRegen(selectedSegment.id);
+    }
   };
 
   const addCharacterAction = () => {
@@ -394,6 +450,8 @@ export default function EditorPage() {
     };
     setSelectedSegment(updated);
     setSegments((prev) => prev.map((s) => (s.id === selectedSegment.id ? updated : s)));
+    // Auto-regenerate scene_background after removing character
+    triggerSceneBackgroundRegen(selectedSegment.id);
   };
 
   // Send chat message to AI
@@ -621,8 +679,24 @@ export default function EditorPage() {
       {/* Pages Tab */}
       {activeTab === "pages" && (
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Panel: Chapters + Segments */}
+        {/* Left Panel: Chapters + Segments + Special Pages */}
         <div className="w-64 bg-white border-r border-peach/30 overflow-y-auto shrink-0">
+          {/* Book Cover */}
+          {(() => {
+            const bc = specialPages.find(p => p.type === "book_cover");
+            return bc ? (
+              <button
+                onClick={() => { setSelectedSegment(null); setSelectedSpecial(bc); }}
+                className={`w-full text-left px-3 py-2 text-xs font-semibold border-b border-gray-100 flex items-center gap-2 transition-colors ${
+                  selectedSpecial?.type === "book_cover" ? "bg-sky/20 text-gray-800" : "hover:bg-peach/20 text-gray-700"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full shrink-0 ${bc.url ? "bg-green-400" : "bg-gray-300"}`} />
+                Book Cover
+              </button>
+            ) : null;
+          })()}
+
           {Object.entries(chapters)
             .sort(([a], [b]) => +a - +b)
             .map(([chIdx, info]) => (
@@ -635,7 +709,7 @@ export default function EditorPage() {
                   }`}
                 >
                   <button
-                    onClick={() => setSelectedChapter(selectedChapter === +chIdx ? null : +chIdx)}
+                    onClick={() => { setSelectedChapter(selectedChapter === +chIdx ? null : +chIdx); setSelectedSpecial(null); }}
                     className={`flex-1 text-left px-3 py-2 text-xs font-semibold flex items-center gap-1 min-w-0 ${
                       selectedChapter === +chIdx ? "text-coral" : "text-gray-700"
                     }`}
@@ -667,7 +741,7 @@ export default function EditorPage() {
                           console.error(err);
                         }
                       }}
-                      disabled={generatingChapter !== null}
+                      disabled={generatingChapter === +chIdx}
                       className="w-8 h-6 mr-1 text-[9px] bg-coral/80 text-white rounded hover:bg-coral transition-colors disabled:opacity-50 shrink-0"
                       title="Generate illustrations for this chapter"
                     >
@@ -676,13 +750,30 @@ export default function EditorPage() {
                   )}
                 </div>
 
-                {selectedChapter === +chIdx &&
-                  segments.map((seg, idx) => (
+                {selectedChapter === +chIdx && (<>
+                  {/* Chapter Cover */}
+                  {(() => {
+                    const cc = specialPages.find(p => p.type === "chapter_cover" && p.chapter === +chIdx);
+                    return cc ? (
+                      <button
+                        onClick={() => { setSelectedSegment(null); setSelectedSpecial(cc); }}
+                        className={`w-full text-left px-6 py-2 text-xs border-b border-gray-50 transition-colors flex items-center gap-1.5 ${
+                          selectedSpecial?.type === "chapter_cover" && selectedSpecial?.chapter === +chIdx
+                            ? "bg-sky/20 text-gray-800" : "hover:bg-gray-50 text-gray-500"
+                        }`}
+                      >
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${cc.url ? "bg-green-400" : "bg-gray-300"}`} />
+                        <span>Chapter Cover</span>
+                      </button>
+                    ) : null;
+                  })()}
+
+                  {segments.map((seg, idx) => (
                     <button
                       key={seg.id}
-                      onClick={() => setSelectedSegment(seg)}
+                      onClick={() => { setSelectedSegment(seg); setSelectedSpecial(null); }}
                       className={`w-full text-left px-6 py-2 text-xs border-b border-gray-50 transition-colors ${
-                        selectedSegment?.id === seg.id
+                        selectedSegment?.id === seg.id && !selectedSpecial
                           ? "bg-sky/20 text-gray-800"
                           : "hover:bg-gray-50 text-gray-500"
                       }`}
@@ -709,13 +800,150 @@ export default function EditorPage() {
                       )}
                     </button>
                   ))}
+
+                </>)}
               </div>
             ))}
+
+          {/* Back Cover */}
+          {(() => {
+            const bc = specialPages.find(p => p.type === "back_cover");
+            return bc ? (
+              <button
+                onClick={() => { setSelectedSegment(null); setSelectedSpecial(bc); }}
+                className={`w-full text-left px-3 py-2 text-xs font-semibold border-b border-gray-100 flex items-center gap-2 transition-colors ${
+                  selectedSpecial?.type === "back_cover" ? "bg-sky/20 text-gray-800" : "hover:bg-peach/20 text-gray-700"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full shrink-0 ${bc.url ? "bg-green-400" : "bg-gray-300"}`} />
+                Back Cover
+              </button>
+            ) : null;
+          })()}
         </div>
 
-        {/* Main content: 4 columns */}
+        {/* Main content */}
         <div className="flex-1 flex overflow-hidden">
-          {selectedSegment ? (
+          {selectedSpecial ? (
+            /* Special Page View */
+            <div className="flex-1 flex overflow-hidden">
+              {/* Image */}
+              <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center">
+                <h2 className="font-display text-lg font-bold text-gray-800 mb-4">{selectedSpecial.label}</h2>
+                {selectedSpecial.url ? (
+                  <img
+                    src={`http://localhost:8000${selectedSpecial.url}?t=${Date.now()}`}
+                    alt={selectedSpecial.label}
+                    className="max-h-[calc(100vh-200px)] max-w-full rounded-xl shadow-md object-contain"
+                  />
+                ) : regenSpecial ? (
+                  <div className="w-full max-w-md aspect-square bg-peach/10 rounded-xl flex flex-col items-center justify-center gap-3">
+                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-coral" />
+                    <p className="text-sm text-gray-500">Generating...</p>
+                    <p className="text-xs text-gray-400">~30 seconds</p>
+                  </div>
+                ) : (
+                  <div className="w-full max-w-md aspect-square bg-peach/20 rounded-xl flex flex-col items-center justify-center text-gray-400 gap-2">
+                    <Image size={32} />
+                    <p className="text-xs">Not generated yet</p>
+                  </div>
+                )}
+              </div>
+              {/* Right: Info + Regenerate */}
+              <div className="w-[300px] shrink-0 overflow-y-auto p-5 space-y-4 border-l border-peach/20">
+                {/* Book Cover fields */}
+                {selectedSpecial.type === "book_cover" && (
+                  <>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Book Title</label>
+                      <p className="text-sm text-gray-800 font-bold bg-cream/50 rounded-lg p-3">{meta.title || bookId}</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Subtitle</label>
+                      <p className="text-sm text-gray-700 bg-cream/50 rounded-lg p-3">A Picture Book</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Main Characters</label>
+                      <div className="space-y-1">
+                        {characters.filter(c => c.role === "main").map(c => (
+                          <div key={c.canonical_name} className="flex items-center gap-2 bg-cream/50 rounded-lg px-3 py-1.5">
+                            <span className={`w-2 h-2 rounded-full ${sheets[c.canonical_name] ? "bg-green-400" : "bg-gray-300"}`} />
+                            <span className="text-xs text-gray-700">{c.canonical_name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Chapter Cover fields */}
+                {selectedSpecial.type === "chapter_cover" && (
+                  <>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Chapter {(selectedSpecial.chapter ?? 0) + 1}</label>
+                      <p className="text-sm text-gray-800 font-bold bg-cream/50 rounded-lg p-3">{(selectedSpecial as any).chapter_title || "Untitled"}</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Chapter Summary</label>
+                      <p className="text-sm text-gray-700 bg-cream/50 rounded-lg p-3">{(selectedSpecial as any).chapter_summary || "No summary yet. Run preprocess to generate."}</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Characters in Chapter</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(() => {
+                          const chSegs = segments.length > 0 ? segments : [];
+                          const charSet = new Set<string>();
+                          chSegs.forEach(s => s.characters_in_scene?.forEach((c: string) => charSet.add(c)));
+                          return Array.from(charSet).slice(0, 8).map(name => (
+                            <span key={name} className="px-2 py-0.5 bg-sage/30 text-[10px] rounded-full text-gray-700">{name}</span>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Back Cover fields */}
+                {selectedSpecial.type === "back_cover" && (
+                  <>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Book Title</label>
+                      <p className="text-sm text-gray-800 font-bold bg-cream/50 rounded-lg p-3">{meta.title || bookId}</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Closing Text</label>
+                      <p className="text-sm text-gray-700 bg-cream/50 rounded-lg p-3">The End<br/>Thank you for reading!</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 font-semibold mb-1 block">Style Reference</label>
+                      <p className="text-xs text-gray-500">Uses Book Cover as style reference for consistency</p>
+                    </div>
+                  </>
+                )}
+
+                <button
+                  onClick={async () => {
+                    setRegenSpecial(true);
+                    try {
+                      await regenerateSpecialPage(bookId, selectedSpecial.type, selectedSpecial.chapter ?? 0);
+                      setTimeout(async () => {
+                        const data = await getSpecialPages(bookId);
+                        setSpecialPages(data.pages || []);
+                        const updated = data.pages.find(p => p.type === selectedSpecial.type && p.chapter === selectedSpecial.chapter);
+                        if (updated) setSelectedSpecial(updated);
+                        setRegenSpecial(false);
+                      }, 30000);
+                    } catch { setRegenSpecial(false); }
+                  }}
+                  disabled={regenSpecial}
+                  className="btn-primary text-sm !px-4 !py-2 flex items-center gap-1.5 w-full justify-center"
+                >
+                  <RefreshCw size={14} className={regenSpecial ? "animate-spin" : ""} />
+                  {regenSpecial ? "Generating..." : selectedSpecial.url ? "Regenerate" : "Generate"}
+                </button>
+              </div>
+            </div>
+          ) : selectedSegment ? (
             <>
               {/* Col 1: Illustration + Original Text */}
               <IllustrationPanel
@@ -748,11 +976,10 @@ export default function EditorPage() {
                       Generate
                     </button>
                   </div>
-                  <textarea
+                  <AutoTextarea
                     value={selectedSegment.simplified_text || ""}
                     onChange={(e) => updateField("simplified_text", e.target.value)}
-                    rows={Math.max(3, (selectedSegment.simplified_text || "").split("\n").length + 1)}
-                    className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26]"
+                    className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26] min-h-[3rem]"
                     placeholder="Click 'Generate' or type your own..."
                   />
                 </div>
@@ -775,11 +1002,10 @@ export default function EditorPage() {
                       Generate
                     </button>
                   </div>
-                  <textarea
+                  <AutoTextarea
                     value={selectedSegment.scene_background || ""}
                     onChange={(e) => updateField("scene_background", e.target.value)}
-                    rows={Math.max(2, (selectedSegment.scene_background || "").split("\n").length + 1)}
-                    className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26]"
+                    className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26] min-h-[2.5rem]"
                     placeholder="Click 'Generate' or describe the setting..."
                   />
                 </div>
@@ -788,16 +1014,27 @@ export default function EditorPage() {
                 <div className="card !p-3">
                   <h3 className="font-display font-bold text-gray-700 mb-2 text-xs flex items-center gap-1">
                     <Users size={12} /> Characters & Actions
+                    {regenningBg && <span className="text-[9px] text-gray-400 ml-1 animate-pulse">updating scene...</span>}
                   </h3>
                   <div className="space-y-1.5">
                     {(selectedSegment.character_actions || []).map((ca, idx) => (
                       <div key={idx} className="flex gap-1.5 items-center">
-                        <input
-                          value={ca.name}
-                          onChange={(e) => updateAction(idx, "name", e.target.value)}
-                          className="w-1/3 rounded-md border border-peach/50 px-2 py-1.5 text-xs focus:ring-2 focus:ring-coral/30 outline-none !leading-[1.26]"
-                          placeholder="Name"
-                        />
+                        <div className="w-1/3 relative">
+                          <input
+                            list={`char-list-${idx}`}
+                            value={ca.name}
+                            onChange={(e) => updateAction(idx, "name", e.target.value)}
+                            className="w-full rounded-md border border-peach/50 px-2 py-1.5 text-xs focus:ring-2 focus:ring-coral/30 outline-none !leading-[1.26]"
+                            placeholder="Name"
+                          />
+                          <datalist id={`char-list-${idx}`}>
+                            {characters.map(c => (
+                              <option key={c.canonical_name} value={c.canonical_name}>
+                                {c.role}
+                              </option>
+                            ))}
+                          </datalist>
+                        </div>
                         <input
                           value={ca.action}
                           onChange={(e) => updateAction(idx, "action", e.target.value)}
@@ -812,12 +1049,41 @@ export default function EditorPage() {
                         </button>
                       </div>
                     ))}
-                    <button
-                      onClick={addCharacterAction}
-                      className="text-xs text-coral hover:text-coral/80 font-semibold"
-                    >
-                      + Add character
-                    </button>
+                    {/* Add character: dropdown to pick from list, or type custom */}
+                    <div className="flex gap-1.5 items-center">
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          if (!e.target.value || !selectedSegment) return;
+                          const name = e.target.value;
+                          const actions = [...(selectedSegment.character_actions || []), { name, action: "" }];
+                          const updated = {
+                            ...selectedSegment,
+                            character_actions: actions,
+                            characters_in_scene: actions.map(a => a.name).filter(Boolean),
+                          };
+                          setSelectedSegment(updated);
+                          setSegments(prev => prev.map(s => s.id === selectedSegment.id ? updated : s));
+                          triggerSceneBackgroundRegen(selectedSegment.id);
+                        }}
+                        className="text-xs text-coral font-semibold bg-transparent border border-peach/30 rounded-md px-1 py-0.5 outline-none cursor-pointer"
+                      >
+                        <option value="">+ Pick from list</option>
+                        {characters
+                          .filter(c => !(selectedSegment.character_actions || []).some(ca => ca.name === c.canonical_name))
+                          .map(c => (
+                            <option key={c.canonical_name} value={c.canonical_name}>
+                              {c.canonical_name} ({c.role})
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        onClick={addCharacterAction}
+                        className="text-xs text-gray-500 hover:text-coral font-semibold"
+                      >
+                        + Custom
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -843,11 +1109,10 @@ export default function EditorPage() {
                       Generate
                     </button>
                   </div>
-                  <textarea
+                  <AutoTextarea
                     value={selectedSegment.scene_summary || ""}
                     onChange={(e) => updateField("scene_summary", e.target.value)}
-                    rows={Math.max(2, (selectedSegment.scene_summary || "").split("\n").length + 1)}
-                    className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26] mb-2"
+                    className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26] mb-2 min-h-[2.5rem]"
                     placeholder="Scene summary..."
                   />
                   <div className="flex items-center gap-2">
@@ -864,15 +1129,11 @@ export default function EditorPage() {
                   </div>
                 </div>
 
-                {/* AI Chat Panel */}
+                {/* LLM Prompt Preview */}
                 <AIChatPanel
                   chatOpen={chatOpen}
-                  chatMessages={chatMessages}
-                  chatInput={chatInput}
-                  chatLoading={chatLoading}
                   onToggle={() => setChatOpen(!chatOpen)}
-                  onInputChange={setChatInput}
-                  onSend={handleChatSend}
+                  selectedSegment={selectedSegment}
                 />
 
                 {/* Action Buttons */}

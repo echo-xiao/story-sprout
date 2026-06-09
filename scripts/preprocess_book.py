@@ -458,6 +458,38 @@ def _layer2_identify_characters(book_id, preprocess_dir, chapters, title):
     for c in characters:
         aliases = ", ".join(c.get("aliases", [])[:3])
         print(f"    {c['canonical_name']} ({c['gender']}, {c['role']}) [{aliases}]")
+    # Auto-fill missing visual details using LLM
+    chars_needing_fill = [c for c in characters if not c.get("visual_details") or not c.get("visual_details", {}).get("hair")]
+    if chars_needing_fill:
+        print(f"  Auto-filling visual details for {len(chars_needing_fill)} characters...")
+        from src.llm_client import generate_json
+        for c in chars_needing_fill:
+            try:
+                result = generate_json(
+                    f"""Given this character from "{title}", generate visual appearance details for a children's picture book.
+
+Character: {c['canonical_name']}
+Gender: {c.get('gender', 'unknown')}
+Role: {c.get('role', 'unknown')}
+Description: {c.get('description', '')}
+Existing appearance: {c.get('appearance', '')}
+
+Based on the character's role, era, and personality, generate appropriate visual details. If the book doesn't describe something, invent fitting details.
+
+Return JSON:
+{{"appearance": "full physical description", "visual_details": {{"age": "...", "ethnicity": "...", "skin_tone": "...", "hair": "...", "eyes": "...", "build": "...", "clothing": "period-accurate outfit", "accessories": "...", "distinctive": "most recognizable feature"}}}}"""
+                )
+                if result.get("visual_details"):
+                    c.setdefault("visual_details", {})
+                    for k, v in result["visual_details"].items():
+                        if v and not c["visual_details"].get(k):
+                            c["visual_details"][k] = v
+                if result.get("appearance") and not c.get("appearance"):
+                    c["appearance"] = result["appearance"]
+                print(f"    Filled: {c['canonical_name']}")
+            except Exception as e:
+                print(f"    Failed for {c['canonical_name']}: {e}")
+
     _save(preprocess_dir, "llm_characters", {"characters": characters})
 
     # Locations

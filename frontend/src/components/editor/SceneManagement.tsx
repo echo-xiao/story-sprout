@@ -79,27 +79,54 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
     }
   };
 
+  const [genAllProgress, setGenAllProgress] = useState("");
+
   const handleGenerateAll = async () => {
-    for (const loc of locations) {
-      if (sceneSheets[loc.name]) continue;
-      setGenerating(loc.name);
-      setSelectedLoc(loc.name);
+    const toGenerate = locations.filter(loc => !sceneSheets[loc.name]);
+    if (toGenerate.length === 0) return;
+
+    // Fire all generation requests in parallel
+    setGenAllProgress(`0/${toGenerate.length} generating...`);
+    setGenerating(toGenerate[0].name);
+
+    // Start all requests at once
+    for (const loc of toGenerate) {
       try {
         await regenerateSceneSheet(bookId, loc.name);
-        await new Promise<void>((resolve) => {
-          const poll = setInterval(async () => {
-            const data = await getLocations(bookId);
-            if (data.scene_sheets?.[loc.name]) {
-              setSceneSheets(data.scene_sheets || {});
-              clearInterval(poll);
-              resolve();
-            }
-          }, 5000);
-          setTimeout(() => { clearInterval(poll); resolve(); }, 120000);
-        });
       } catch {}
     }
+
+    // Poll until all are done
+    let completed = 0;
+    await new Promise<void>((resolve) => {
+      const poll = setInterval(async () => {
+        try {
+          const data = await getLocations(bookId);
+          const newSheets = data.scene_sheets || {};
+          const done = toGenerate.filter(loc => newSheets[loc.name]).length;
+          if (done !== completed) {
+            completed = done;
+            setSceneSheets(newSheets);
+            setGenAllProgress(`${done}/${toGenerate.length} done`);
+            // Highlight current generating one
+            const current = toGenerate.find(loc => !newSheets[loc.name]);
+            if (current) {
+              setGenerating(current.name);
+              setSelectedLoc(current.name);
+              setEditing(current.visual_details || {});
+            }
+          }
+          if (done >= toGenerate.length) {
+            clearInterval(poll);
+            resolve();
+          }
+        } catch {}
+      }, 5000);
+      setTimeout(() => { clearInterval(poll); resolve(); }, 300000);
+    });
+
     setGenerating(null);
+    setGenAllProgress("");
   };
 
   if (loading) {
@@ -133,7 +160,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
             disabled={generating !== null}
             className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
           >
-            {generating ? "Generating..." : "Gen All"}
+            {generating ? genAllProgress || "Generating..." : "Gen All"}
           </button>
         </div>
         {majorLocs.map(loc => (
@@ -142,6 +169,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
             loc={loc}
             selected={selectedLoc === loc.name}
             hasSheet={!!sceneSheets[loc.name]}
+            generating={generating === loc.name}
             onClick={() => selectLoc(loc)}
           />
         ))}
@@ -221,9 +249,24 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
 
           {/* Right: Details + Save & Regenerate */}
           <div className="w-[320px] shrink-0 overflow-y-auto p-5 space-y-3">
+            {/* Editable Name */}
+            <div>
+              <label className="text-xs text-gray-500 font-semibold mb-1 block">Location Name</label>
+              <input
+                value={editing._name ?? selected.name}
+                onChange={e => setEditing(prev => ({ ...prev, _name: e.target.value }))}
+                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm font-bold"
+              />
+            </div>
             <div>
               <label className="text-xs text-gray-500 font-semibold mb-1 block">Description</label>
-              <p className="text-sm text-gray-700 bg-cream/50 rounded-lg p-3">{selected.description || "No description"}</p>
+              <textarea
+                value={editing._description ?? selected.description ?? ""}
+                onChange={e => setEditing(prev => ({ ...prev, _description: e.target.value }))}
+                rows={Math.max(2, Math.ceil((selected.description || "").length / 35))}
+                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm resize-y"
+                placeholder="Location description..."
+              />
             </div>
 
             {/* Editable Visual Details */}
@@ -302,25 +345,29 @@ function LocListItem({
   loc,
   selected,
   hasSheet,
+  generating,
   onClick,
 }: {
   loc: any;
   selected: boolean;
   hasSheet: boolean;
+  generating?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
       className={`w-full text-left px-3 py-2.5 border-b border-gray-50 transition-colors ${
+        generating ? "bg-amber-50 border-l-2 border-l-amber-400" :
         selected ? "bg-coral/10 border-l-2 border-l-coral" : "hover:bg-peach/20"
       }`}
     >
       <div className="flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${hasSheet ? "bg-green-400" : "bg-gray-300"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${generating ? "bg-amber-400 animate-pulse" : hasSheet ? "bg-green-400" : "bg-gray-300"}`} />
         <span className={`text-sm truncate ${selected ? "font-bold text-gray-800" : "text-gray-700"}`}>
           {loc.name}
         </span>
+        {generating && <span className="text-[9px] text-amber-600 animate-pulse ml-auto shrink-0">generating...</span>}
       </div>
       {loc.description && (
         <p className="text-[10px] text-gray-400 ml-4 truncate">{loc.description}</p>

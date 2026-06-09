@@ -60,6 +60,7 @@ export interface Segment {
   chapter_idx: number;
   text: string;
   simplified_text?: string;
+  scene_direction?: string;
   characters_in_scene: string[];
   character_actions: CharacterAction[];
   scene_background: string;
@@ -83,5 +84,6 @@ export interface CharacterInfo {
   role: string;
   description: string;
   appearance: string;
+  visual_details?: Record<string, string>;
   sheet_url?: string;
 }

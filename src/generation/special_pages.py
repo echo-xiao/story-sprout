@@ -74,6 +74,23 @@ def _generate_image_with_refs(
     max_retries: int = 2,
 ) -> str:
     """Generate a single illustration with reference images. Returns saved path or empty string."""
+    from src.config import IMAGE_LLM
+
+    if IMAGE_LLM == "alicloud":
+        from src.generation.alicloud_image import generate_image_alicloud
+        ref_paths = []
+        if style_ref_path and Path(style_ref_path).exists():
+            ref_paths.append(style_ref_path)
+        if character_sheets:
+            for s in character_sheets[:3]:
+                p = s.get("sheet_path", "")
+                if p and Path(p).exists():
+                    ref_paths.append(p)
+        if scene_sheet_path and Path(scene_sheet_path).exists() and len(ref_paths) < 4:
+            ref_paths.append(scene_sheet_path)
+        return generate_image_alicloud(prompt, save_path, reference_images=ref_paths[:4])
+
+    # Default: Gemini
     client = _get_client()
     save_path.parent.mkdir(parents=True, exist_ok=True)
 

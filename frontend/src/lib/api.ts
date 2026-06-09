@@ -138,9 +138,24 @@ export async function regenerateCharacterSheet(bookId: string, charName: string)
   return data;
 }
 
+export async function autofillCharacterDetails(bookId: string, charName: string) {
+  const { data } = await api.post(`/book/${bookId}/preprocess/characters/${encodeURIComponent(charName)}/autofill`);
+  return data as { appearance: string; visual_details: Record<string, string> };
+}
+
 export async function getSceneSheetHistory(bookId: string, sceneName: string) {
   const { data } = await api.get(`/book/${bookId}/preprocess/scenes/${encodeURIComponent(sceneName)}/history`);
   return data as { images: Array<{ url: string; version: string; timestamp: number }> };
+}
+
+export async function getSpecialPages(bookId: string) {
+  const { data } = await api.get(`/book/${bookId}/special-pages`);
+  return data as { pages: Array<{ type: string; label: string; url: string | null; chapter?: number; chapter_title?: string; chapter_summary?: string }> };
+}
+
+export async function regenerateSpecialPage(bookId: string, pageType: string, chapter: number = 0) {
+  const { data } = await api.post(`/book/${bookId}/special/${pageType}/regenerate?chapter=${chapter}`);
+  return data;
 }
 
 export async function regenerateSceneSheet(bookId: string, sceneName: string) {

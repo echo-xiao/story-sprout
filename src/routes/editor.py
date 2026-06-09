@@ -51,14 +51,6 @@ async def get_characters(book_id: str) -> dict[str, Any]:
                 sheets[name] = f"/static/{book_id}/characters/{sheet_files[safe].name}"
             if safe in portrait_files:
                 portraits[name] = f"/static/{book_id}/characters/{portrait_files[safe].name}"
-            elif safe in sheet_files:
-                # Auto-crop portrait from sheet
-                from src.generation.character_sheet import crop_portrait_from_sheet
-                sheet_file = sheet_files[safe]
-                portrait_out = chars_dir / f"{safe}_portrait.png"
-                result = crop_portrait_from_sheet(str(sheet_file), str(portrait_out))
-                if result:
-                    portraits[name] = f"/static/{book_id}/characters/{portrait_out.name}"
 
     return {
         "characters": llm_chars.get("characters", []) if llm_chars else [],
@@ -76,6 +68,7 @@ class CharacterUpdate(BaseModel):
     appearance: Optional[str] = None
     description: Optional[str] = None
     aliases: Optional[list[str]] = None
+    visual_details: Optional[dict[str, str]] = None
 
 
 @router.put("/api/book/{book_id}/preprocess/characters/{char_name}")
@@ -120,6 +113,113 @@ async def update_character(book_id: str, char_name: str, update: CharacterUpdate
         pass
 
     return {"status": "updated", "character": char_name, "updated_fields": list(update_dict.keys())}
+
+
+@router.post("/api/book/{book_id}/preprocess/characters/{char_name}/autofill")
+async def autofill_character_details(book_id: str, char_name: str) -> dict[str, Any]:
+    """Use LLM to generate visual details for a character based on description and book context."""
+    llm_chars = _load_json(book_id, "llm_characters.json")
+    if not llm_chars:
+        raise HTTPException(status_code=404, detail="No character data.")
+
+    target = next((c for c in llm_chars.get("characters", []) if c.get("canonical_name") == char_name), None)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Character '{char_name}' not found.")
+
+    meta = _load_json(book_id, "meta.json") or {}
+    book_title = meta.get("title", "")
+
+    from src.llm_client import generate_json
+    result = generate_json(
+        f"""Given this character from the book "{book_title}", generate detailed visual appearance for a children's picture book illustration.
+
+Character: {char_name}
+Gender: {target.get('gender', 'unknown')}
+Role: {target.get('role', 'unknown')}
+Description: {target.get('description', '')}
+Existing appearance: {target.get('appearance', '')}
+
+Generate a complete visual profile. If the book doesn't describe something, invent appropriate details that fit the character's role, era, and personality.
+
+Return JSON:
+{{
+  "appearance": "full physical description paragraph",
+  "visual_details": {{
+    "age": "specific age or age range",
+    "ethnicity": "ethnicity fitting the story setting",
+    "skin_tone": "specific skin description",
+    "hair": "hair color, style, length",
+    "eyes": "eye color and shape",
+    "build": "body type",
+    "clothing": "period-accurate outfit description",
+    "accessories": "any accessories",
+    "distinctive": "most recognizable feature"
+  }}
+}}"""
+    )
+
+    # Update the character data
+    if result.get("appearance"):
+        target["appearance"] = result["appearance"]
+    if result.get("visual_details"):
+        target["visual_details"] = result["visual_details"]
+
+    _save_json(book_id, "llm_characters.json", llm_chars)
+
+    return {
+        "appearance": target.get("appearance", ""),
+        "visual_details": target.get("visual_details", {}),
+    }
+
+
+@router.get("/api/book/{book_id}/special-pages")
+async def get_special_pages(book_id: str) -> dict[str, Any]:
+    """List all special pages (book cover, chapter covers/endings, back cover)."""
+    special_dir = GENERATED_DIR / book_id / "special"
+    pages = []
+
+    # Book cover
+    for ext in (".png", ".jpg"):
+        p = special_dir / f"book_cover{ext}"
+        if p.exists():
+            pages.append({"type": "book_cover", "label": "Book Cover", "url": f"/static/{book_id}/special/{p.name}"})
+            break
+    else:
+        pages.append({"type": "book_cover", "label": "Book Cover", "url": None})
+
+    # Chapter covers and endings
+    ch_segments = _load_json(book_id, "chapter_segments.json") or {}
+    for ch_key in sorted(ch_segments.keys(), key=lambda x: int(x)):
+        ch_info = ch_segments[ch_key]
+        ch_num = int(ch_key)
+
+        # Chapter cover
+        cover_url = None
+        for ext in (".png", ".jpg"):
+            p = special_dir / f"chapter_{ch_num:02d}_cover{ext}"
+            if p.exists():
+                cover_url = f"/static/{book_id}/special/{p.name}"
+                break
+        pages.append({
+            "type": "chapter_cover",
+            "chapter": ch_num,
+            "label": f"Ch {ch_num + 1} Cover",
+            "chapter_title": ch_info.get("chapter_title", ""),
+            "chapter_summary": ch_info.get("chapter_summary", ""),
+            "url": cover_url,
+        })
+
+
+    # Back cover
+    for ext in (".png", ".jpg"):
+        p = special_dir / f"back_cover{ext}"
+        if p.exists():
+            pages.append({"type": "back_cover", "label": "Back Cover", "url": f"/static/{book_id}/special/{p.name}"})
+            break
+    else:
+        pages.append({"type": "back_cover", "label": "Back Cover", "url": None})
+
+    return {"pages": pages}
 
 
 @router.get("/api/book/{book_id}/preprocess/locations")
@@ -389,12 +489,25 @@ async def generate_segment_background(book_id: str, seg_id: int) -> dict[str, An
         raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
 
     from src.llm_client import generate_json
+
+    chars_in_scene = target.get("characters_in_scene", [])
+    char_actions = target.get("character_actions", [])
+    char_context = ""
+    if char_actions:
+        char_context = "\n".join(f"- {ca.get('name','')}: {ca.get('action','')}" for ca in char_actions)
+    elif chars_in_scene:
+        char_context = ", ".join(chars_in_scene)
+
     result = generate_json(
         f"""Describe the physical setting/environment of this scene from a novel.
 Be specific and visual: location, time of day, weather, objects, atmosphere, colors.
+Include details relevant to the characters and their actions in this scene.
 
 Scene text:
 {target.get('text', '')[:1000]}
+
+Characters in this scene:
+{char_context or 'None specified'}
 
 Return JSON: {{"scene_background": "detailed visual description..."}}"""
     )

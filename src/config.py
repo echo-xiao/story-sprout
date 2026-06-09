@@ -11,18 +11,29 @@ SAMPLE_BOOKS_DIR = DATA_DIR / "sample_books"
 
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
-# Gemini (image generation only)
+# Environment: "test" (DeepSeek + Alicloud) or "production" (Gemini)
+APP_ENV = os.getenv("APP_ENV", "test")
+
+# Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 
-# DeepSeek (text analysis — cheaper alternative to Gemini for non-image tasks)
+# DeepSeek (text analysis)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
-# Which LLM to use for text tasks (set to "gemini" for hackathon submission)
-TEXT_LLM = os.getenv("TEXT_LLM", "deepseek")  # "deepseek" or "gemini"
+# Alibaba Cloud / DashScope (image generation)
+ALICLOUD_API_KEY = os.getenv("ALICLOUD_API_KEY", "")
+ALICLOUD_IMAGE_MODEL = os.getenv("ALICLOUD_IMAGE_MODEL", "wan2.7-image-pro")
+
+# LLM selection based on environment (can be overridden by explicit env vars)
+_default_text_llm = "gemini" if APP_ENV == "production" else "deepseek"
+_default_image_llm = "gemini" if APP_ENV == "production" else "alicloud"
+
+TEXT_LLM = os.getenv("TEXT_LLM", _default_text_llm)   # "deepseek" or "gemini"
+IMAGE_LLM = os.getenv("IMAGE_LLM", _default_image_llm)  # "alicloud" or "gemini"
 
 # MongoDB
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")

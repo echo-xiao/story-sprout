@@ -25,11 +25,9 @@ export default function CharacterSheetsPanel({
   onNavigateToCharacter,
   onNavigateToScene,
 }: CharacterSheetsPanelProps) {
-  // Match characters to scene
-  const filteredCharacters = characters.filter((c) => {
-    if (!sheets[c.canonical_name]) return false;
-    const sceneChars = selectedSegment?.characters_in_scene || [];
-    if (sceneChars.length === 0) return false;
+  // Match characters to scene (show all that are in characters_in_scene, even without sheets)
+  const sceneChars = selectedSegment?.characters_in_scene || [];
+  const filteredCharacters = sceneChars.length === 0 ? [] : characters.filter((c) => {
     const cName = c.canonical_name.toLowerCase();
     const cParts = cName.split(/\s+/).filter((p) => p.length > 3);
     return sceneChars.some((sc) => {
@@ -66,11 +64,17 @@ export default function CharacterSheetsPanel({
                 className="cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => onNavigateToCharacter?.(char.canonical_name)}
               >
-                <img
-                  src={`${API_BASE}${sheetUrl}?t=${Date.now()}`}
-                  alt={char.canonical_name}
-                  className="w-full rounded-xl mb-2"
-                />
+                {sheetUrl ? (
+                  <img
+                    src={`${API_BASE}${sheetUrl}?t=${Date.now()}`}
+                    alt={char.canonical_name}
+                    className="w-full rounded-xl mb-2"
+                  />
+                ) : (
+                  <div className="w-full aspect-square bg-peach/20 rounded-xl flex items-center justify-center mb-2 text-gray-300 text-xs">
+                    No sheet yet
+                  </div>
+                )}
                 <p className="text-xs font-bold text-gray-800">{char.canonical_name}</p>
                 <p className="text-[10px] text-gray-500">{char.gender} / {char.role}</p>
               </div>

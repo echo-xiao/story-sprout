@@ -92,6 +92,7 @@ async def regenerate_segment_illustration(
                             "role": c.get("role", "supporting"),
                             "gender": c.get("gender", "unknown"),
                             "appearance_description": [c.get("appearance", ""), c.get("description", "")],
+                            "visual_details": c.get("visual_details", {}),
                         })
                         break
 
@@ -210,7 +211,10 @@ async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
     """Get generation progress for a chapter."""
     progress_file = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "progress.json"
     if progress_file.exists():
-        return json.loads(progress_file.read_text())
+        try:
+            return json.loads(progress_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass  # File being written, fall through to estimate
 
     # Estimate progress from existing page files
     ch_dir = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "pages"
@@ -292,25 +296,28 @@ async def check_segment_quality(book_id: str, seg_id: int) -> dict[str, Any]:
     if not ill_path:
         raise HTTPException(status_code=404, detail="No illustration found for this segment.")
 
-    # Find character sheets
-    import re as _re
+    # Find character sheets — match by scene character name directly
+    from src.generation.character_sheet import _safe_filename
     chars_dir = GENERATED_DIR / book_id / "characters"
     llm_chars = _load_json(book_id, "llm_characters.json") or {}
     scene_chars = target.get("characters_in_scene", [])
     character_sheets = []
-    for char in llm_chars.get("characters", []):
-        name = char.get("canonical_name", "")
-        if name not in scene_chars:
-            continue
-        safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
-        safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
+    for name in scene_chars:
+        safe = _safe_filename(name)
         for ext in (".png", ".jpg"):
             sheet_path = chars_dir / f"{safe}_sheet{ext}"
             if sheet_path.exists():
+                # Find appearance from llm_characters for visual_identity
+                appearance = ""
+                for c in llm_chars.get("characters", []):
+                    cn = c.get("canonical_name", "").lower()
+                    if cn == name.lower() or name.lower() in [a.lower() for a in c.get("aliases", [])]:
+                        appearance = c.get("appearance", "")
+                        break
                 character_sheets.append({
                     "character_name": name,
                     "sheet_path": str(sheet_path),
-                    "visual_identity": char.get("appearance", ""),
+                    "visual_identity": appearance,
                 })
                 break
 
@@ -463,6 +470,56 @@ async def check_chapter_consistency(book_id: str, ch_idx: int) -> dict[str, Any]
     return consistency_result
 
 
+@router.post("/api/book/{book_id}/special/{page_type}/regenerate")
+async def regenerate_special_page(
+    book_id: str, page_type: str, background_tasks: BackgroundTasks,
+    chapter: int = 0,
+) -> dict[str, Any]:
+    """Regenerate a special page (book_cover, chapter_cover, chapter_ending, back_cover)."""
+    from src.generation.special_pages import (
+        generate_book_cover, generate_chapter_cover,
+        generate_chapter_ending, generate_back_cover,
+    )
+
+    # Load character sheets
+    chars_dir = GENERATED_DIR / book_id / "characters"
+    character_sheets = []
+    if chars_dir.exists():
+        for f in chars_dir.glob("*_sheet.*"):
+            name = f.stem.replace("_sheet", "").replace("_", " ").title()
+            character_sheets.append({"character_name": name, "sheet_path": str(f)})
+
+    # Load book info
+    meta = _load_json(book_id, "meta.json") or {}
+    title = meta.get("title", book_id)
+    ch_segments = _load_json(book_id, "chapter_segments.json") or {}
+    llm_chars = _load_json(book_id, "llm_characters.json") or {}
+    characters = llm_chars.get("characters", [])
+
+    async def _gen():
+        if page_type == "book_cover":
+            char_profiles = [{"name": c["canonical_name"], "visual_identity": c.get("appearance", "")} for c in characters[:5]]
+            generate_book_cover(title, char_profiles, book_id, character_sheets=character_sheets)
+        elif page_type == "chapter_cover":
+            ch_info = ch_segments.get(str(chapter), {})
+            ch_title = ch_info.get("chapter_title", f"Chapter {chapter + 1}")
+            ch_summary = ch_info.get("chapter_summary", "")
+            char_profiles = [{"name": c["canonical_name"], "visual_identity": c.get("appearance", "")} for c in characters[:3]]
+            generate_chapter_cover(ch_title, chapter, ch_summary, char_profiles, book_id, character_sheets=character_sheets)
+        elif page_type == "chapter_ending":
+            ch_info = ch_segments.get(str(chapter), {})
+            ch_title = ch_info.get("chapter_title", f"Chapter {chapter + 1}")
+            char_profiles = [{"name": c["canonical_name"], "visual_identity": c.get("appearance", "")} for c in characters[:3]]
+            generate_chapter_ending(ch_title, chapter, "", char_profiles, book_id, character_sheets=character_sheets)
+        elif page_type == "back_cover":
+            generate_back_cover(title, book_id, character_sheets=character_sheets)
+        else:
+            logger.error("Unknown special page type: %s", page_type)
+
+    background_tasks.add_task(_gen)
+    return {"status": "generating", "page_type": page_type, "chapter": chapter}
+
+
 @router.post("/api/book/{book_id}/scenes/{scene_name}/regenerate")
 async def regenerate_scene_sheet(
     book_id: str, scene_name: str, background_tasks: BackgroundTasks
@@ -488,8 +545,7 @@ async def regenerate_scene_sheet(
             old.rename(history_dir / f"{safe}_scene_{ts}{ext}")
 
     async def _gen():
-        from google import genai
-        from src.config import GEMINI_API_KEY, GEMINI_IMAGE_MODEL, DEFAULT_STYLE, NEGATIVE_PROMPT
+        from src.config import IMAGE_LLM, DEFAULT_STYLE, NEGATIVE_PROMPT
 
         # Load location details
         llm_locs = _load_json(book_id, "llm_locations.json") or {}
@@ -513,6 +569,15 @@ async def regenerate_scene_sheet(
             f"NOT: {NEGATIVE_PROMPT}, people, characters, figures, silhouettes"
         )
 
+        out_path = scenes_dir / f"{safe}_scene"
+
+        if IMAGE_LLM == "alicloud":
+            from src.generation.alicloud_image import generate_image_alicloud
+            generate_image_alicloud(prompt, out_path)
+            return
+
+        from google import genai
+        from src.config import GEMINI_API_KEY, GEMINI_IMAGE_MODEL
         client = genai.Client(api_key=GEMINI_API_KEY)
         try:
             response = client.models.generate_content(
@@ -569,6 +634,7 @@ async def regenerate_character_sheet(
                     "gender": c.get("gender", "unknown"),
                     "personality_traits": [],
                     "appearance_description": [c.get("appearance", ""), c.get("description", "")],
+                    "visual_details": c.get("visual_details", {}),
                 }
                 break
 
