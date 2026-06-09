@@ -117,7 +117,7 @@ export default function CharacterManagement({
   const otherChars = characters.filter(c => c.role !== "main");
   const [genAllRunning, setGenAllRunning] = useState(false);
   const genAllProgressRef = useRef("");
-  const genAllCurrentCharRef = useRef<string | null>(null);
+  const [genAllCurrentChar, setGenAllCurrentChar] = useState<string | null>(null);
   const genAllBtnRef = useRef<HTMLButtonElement>(null);
   const [autoFilling, setAutoFilling] = useState(false);
 
@@ -131,7 +131,7 @@ export default function CharacterManagement({
     for (let i = 0; i < toGenerate.length; i++) {
       const char = toGenerate[i];
       genAllProgressRef.current = `${i + 1}/${toGenerate.length}: ${char.canonical_name}`;
-      genAllCurrentCharRef.current = char.canonical_name;
+      setGenAllCurrentChar(char.canonical_name);
       // Update button text directly (no re-render)
       if (genAllBtnRef.current) genAllBtnRef.current.textContent = genAllProgressRef.current;
       try {
@@ -155,7 +155,7 @@ export default function CharacterManagement({
     const finalData = await getCharacters(bookId);
     onCharactersUpdate(finalData.characters || [], finalData.sheets || {});
     genAllProgressRef.current = "";
-    genAllCurrentCharRef.current = null;
+    setGenAllCurrentChar(null);
     setGenAllRunning(false);
   };
 
@@ -201,6 +201,7 @@ export default function CharacterManagement({
             char={char}
             selected={selectedChar === char.canonical_name}
             hasSheet={!!sheets[char.canonical_name]}
+            generating={genAllCurrentChar === char.canonical_name}
             onClick={() => selectChar(char)}
           />
         ))}
@@ -215,6 +216,7 @@ export default function CharacterManagement({
             char={char}
             selected={selectedChar === char.canonical_name}
             hasSheet={!!sheets[char.canonical_name]}
+            generating={genAllCurrentChar === char.canonical_name}
             onClick={() => selectChar(char)}
           />
         ))}

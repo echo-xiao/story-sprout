@@ -6,6 +6,11 @@ const api = axios.create({
   timeout: 300000,
 });
 
+export async function fetchBookFromUrl(url: string): Promise<{ text: string; title: string }> {
+  const { data } = await api.post("/fetch-url", { url });
+  return data;
+}
+
 export async function startGeneration(
   text: string,
   config: GenerationConfig

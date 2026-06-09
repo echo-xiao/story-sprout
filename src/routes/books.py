@@ -27,6 +27,47 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class FetchUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/api/fetch-url")
+async def fetch_book_from_url(req: FetchUrlRequest) -> dict[str, Any]:
+    """Fetch plain text from a URL (e.g. Project Gutenberg)."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(req.url)
+            resp.raise_for_status()
+            text = resp.text
+
+        # Try to extract title from Gutenberg header
+        title = ""
+        for line in text.split("\n")[:50]:
+            if line.strip().lower().startswith("title:"):
+                title = line.split(":", 1)[1].strip()
+                break
+
+        # Strip Gutenberg header/footer if present
+        start_markers = ["*** START OF THE PROJECT GUTENBERG", "*** START OF THIS PROJECT GUTENBERG"]
+        end_markers = ["*** END OF THE PROJECT GUTENBERG", "*** END OF THIS PROJECT GUTENBERG"]
+        for marker in start_markers:
+            idx = text.find(marker)
+            if idx != -1:
+                text = text[text.index("\n", idx) + 1:]
+                break
+        for marker in end_markers:
+            idx = text.find(marker)
+            if idx != -1:
+                text = text[:idx]
+                break
+
+        return {"text": text.strip(), "title": title or "Untitled"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch URL: {str(e)}")
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------

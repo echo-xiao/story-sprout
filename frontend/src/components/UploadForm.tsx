@@ -25,9 +25,10 @@ Rosie smiled her warmest smile. "Well, Hazel, you don't need to steal! I'll shar
 The End.`;
 
 export function UploadForm({ onStartGeneration }: Props) {
-  const [inputMode, setInputMode] = useState<"text" | "file">("text");
+  const [inputMode, setInputMode] = useState<"text" | "file" | "url">("text");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [url, setUrl] = useState("");
   const [config, setConfig] = useState<GenerationConfig>({
     age_group: "4-6",
     num_pages: 10,
@@ -49,12 +50,17 @@ export function UploadForm({ onStartGeneration }: Props) {
       };
 
       let result;
-      if (inputMode === "file" && file) {
+      if (inputMode === "url" && url.trim()) {
+        // Fetch text from URL via backend
+        const { fetchBookFromUrl } = await import("@/lib/api");
+        const fetched = await fetchBookFromUrl(url.trim());
+        result = await startGeneration(fetched.text, finalConfig);
+      } else if (inputMode === "file" && file) {
         result = await uploadAndGenerate(file, finalConfig);
       } else if (inputMode === "text" && text.trim()) {
         result = await startGeneration(text, finalConfig);
       } else {
-        setError("Please provide text or upload a file.");
+        setError("Please provide text, a file, or a URL.");
         setLoading(false);
         return;
       }
@@ -107,9 +113,40 @@ export function UploadForm({ onStartGeneration }: Props) {
             >
               Upload File
             </button>
+            <button
+              onClick={() => setInputMode("url")}
+              className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                inputMode === "url"
+                  ? "bg-sage text-gray-800 shadow-sm"
+                  : "text-gray-500 hover:bg-gray-100"
+              }`}
+            >
+              From URL
+            </button>
           </div>
 
-          {inputMode === "text" ? (
+          {inputMode === "url" ? (
+            <div>
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://www.gutenberg.org/files/1342/1342-0.txt"
+                className="w-full p-4 border border-peach/50 rounded-2xl
+                           focus:outline-none focus:ring-2 focus:ring-coral/30 focus:border-coral
+                           font-body text-gray-700 bg-cream/50"
+              />
+              <p className="text-sm text-gray-400 mt-2">
+                Paste a URL to a plain text file (e.g. from Project Gutenberg)
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button onClick={() => setUrl("https://www.gutenberg.org/cache/epub/1342/pg1342.txt")} className="text-xs bg-peach/30 px-3 py-1.5 rounded-lg hover:bg-peach/50 text-gray-700">Pride & Prejudice</button>
+                <button onClick={() => setUrl("https://www.gutenberg.org/cache/epub/64317/pg64317.txt")} className="text-xs bg-peach/30 px-3 py-1.5 rounded-lg hover:bg-peach/50 text-gray-700">The Great Gatsby</button>
+                <button onClick={() => setUrl("https://www.gutenberg.org/cache/epub/84/pg84.txt")} className="text-xs bg-peach/30 px-3 py-1.5 rounded-lg hover:bg-peach/50 text-gray-700">Frankenstein</button>
+                <button onClick={() => setUrl("https://www.gutenberg.org/cache/epub/1661/pg1661.txt")} className="text-xs bg-peach/30 px-3 py-1.5 rounded-lg hover:bg-peach/50 text-gray-700">Sherlock Holmes</button>
+                <button onClick={() => setUrl("https://www.gutenberg.org/cache/epub/11/pg11.txt")} className="text-xs bg-peach/30 px-3 py-1.5 rounded-lg hover:bg-peach/50 text-gray-700">Alice in Wonderland</button>
+              </div>
+            </div>
+          ) : inputMode === "text" ? (
             <div>
               <textarea
                 value={text}

@@ -648,7 +648,7 @@ export default function EditorPage() {
       {/* Header */}
       <header className="bg-white border-b border-peach/30 px-4 py-2 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
-          <a href="/" className="text-2xl">📖</a>
+          <a href="/" className="text-2xl hover:opacity-70 transition-opacity" title="Back to Home">📖</a>
           <div>
             <h1 className="font-display text-lg font-bold text-gray-800">
               {meta.title || bookId}
@@ -657,6 +657,18 @@ export default function EditorPage() {
               {Object.keys(chapters).length} chapters, {characters.length} characters
             </p>
           </div>
+        </div>
+        {/* Main Navigation */}
+        <div className="flex items-center gap-2">
+          <a href="/" className="px-3 py-1.5 text-xs font-semibold rounded-md text-gray-500 hover:bg-peach/50 transition-colors">
+            Create
+          </a>
+          <span className="px-3 py-1.5 text-xs font-semibold rounded-md bg-coral/10 text-coral">
+            Editor
+          </span>
+          <a href="/" className="px-3 py-1.5 text-xs font-semibold rounded-md text-gray-500 hover:bg-peach/50 transition-colors">
+            Library
+          </a>
         </div>
         <div className="flex items-center gap-3">
           {/* Tab Buttons */}
