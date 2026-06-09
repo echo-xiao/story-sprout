@@ -38,7 +38,7 @@ export default function EditorPage() {
   const bookId = params.bookId as string;
   const initApplied = useRef(false);
 
-  // Read initial chapter/segment from URL (sync, no useSearchParams)
+  // Read initial state from URL (sync, no useSearchParams)
   const [initialChapter] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const sp = new URLSearchParams(window.location.search);
@@ -49,8 +49,22 @@ export default function EditorPage() {
     const sp = new URLSearchParams(window.location.search);
     return sp.get("seg") ? +sp.get("seg")! : null;
   });
+  const [initialTab] = useState<"pages" | "characters" | "scenes">(() => {
+    if (typeof window === "undefined") return "pages";
+    const sp = new URLSearchParams(window.location.search);
+    const t = sp.get("tab");
+    return t === "characters" || t === "scenes" ? t : "pages";
+  });
+  const [initialChar] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("char");
+  });
+  const [initialScene] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("scene");
+  });
 
-  const [activeTab, setActiveTab] = useState<"pages" | "characters" | "scenes">("pages");
+  const [activeTab, setActiveTab] = useState<"pages" | "characters" | "scenes">(initialTab);
   const [navigateToChar, setNavigateToChar] = useState<string | null>(null);
   const [chapters, setChapters] = useState<Record<string, ChapterInfo>>({});
   const [meta, setMeta] = useState<{ title?: string }>({});
@@ -195,13 +209,23 @@ export default function EditorPage() {
     loadSegments();
   }, [bookId, selectedChapter]);
 
-  // Update URL when chapter/segment changes
+  // Update URL when tab/selection changes
+  const [selectedCharName, setSelectedCharName] = useState<string | null>(initialChar);
+  const [selectedSceneName, setSelectedSceneName] = useState<string | null>(initialScene);
+
   useEffect(() => {
-    if (selectedChapter === null) return;
-    const segId = selectedSegment?.id;
-    const url = `/editor/${bookId}?ch=${selectedChapter}${segId != null ? `&seg=${segId}` : ""}`;
-    window.history.replaceState(null, "", url);
-  }, [bookId, selectedChapter, selectedSegment?.id]);
+    const params = new URLSearchParams();
+    params.set("tab", activeTab);
+    if (activeTab === "pages") {
+      if (selectedChapter !== null) params.set("ch", String(selectedChapter));
+      if (selectedSegment?.id != null) params.set("seg", String(selectedSegment.id));
+    } else if (activeTab === "characters" && selectedCharName) {
+      params.set("char", selectedCharName);
+    } else if (activeTab === "scenes" && selectedSceneName) {
+      params.set("scene", selectedSceneName);
+    }
+    window.history.replaceState(null, "", `/editor/${bookId}?${params.toString()}`);
+  }, [bookId, activeTab, selectedChapter, selectedSegment?.id, selectedCharName, selectedSceneName]);
 
   // Clear chat when segment changes
   useEffect(() => {
@@ -575,18 +599,23 @@ export default function EditorPage() {
           characters={characters}
           sheets={sheets}
           aliasMap={aliasMap}
-          navigateToChar={navigateToChar}
+          navigateToChar={navigateToChar || initialChar}
           onCharactersUpdate={(chars, newSheets) => {
             setCharacters(chars);
             setSheets(newSheets);
             setNavigateToChar(null);
           }}
+          onSelectChar={setSelectedCharName}
         />
       )}
 
       {/* Scenes Tab */}
       {activeTab === "scenes" && (
-        <SceneManagement bookId={bookId} />
+        <SceneManagement
+          bookId={bookId}
+          initialScene={initialScene}
+          onSelectScene={setSelectedSceneName}
+        />
       )}
 
       {/* Pages Tab */}

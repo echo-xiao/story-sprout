@@ -138,6 +138,11 @@ export async function regenerateCharacterSheet(bookId: string, charName: string)
   return data;
 }
 
+export async function getSceneSheetHistory(bookId: string, sceneName: string) {
+  const { data } = await api.get(`/book/${bookId}/preprocess/scenes/${encodeURIComponent(sceneName)}/history`);
+  return data as { images: Array<{ url: string; version: string; timestamp: number }> };
+}
+
 export async function regenerateSceneSheet(bookId: string, sceneName: string) {
   const { data } = await api.post(`/book/${bookId}/scenes/${encodeURIComponent(sceneName)}/regenerate`);
   return data;

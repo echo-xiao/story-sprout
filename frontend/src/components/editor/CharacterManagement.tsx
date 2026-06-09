@@ -14,6 +14,7 @@ interface CharacterManagementProps {
   aliasMap: Record<string, string>;
   onCharactersUpdate: (characters: CharacterInfo[], sheets: Record<string, string>) => void;
   navigateToChar?: string | null;
+  onSelectChar?: (name: string) => void;
 }
 
 export default function CharacterManagement({
@@ -23,6 +24,7 @@ export default function CharacterManagement({
   aliasMap,
   onCharactersUpdate,
   navigateToChar,
+  onSelectChar,
 }: CharacterManagementProps) {
   const [selectedChar, setSelectedChar] = useState<string | null>(characters[0]?.canonical_name || null);
   const [editing, setEditing] = useState<Record<string, any>>({});
@@ -35,6 +37,7 @@ export default function CharacterManagement({
 
   const selectChar = (char: CharacterInfo) => {
     setSelectedChar(char.canonical_name);
+    onSelectChar?.(char.canonical_name);
     setActiveSheetUrl(null);
     setEditing({
       gender: char.gender || "unknown",
@@ -247,15 +250,16 @@ export default function CharacterManagement({
                 { key: "accessories", label: "Accessories", placeholder: "e.g. spectacles, cane, bonnet" },
                 { key: "distinctive", label: "Distinctive Feature", placeholder: "e.g. big red nose, scar" },
               ].map(({ key, label, placeholder }) => (
-                <div key={key} className="flex items-center gap-2">
-                  <label className="text-[10px] text-gray-500 w-20 shrink-0 text-right">{label}</label>
-                  <input
+                <div key={key} className="flex items-start gap-2">
+                  <label className="text-[10px] text-gray-500 w-20 shrink-0 text-right pt-1">{label}</label>
+                  <textarea
                     value={(editing.visual_details || {})[key] || ""}
                     onChange={e => setEditing(prev => ({
                       ...prev,
                       visual_details: { ...(prev.visual_details || {}), [key]: e.target.value }
                     }))}
-                    className="flex-1 rounded-md border border-peach/40 px-2 py-1 text-xs"
+                    rows={Math.max(1, Math.ceil(((editing.visual_details || {})[key] || "").length / 25))}
+                    className="flex-1 rounded-md border border-peach/40 px-2 py-1 text-xs resize-none"
                     placeholder={placeholder}
                   />
                 </div>

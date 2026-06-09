@@ -294,6 +294,13 @@ def generate_illustrations(
     output_dir = Path(pages_dir) if pages_dir else GENERATED_DIR / book_id / "pages"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Auto-use book cover as style reference if not provided
+    if not style_ref_path:
+        from src.generation.special_pages import _find_book_cover
+        style_ref_path = _find_book_cover(book_id)
+        if style_ref_path:
+            logger.info("Using book cover as style reference: %s", style_ref_path)
+
     valid_sheets = [s for s in character_sheets if s.get("sheet_path") and Path(s["sheet_path"]).exists()]
     logger.info("Using %d character sheet references", len(valid_sheets))
 

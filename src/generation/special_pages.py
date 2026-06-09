@@ -1,10 +1,13 @@
-"""Generate special page illustrations using Gemini.
+"""Generate special page illustrations using Gemini with reference images.
 
 Special pages:
 - Book cover: main characters + iconic scene, with title
 - Chapter title page: scene representing the chapter's theme
 - Chapter ending page: closing mood illustration
 - Back cover ("The End"): warm farewell illustration
+
+All special pages use character sheets, scene sheets, and the book cover
+as visual references to maintain style consistency.
 """
 
 import logging
@@ -20,31 +23,69 @@ from src.config import (
     GENERATED_DIR,
     NEGATIVE_PROMPT,
 )
+from src.generation.image_utils import _get_client, _load_image_part
 
 logger = logging.getLogger(__name__)
 
-_client: genai.Client | None = None
+
+def _build_reference_parts(
+    character_sheets: list[dict] | None = None,
+    scene_sheet_path: str | None = None,
+    style_ref_path: str | None = None,
+) -> list[dict]:
+    """Build reference image parts for style consistency."""
+    parts = []
+
+    # Style reference (book cover) first
+    if style_ref_path:
+        img = _load_image_part(style_ref_path)
+        if img:
+            parts.append({"text": "[STYLE REFERENCE — match this art style, color palette, and visual tone EXACTLY]"})
+            parts.append(img)
+
+    # Character sheets
+    if character_sheets:
+        for sheet in character_sheets[:4]:
+            name = sheet.get("character_name", "character")
+            path = sheet.get("sheet_path", "")
+            if not path:
+                continue
+            img = _load_image_part(path)
+            if img:
+                parts.append({"text": f"[CHARACTER: {name}] — draw this character matching this reference exactly"})
+                parts.append(img)
+
+    # Scene sheet
+    if scene_sheet_path:
+        img = _load_image_part(scene_sheet_path)
+        if img:
+            parts.append({"text": "[SCENE BACKGROUND REFERENCE — match this setting style]"})
+            parts.append(img)
+
+    return parts
 
 
-def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is not set")
-        _client = genai.Client(api_key=GEMINI_API_KEY)
-    return _client
-
-
-def _generate_image(prompt: str, save_path: Path, max_retries: int = 2) -> str:
-    """Generate a single illustration and save to disk. Returns the saved path or empty string."""
+def _generate_image_with_refs(
+    prompt: str,
+    save_path: Path,
+    character_sheets: list[dict] | None = None,
+    scene_sheet_path: str | None = None,
+    style_ref_path: str | None = None,
+    max_retries: int = 2,
+) -> str:
+    """Generate a single illustration with reference images. Returns saved path or empty string."""
     client = _get_client()
     save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build content: references first, then prompt
+    parts = _build_reference_parts(character_sheets, scene_sheet_path, style_ref_path)
+    parts.append({"text": prompt})
 
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model=GEMINI_IMAGE_MODEL,
-                contents=prompt,
+                contents=parts,
                 config=genai.types.GenerateContentConfig(
                     response_modalities=["TEXT", "IMAGE"],
                     image_config=genai.types.ImageConfig(
@@ -70,16 +111,27 @@ def _generate_image(prompt: str, save_path: Path, max_retries: int = 2) -> str:
     return ""
 
 
+def _find_book_cover(book_id: str) -> str | None:
+    """Find existing book cover to use as style reference."""
+    special_dir = GENERATED_DIR / book_id / "special"
+    for ext in (".png", ".jpg"):
+        p = special_dir / f"book_cover{ext}"
+        if p.exists():
+            return str(p)
+    return None
+
+
 def generate_book_cover(
     title: str,
     characters: list[dict],
     book_id: str,
+    character_sheets: list[dict] | None = None,
+    scene_sheet_path: str | None = None,
     style: str | None = None,
 ) -> str:
-    """Generate an illustrated book cover."""
+    """Generate an illustrated book cover. This is the style anchor for the whole book."""
     active_style = style or DEFAULT_STYLE
 
-    # Build character descriptions
     char_desc = ""
     for c in characters[:5]:
         name = c.get("name", "")
@@ -107,7 +159,7 @@ Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
     save_path = GENERATED_DIR / book_id / "special" / "book_cover"
-    return _generate_image(prompt, save_path)
+    return _generate_image_with_refs(prompt, save_path, character_sheets, scene_sheet_path)
 
 
 def generate_chapter_cover(
@@ -116,10 +168,13 @@ def generate_chapter_cover(
     chapter_summary: str,
     characters: list[dict],
     book_id: str,
+    character_sheets: list[dict] | None = None,
+    scene_sheet_path: str | None = None,
     style: str | None = None,
 ) -> str:
-    """Generate a chapter title page illustration."""
+    """Generate a chapter title page illustration, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
+    style_ref = _find_book_cover(book_id)
 
     char_desc = ""
     for c in characters[:3]:
@@ -139,7 +194,7 @@ CHARACTERS:
 REQUIREMENTS:
 - Draw the chapter number and title in playful hand-drawn lettering
 - The illustration should hint at what this chapter is about
-- Use a distinct color palette that represents this chapter's mood
+- MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
 - Leave some breathing room — this is a transition page, not a full scene
 - The illustration should make the reader excited to turn the page
 - Include decorative elements (vines, stars, swirls) around the title
@@ -148,7 +203,7 @@ Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
     save_path = GENERATED_DIR / book_id / "special" / f"chapter_{chapter_num:02d}_cover"
-    return _generate_image(prompt, save_path)
+    return _generate_image_with_refs(prompt, save_path, character_sheets, scene_sheet_path, style_ref)
 
 
 def generate_chapter_ending(
@@ -157,10 +212,12 @@ def generate_chapter_ending(
     ending_text: str,
     characters: list[dict],
     book_id: str,
+    character_sheets: list[dict] | None = None,
     style: str | None = None,
 ) -> str:
-    """Generate a chapter ending illustration."""
+    """Generate a chapter ending illustration, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
+    style_ref = _find_book_cover(book_id)
 
     char_desc = ""
     for c in characters[:3]:
@@ -180,40 +237,42 @@ CHARACTERS:
 REQUIREMENTS:
 - This is a TRANSITION page between chapters — create a sense of anticipation
 - The mood should be contemplative but forward-looking ("what happens next?")
+- MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
 - Include a small decorative "To be continued..." or "..." text element
 - Do NOT write "End of Chapter" or "The End" — the story continues!
 - Use softer, more muted colors than the main pages
-- The composition should feel like a gentle pause before the next adventure
 - Add small decorative elements (a small ornament, a trailing vine, etc.)
 
 Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
     save_path = GENERATED_DIR / book_id / "special" / f"chapter_{chapter_num:02d}_ending"
-    return _generate_image(prompt, save_path)
+    return _generate_image_with_refs(prompt, save_path, character_sheets, None, style_ref)
 
 
 def generate_back_cover(
     title: str,
     book_id: str,
+    character_sheets: list[dict] | None = None,
     style: str | None = None,
 ) -> str:
-    """Generate an illustrated back cover / 'The End' page."""
+    """Generate an illustrated back cover, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
+    style_ref = _find_book_cover(book_id)
 
     prompt = f"""Create a beautiful BACK COVER illustration for a children's picture book titled "{title}".
 
 REQUIREMENTS:
 - Draw "The End" in large, playful, hand-drawn lettering in the center
 - Add "Thank you for reading!" below it in smaller text
+- MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
 - The illustration should feel warm, cozy, and satisfying — like finishing a good bedtime story
 - Include small references to the story (tiny versions of characters waving goodbye, key objects from the story)
 - Use warm sunset/twilight colors
 - Add decorative borders or frames
-- The overall feeling should be: "That was a wonderful story!"
 
 Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
     save_path = GENERATED_DIR / book_id / "special" / "back_cover"
-    return _generate_image(prompt, save_path)
+    return _generate_image_with_refs(prompt, save_path, character_sheets, None, style_ref)

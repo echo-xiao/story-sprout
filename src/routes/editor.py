@@ -146,6 +146,40 @@ async def get_locations(book_id: str) -> dict[str, Any]:
     return {"locations": locations, "scene_sheets": scene_sheets}
 
 
+@router.get("/api/book/{book_id}/preprocess/scenes/{scene_name}/history")
+async def get_scene_sheet_history(book_id: str, scene_name: str) -> dict[str, Any]:
+    """Get current + historical scene sheet images."""
+    import re as _re
+
+    scenes_dir = GENERATED_DIR / book_id / "scenes"
+    safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', scene_name)
+    safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
+    images = []
+
+    # Current sheet
+    for ext in (".png", ".jpg"):
+        current = scenes_dir / f"{safe}_scene{ext}"
+        if current.exists():
+            images.append({
+                "url": f"/static/{book_id}/scenes/{current.name}",
+                "version": "current",
+                "timestamp": current.stat().st_mtime,
+            })
+            break
+
+    # History
+    history_dir = scenes_dir / "history"
+    if history_dir.exists():
+        for f in sorted(history_dir.glob(f"{safe}_scene_*.*"), reverse=True):
+            images.append({
+                "url": f"/static/{book_id}/scenes/history/{f.name}",
+                "version": f.stem.split("_")[-1],
+                "timestamp": float(f.stem.split("_")[-1]),
+            })
+
+    return {"images": images}
+
+
 @router.get("/api/book/{book_id}/preprocess/characters/{char_name}/history")
 async def get_character_sheet_history(book_id: str, char_name: str) -> dict[str, Any]:
     """Get current + historical character sheet images."""

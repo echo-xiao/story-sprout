@@ -83,9 +83,9 @@ export function UploadForm({ onStartGeneration }: Props) {
         </p>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-6">
+      <div className="max-w-3xl mx-auto">
         {/* Input Panel */}
-        <div className="md:col-span-2 card">
+        <div className="card">
           <div className="flex gap-2 mb-4">
             <button
               onClick={() => setInputMode("text")}
@@ -159,99 +159,11 @@ export function UploadForm({ onStartGeneration }: Props) {
               )}
             </div>
           )}
-        </div>
-
-        {/* Config Panel */}
-        <div className="card space-y-5">
-          <h3 className="font-display text-lg font-bold text-gray-800">
-            Settings
-          </h3>
-
-          {/* Age Group */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-600 mb-2">
-              Age Group
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {(["2-4", "4-6", "6-8"] as const).map((age) => (
-                <button
-                  key={age}
-                  onClick={() => setConfig({ ...config, age_group: age })}
-                  className={`py-2 rounded-xl text-sm font-bold transition-all ${
-                    config.age_group === age
-                      ? "bg-sky text-gray-800 shadow-sm"
-                      : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-                  }`}
-                >
-                  {age}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Pages */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-600 mb-2">
-              Pages: {config.num_pages}
-            </label>
-            <input
-              type="range"
-              min={6}
-              max={20}
-              value={config.num_pages}
-              onChange={(e) =>
-                setConfig({ ...config, num_pages: parseInt(e.target.value) })
-              }
-              className="w-full accent-coral"
-            />
-            <div className="flex justify-between text-xs text-gray-400">
-              <span>6</span>
-              <span>20</span>
-            </div>
-          </div>
-
-          {/* Template */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-600 mb-2">
-              Story Structure
-            </label>
-            <select
-              value={config.template}
-              onChange={(e) =>
-                setConfig({
-                  ...config,
-                  template: e.target.value as GenerationConfig["template"],
-                })
-              }
-              className="w-full p-2 border border-peach/50 rounded-xl bg-white
-                         focus:outline-none focus:ring-2 focus:ring-coral/30 text-sm"
-            >
-              <option value="classic">Classic (Problem-Solution)</option>
-              <option value="journey">Journey (Adventure)</option>
-              <option value="simple">Simple (Sequential)</option>
-            </select>
-          </div>
-
-          {/* Education Goal */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-600 mb-2">
-              Education Goal (optional)
-            </label>
-            <input
-              type="text"
-              value={educationGoal}
-              onChange={(e) => setEducationGoal(e.target.value)}
-              placeholder="e.g., learning to share"
-              className="w-full p-2 border border-peach/50 rounded-xl bg-white
-                         focus:outline-none focus:ring-2 focus:ring-coral/30 text-sm"
-            />
-          </div>
-
           {/* Submit */}
           <button
             onClick={handleSubmit}
             disabled={loading}
-            className={`w-full btn-primary ${
+            className={`w-full btn-primary mt-4 ${
               loading ? "opacity-50 cursor-not-allowed" : ""
             }`}
           >
@@ -259,38 +171,9 @@ export function UploadForm({ onStartGeneration }: Props) {
           </button>
 
           {error && (
-            <p className="text-red-500 text-sm text-center">{error}</p>
+            <p className="text-red-500 text-sm text-center mt-2">{error}</p>
           )}
         </div>
-      </div>
-
-      {/* Features */}
-      <div className="grid md:grid-cols-3 gap-6 pt-8">
-        {[
-          {
-            icon: "🔍",
-            title: "Smart Analysis",
-            desc: "NLP-powered character detection, sentiment analysis, and story structure identification",
-          },
-          {
-            icon: "🎨",
-            title: "AI Illustrations",
-            desc: "Beautiful watercolor-style illustrations with consistent characters across all pages",
-          },
-          {
-            icon: "📚",
-            title: "Age-Appropriate",
-            desc: "Language complexity automatically adjusted for your child's age group",
-          },
-        ].map((feature) => (
-          <div key={feature.title} className="card text-center">
-            <span className="text-3xl">{feature.icon}</span>
-            <h3 className="font-display text-lg font-bold mt-2">
-              {feature.title}
-            </h3>
-            <p className="text-sm text-gray-500 mt-1">{feature.desc}</p>
-          </div>
-        ))}
       </div>
     </div>
   );

@@ -632,6 +632,32 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
     if skipped:
         print(f"  Skipped {skipped} chapters (already annotated)")
 
+    # Generate chapter-level summaries from segment scene_summaries
+    print(f"\n  Generating chapter summaries...")
+    from src.llm_client import generate_json as _gen_json
+    for ch_idx in sorted_ch_keys:
+        segs = ch_seg_groups[ch_idx]
+        ch_title = chapters[ch_idx].get("title", f"Ch {ch_idx}") if ch_idx < len(chapters) else "?"
+        scene_summaries = [s.get("scene_summary", "") for s in segs if s.get("scene_summary")]
+        if not scene_summaries:
+            chapter_segments_map[str(ch_idx)]["chapter_summary"] = ""
+            continue
+        try:
+            result = _gen_json(f"""Summarize this chapter of "{title}" in ONE sentence (max 30 words).
+The sentence should capture the main event and mood, suitable for a chapter cover illustration.
+
+Chapter: {ch_title}
+Scenes:
+{chr(10).join(f'- {s}' for s in scene_summaries[:20])}
+
+Return JSON: {{"summary": "..."}}""")
+            summary = result.get("summary", "")
+            chapter_segments_map[str(ch_idx)]["chapter_summary"] = summary
+            tqdm.write(f"    Ch {ch_idx}: {summary[:80]}")
+        except Exception as e:
+            tqdm.write(f"    Ch {ch_idx}: summary failed: {e}")
+            chapter_segments_map[str(ch_idx)]["chapter_summary"] = ""
+
     # Flatten all segments (now with IDs and annotations)
     final_segments = []
     for ch_idx in sorted(ch_seg_groups.keys()):
