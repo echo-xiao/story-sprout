@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Users, RefreshCw, Save } from "lucide-react";
 import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails } from "@/lib/api";
 import type { CharacterInfo } from "@/types";
@@ -41,8 +41,13 @@ export default function CharacterManagement({
   }, [selectedChar]);
 
   const selectChar = (char: CharacterInfo) => {
+    if (selectedChar !== char.canonical_name) {
+      setActiveSheetUrl(null);
+      // Show current sheet immediately as placeholder while history loads
+      const sheetUrl = sheets[char.canonical_name];
+      setSheetHistory(sheetUrl ? [{ url: sheetUrl, version: "current", timestamp: Date.now() }] : []);
+    }
     setSelectedChar(char.canonical_name);
-    setActiveSheetUrl(null);
     setEditing({
       canonical_name: char.canonical_name,
       gender: char.gender || "unknown",
@@ -111,8 +116,9 @@ export default function CharacterManagement({
   const mainChars = characters.filter(c => c.role === "main");
   const otherChars = characters.filter(c => c.role !== "main");
   const [genAllRunning, setGenAllRunning] = useState(false);
-  const [genAllProgress, setGenAllProgress] = useState("");
-  const [genAllCurrentChar, setGenAllCurrentChar] = useState<string | null>(null);
+  const genAllProgressRef = useRef("");
+  const genAllCurrentCharRef = useRef<string | null>(null);
+  const genAllBtnRef = useRef<HTMLButtonElement>(null);
   const [autoFilling, setAutoFilling] = useState(false);
 
   const handleGenerateAll = async () => {
@@ -124,11 +130,13 @@ export default function CharacterManagement({
     setGenAllRunning(true);
     for (let i = 0; i < toGenerate.length; i++) {
       const char = toGenerate[i];
-      setGenAllProgress(`${i + 1}/${toGenerate.length}: ${char.canonical_name}`);
-      setGenAllCurrentChar(char.canonical_name);
+      genAllProgressRef.current = `${i + 1}/${toGenerate.length}: ${char.canonical_name}`;
+      genAllCurrentCharRef.current = char.canonical_name;
+      // Update button text directly (no re-render)
+      if (genAllBtnRef.current) genAllBtnRef.current.textContent = genAllProgressRef.current;
       try {
         await regenerateCharacterSheet(bookId, char.canonical_name);
-        // Wait for sheet to appear by checking history (lightweight)
+        // Wait for sheet to appear (lightweight, no state updates)
         await new Promise<void>((resolve) => {
           const poll = setInterval(async () => {
             try {
@@ -138,17 +146,17 @@ export default function CharacterManagement({
                 resolve();
               }
             } catch {}
-          }, 8000);
+          }, 10000);
           setTimeout(() => { clearInterval(poll); resolve(); }, 120000);
         });
       } catch {}
     }
-    // Final refresh to make sure all sheets are loaded
+    // Final refresh
     const finalData = await getCharacters(bookId);
     onCharactersUpdate(finalData.characters || [], finalData.sheets || {});
+    genAllProgressRef.current = "";
+    genAllCurrentCharRef.current = null;
     setGenAllRunning(false);
-    setGenAllProgress("");
-    setGenAllCurrentChar(null);
   };
 
   const handleAutoFill = async () => {
@@ -179,11 +187,12 @@ export default function CharacterManagement({
         <div className="px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-cream/50 flex items-center justify-between">
           <span>Main ({mainChars.length})</span>
           <button
+            ref={genAllBtnRef}
             onClick={handleGenerateAll}
             disabled={genAllRunning || regenning}
             className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
           >
-            {genAllRunning ? genAllProgress || "Generating..." : "Gen All"}
+            {genAllRunning ? "Generating..." : "Gen All"}
           </button>
         </div>
         {mainChars.map(char => (
@@ -192,7 +201,6 @@ export default function CharacterManagement({
             char={char}
             selected={selectedChar === char.canonical_name}
             hasSheet={!!sheets[char.canonical_name]}
-            generating={genAllCurrentChar === char.canonical_name}
             onClick={() => selectChar(char)}
           />
         ))}
@@ -207,7 +215,6 @@ export default function CharacterManagement({
             char={char}
             selected={selectedChar === char.canonical_name}
             hasSheet={!!sheets[char.canonical_name]}
-            generating={genAllCurrentChar === char.canonical_name}
             onClick={() => selectChar(char)}
           />
         ))}
@@ -245,28 +252,38 @@ export default function CharacterManagement({
             </div>
 
             {/* History thumbnails (vertical, right side of sheet) */}
-            {sheetHistory.length > 0 && (
-              <div className="w-[320px] shrink-0 overflow-y-auto p-4 space-y-3 border-l border-peach/20">
-                <p className="text-xs text-gray-500 font-semibold">Versions ({sheetHistory.length})</p>
-                {sheetHistory.map((img, idx) => (
-                  <div key={idx}>
-                    <img
-                      src={`${API_BASE}${img.url}?t=${img.timestamp}`}
-                      alt={img.version === "current" ? "Current" : `v${sheetHistory.length - idx}`}
-                      onClick={() => setActiveSheetUrl(img.url)}
-                      className={`w-full rounded-xl cursor-pointer border-2 transition-colors ${
-                        (activeSheetUrl || sheets[selected.canonical_name]) === img.url
-                          ? "border-coral shadow-md"
-                          : "border-transparent hover:border-coral/50"
-                      }`}
-                    />
-                    <p className="text-[10px] text-gray-400 text-center mt-1">
-                      {img.version === "current" ? "Current" : `Version ${sheetHistory.length - idx}`}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
+            {(() => {
+              // Build versions list: current from sheets + historical from sheetHistory
+              const currentUrl = sheets[selected.canonical_name];
+              const historical = sheetHistory.filter(img => img.version !== "current");
+              const allVersions = [
+                ...(currentUrl ? [{ url: currentUrl, version: "current", timestamp: Date.now() }] : []),
+                ...historical,
+              ];
+              if (allVersions.length === 0) return null;
+              return (
+                <div className="w-[320px] shrink-0 overflow-y-auto p-4 space-y-3 border-l border-peach/20">
+                  <p className="text-xs text-gray-500 font-semibold">Versions ({allVersions.length})</p>
+                  {allVersions.map((img, idx) => (
+                    <div key={`${selected.canonical_name}-${img.version}-${idx}`}>
+                      <img
+                        src={`${API_BASE}${img.url}`}
+                        alt={img.version === "current" ? "Current" : `v${allVersions.length - idx}`}
+                        onClick={() => setActiveSheetUrl(img.url)}
+                        className={`w-full rounded-xl cursor-pointer border-2 transition-colors ${
+                          (activeSheetUrl || currentUrl) === img.url
+                            ? "border-coral shadow-md"
+                            : "border-transparent hover:border-coral/50"
+                        }`}
+                      />
+                      <p className="text-[10px] text-gray-400 text-center mt-1">
+                        {img.version === "current" ? "Current" : `Version ${allVersions.length - idx}`}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Right: Portrait + Edit Fields */}
