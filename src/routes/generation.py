@@ -209,33 +209,42 @@ async def generate_chapter_endpoint(
 @router.get("/api/book/{book_id}/chapter/{ch_idx}/progress")
 async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
     """Get generation progress for a chapter."""
-    progress_file = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "progress.json"
-    if progress_file.exists():
-        try:
-            return json.loads(progress_file.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass  # File being written, fall through to estimate
-
-    # Estimate progress from existing page files
+    # Always check actual files first to determine true completion
     ch_dir = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "pages"
-    if not ch_dir.exists():
-        return {"status": "not_started", "progress": 0, "current_step": "Not started", "total_pages": 0, "completed_pages": 0}
-
-    pages = list(ch_dir.glob("page_*.*"))
-    # Get total from preprocess
     analysis = _load_json(book_id, "analysis.json")
     total = 0
     if analysis:
         total = sum(1 for s in analysis.get("segments", []) if s.get("chapter_idx") == ch_idx)
 
-    completed = len(pages)
+    completed = len(list(ch_dir.glob("page_*.*"))) if ch_dir.exists() else 0
+
+    # If all pages exist, it's complete regardless of progress.json
+    if completed >= total and total > 0:
+        return {
+            "status": "complete", "progress": 100,
+            "current_step": "Done", "total_pages": total, "completed_pages": completed,
+        }
+
+    # Check progress.json for live updates during generation
+    progress_file = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "progress.json"
+    if progress_file.exists():
+        try:
+            data = json.loads(progress_file.read_text())
+            # Override with actual file count for accuracy
+            data["completed_pages"] = completed
+            data["total_pages"] = total
+            return data
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if not ch_dir.exists() or completed == 0:
+        return {"status": "not_started", "progress": 0, "current_step": "Not started", "total_pages": total, "completed_pages": 0}
+
     progress = int(completed / total * 100) if total > 0 else 0
     return {
-        "status": "complete" if completed >= total and total > 0 else "generating",
-        "progress": progress,
+        "status": "generating", "progress": progress,
         "current_step": f"Page {completed}/{total}",
-        "total_pages": total,
-        "completed_pages": completed,
+        "total_pages": total, "completed_pages": completed,
     }
 
 

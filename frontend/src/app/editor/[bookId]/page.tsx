@@ -155,6 +155,15 @@ export default function EditorPage() {
 
     for (const chIdx of chapterIndices) {
       if (!genAllChaptersRef.current) break; // allow cancel
+
+      // Skip chapters that are already fully generated
+      try {
+        const prog = await getChapterProgress(bookId, chIdx).catch(() => null);
+        if (prog && prog.status === "complete") {
+          continue;
+        }
+      } catch {}
+
       setGeneratingChapter(chIdx);
       try {
         await generateChapter(bookId, chIdx);
@@ -166,6 +175,12 @@ export default function EditorPage() {
               if (!prog) return;
               setChapterProgress(prog);
               if (prog.status === "complete") {
+                // Refresh segments for this chapter to update green dots
+                if (selectedChapter === chIdx) {
+                  getChapterSegments(bookId, chIdx)
+                    .then(data => setSegments(data.segments || []))
+                    .catch(() => {});
+                }
                 clearInterval(poll);
                 resolve();
               }
@@ -818,17 +833,25 @@ export default function EditorPage() {
                     ) : null;
                   })()}
 
-                  {segments.map((seg, idx) => (
+                  {segments.map((seg, idx) => {
+                    const isGenerating = generatingChapter === +chIdx && chapterProgress?.current_step?.includes(`page ${idx + 1}`);
+                    const hasIllustration = !!seg.illustration_url;
+                    return (
                     <button
                       key={seg.id}
                       onClick={() => { setSelectedSegment(seg); setSelectedSpecial(null); }}
                       className={`w-full text-left px-6 py-2 text-xs border-b border-gray-50 transition-colors ${
-                        selectedSegment?.id === seg.id && !selectedSpecial
+                        isGenerating
+                          ? "bg-amber-50"
+                          : selectedSegment?.id === seg.id && !selectedSpecial
                           ? "bg-sky/20 text-gray-800"
                           : "hover:bg-gray-50 text-gray-500"
                       }`}
                     >
                       <div className="flex items-center gap-1.5">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${
+                          isGenerating ? "bg-amber-400 animate-pulse" : hasIllustration ? "bg-green-400" : "bg-gray-300"
+                        }`} />
                         <span className="font-mono text-[10px] text-gray-400">
                           {idx + 1}
                         </span>
@@ -849,7 +872,8 @@ export default function EditorPage() {
                         </div>
                       )}
                     </button>
-                  ))}
+                  );
+                  })}
 
                 </>)}
               </div>
