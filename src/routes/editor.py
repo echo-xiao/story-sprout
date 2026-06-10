@@ -29,8 +29,21 @@ async def get_chapters(book_id: str) -> dict[str, Any]:
 
 @router.get("/api/book/{book_id}/preprocess/characters")
 async def get_characters(book_id: str) -> dict[str, Any]:
-    """Get character list with sheets and gender info."""
-    llm_chars = _load_json(book_id, "llm_characters.json")
+    """Get character list with sheets and gender info.
+
+    Read from the canonical `characters` collection first \u2014 it survives a
+    failed re-preprocess that may have blanked the preprocess_files JSON \u2014
+    and fall back to llm_characters.json only if the collection is empty.
+    """
+    chars: list = []
+    try:
+        from src.core.db import get_characters as _get_chars_db
+        chars = _get_chars_db(book_id)
+    except Exception:
+        chars = []
+    if not chars:
+        llm_chars = _load_json(book_id, "llm_characters.json")
+        chars = llm_chars.get("characters", []) if llm_chars else []
     genders = _load_json(book_id, "character_genders.json") or {}
     alias_map = _load_json(book_id, "alias_map.json") or {}
 
@@ -42,8 +55,7 @@ async def get_characters(book_id: str) -> dict[str, Any]:
     if chars_dir.exists():
         sheet_files = {f.stem.replace("_sheet", ""): f for f in chars_dir.glob("*_sheet.*")}
         portrait_files = {f.stem.replace("_portrait", ""): f for f in chars_dir.glob("*_portrait.*")}
-        all_chars = llm_chars.get("characters", []) if llm_chars else []
-        for char in all_chars:
+        for char in chars:
             name = char.get("canonical_name", "")
             safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
             safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
@@ -53,7 +65,7 @@ async def get_characters(book_id: str) -> dict[str, Any]:
                 portraits[name] = f"/static/{book_id}/characters/{portrait_files[safe].name}"
 
     return {
-        "characters": llm_chars.get("characters", []) if llm_chars else [],
+        "characters": chars,
         "genders": genders,
         "alias_map": alias_map,
         "sheets": sheets,
