@@ -200,11 +200,14 @@ async def generate_chapter_endpoint(
     progress_file.write_text(json.dumps({"status": "starting", "progress": 0, "current_step": "Starting...", "total_pages": 0, "completed_pages": 0}))
 
     async def _gen():
-        import subprocess
-        subprocess.run(
-            ["python", "scripts/generate_chapter.py", "--book", book_id, "--chapter", str(ch_idx), "--with-special"],
+        import asyncio as _asyncio
+        proc = await _asyncio.create_subprocess_exec(
+            "python", "scripts/generate_chapter.py", "--book", book_id, "--chapter", str(ch_idx), "--with-special",
             cwd=str(Path(__file__).parent.parent.parent),
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
         )
+        await proc.communicate()
         # Mark complete
         progress_file.write_text(json.dumps({"status": "complete", "progress": 100, "current_step": "Done", "total_pages": 0, "completed_pages": 0}))
 

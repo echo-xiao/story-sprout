@@ -92,28 +92,36 @@ def _save_user_info(book_id: str, email: str, api_key: str | None = None) -> Non
 
 
 async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None = None) -> None:
-    """Run preprocess_book.py with error tracking."""
-    import subprocess, os
+    """Run preprocess_book.py with error tracking (non-blocking)."""
+    import asyncio, os
     env = os.environ.copy()
     if gemini_api_key:
         env["GEMINI_API_KEY"] = gemini_api_key
     try:
-        result = subprocess.run(
-            ["python", "scripts/preprocess_book.py", "--input", str(dest), "--skip-sheets"],
+        proc = await asyncio.create_subprocess_exec(
+            "python", "scripts/preprocess_book.py", "--input", str(dest), "--skip-sheets",
             cwd=str(Path(__file__).parent.parent.parent),
-            capture_output=True, text=True, timeout=600,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        if result.returncode != 0:
-            logger.error("Preprocess failed for %s (exit %d): %s", book_id, result.returncode, result.stderr[-500:] if result.stderr else "")
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            logger.error("Preprocess timed out for %s", book_id)
+            return
+
+        if proc.returncode != 0:
+            stderr_text = stderr.decode(errors="replace") if stderr else ""
+            logger.error("Preprocess failed for %s (exit %d): %s", book_id, proc.returncode, stderr_text[-500:])
             error_dir = GENERATED_DIR / book_id / "preprocess"
             error_dir.mkdir(parents=True, exist_ok=True)
             (error_dir / "error.json").write_text(json.dumps({
-                "error": result.stderr[-1000:] if result.stderr else "Unknown error",
-                "returncode": result.returncode,
+                "error": stderr_text[-1000:] or "Unknown error",
+                "returncode": proc.returncode,
             }))
-    except subprocess.TimeoutExpired:
-        logger.error("Preprocess timed out for %s", book_id)
     except Exception:
         logger.exception("Preprocess crashed for %s", book_id)
 
