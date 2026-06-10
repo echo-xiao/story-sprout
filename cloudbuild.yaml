@@ -1,0 +1,19 @@
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'picture-book-gen'
+      - '--source'
+      - '.'
+      - '--region'
+      - 'us-central1'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '2Gi'
+      - '--timeout'
+      - '600'
+timeout: '1800s'
+options:
+  logging: CLOUD_LOGGING_ONLY
