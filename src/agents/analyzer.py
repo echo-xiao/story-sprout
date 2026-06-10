@@ -122,7 +122,7 @@ class AnalyzerAgent:
             summary = ". ".join(sentences[:2]) + "." if sentences else seg_text[:200]
 
             scenes.append({
-                "page_number": len(scenes) + 1,
+                "page_number": i + 1,
                 "source_segment_id": seg.get("id", i),
                 "scene_summary": seg.get("scene_summary", summary),
                 "scene_background": seg.get("scene_background", ""),

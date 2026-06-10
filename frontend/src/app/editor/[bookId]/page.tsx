@@ -1005,7 +1005,7 @@ export default function EditorPage() {
                   })()}
 
                   {segments.map((seg, idx) => {
-                    const isGenerating = generatingChapter === +chIdx && chapterProgress?.current_step?.includes(`page ${idx + 1}`);
+                    const isGenerating = generatingChapter === +chIdx && chapterProgress?.current_step?.includes(`page ${idx + 1}/`);
                     const hasIllustration = !!seg.illustration_url;
                     return (
                     <button
