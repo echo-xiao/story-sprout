@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 from pathlib import Path
 
@@ -87,11 +88,16 @@ class ArtistAgent:
         chapter_dir: Path,
         qa_agent=None,
         progress_callback=None,
+        self_correct: bool = False,
+        self_correct_threshold: int = 50,
     ) -> list[dict]:
         """Generate page illustrations with optional per-page QA.
 
         Uses character sheets as visual references for consistency.
         If qa_agent is provided, runs quality check after each page.
+        If self_correct is enabled, pages scoring below the threshold are
+        regenerated once with the QA feedback injected into the prompt
+        (bounded: max 1 retry per page, the better-scoring image is kept).
 
         Args:
             page_prompts: Prompt data for each page.
@@ -172,11 +178,131 @@ class ArtistAgent:
             if qa_agent and ill_path:
                 if progress_callback:
                     progress_callback(idx + 1, f"QA checking page {page_num}/{total}...")
-                qa_agent.check_page(
-                    ill_path, character_sheets, scene, page_num, chapter_dir,
-                )
+                result = None
+                if self_correct and existing:
+                    # Reuse the saved report for cached pages instead of
+                    # burning another vision call
+                    quality_file = chapter_dir / "quality" / f"page_{page_num:03d}_quality.json"
+                    if quality_file.exists():
+                        try:
+                            result = json.loads(quality_file.read_text(encoding="utf-8"))
+                            qa_agent.record_cached(result)
+                            print(f"  [QA Agent] Page {page_num}: {result.get('overall_score', '?')}% (cached report)")
+                        except (json.JSONDecodeError, OSError):
+                            result = None
+                if result is None:
+                    result = qa_agent.check_page(
+                        ill_path, character_sheets, scene, page_num, chapter_dir,
+                    )
+
+                if (
+                    self_correct
+                    and result
+                    and result.get("overall_score", 100) < self_correct_threshold
+                    and not result.get("self_correct_attempted")
+                    and result.get("regeneration_feedback")
+                ):
+                    if progress_callback:
+                        progress_callback(idx + 1, f"Self-correcting page {page_num}/{total}...")
+                    ill_path = self._self_correct_page(
+                        img_client, page_prompt, valid_sheets, save_path, ill_path,
+                        result, qa_agent, character_sheets, scene, page_num, chapter_dir,
+                    )
+                    illustrations[-1]["image_path"] = ill_path
 
         return illustrations
+
+    def _self_correct_page(
+        self,
+        img_client,
+        page_prompt: dict,
+        valid_sheets: list[dict],
+        save_path: Path,
+        old_path: str,
+        old_result: dict,
+        qa_agent,
+        character_sheets: list[dict],
+        scene: dict,
+        page_num: int,
+        chapter_dir: Path,
+    ) -> str:
+        """Regenerate one low-scoring page using QA feedback (max 1 retry).
+
+        Keeps whichever image scores higher; the losing image goes to history.
+        Marks the quality report with self_correct_attempted so the page is
+        never retried again on later runs.
+        """
+        from src.generation.illustration import _generate_single_page
+
+        old_score = old_result.get("overall_score", 0)
+        feedback = old_result.get("regeneration_feedback", "")
+        print(f"  [QA Agent → Artist] Page {page_num}: {old_score}% below threshold, "
+              f"regenerating with QA feedback...")
+
+        history_dir = chapter_dir / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        old_file = Path(old_path)
+        backup = history_dir / f"{old_file.stem}_selfcorrect_prev{old_file.suffix}"
+        shutil.copy2(old_file, backup)
+
+        quality_file = chapter_dir / "quality" / f"page_{page_num:03d}_quality.json"
+        quality_file.parent.mkdir(parents=True, exist_ok=True)
+
+        success, new_path, _ = _generate_single_page(
+            img_client, page_prompt, valid_sheets, save_path,
+            correction_feedback=feedback,
+        )
+        if not success:
+            print(f"  [Self-Correct] Page {page_num}: regeneration failed, keeping original")
+            if not old_file.exists():
+                shutil.copy2(backup, old_file)
+            old_result["self_correct_attempted"] = True
+            quality_file.write_text(
+                json.dumps(old_result, indent=2, default=str, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return old_path
+
+        new_result = qa_agent.check_page(
+            new_path, character_sheets, scene, page_num, chapter_dir,
+        ) or {}
+        new_score = new_result.get("overall_score", 0)
+        kept_new = new_score >= old_score
+        final = new_result if kept_new else old_result
+
+        if not kept_new:
+            # Retry scored worse — restore the original image
+            Path(new_path).unlink(missing_ok=True)
+            shutil.copy2(backup, old_file)
+            if qa_agent.per_page_results and qa_agent.per_page_results[-1] is new_result:
+                qa_agent.per_page_results[-1] = old_result
+
+        final["self_correct_attempted"] = True
+        final["self_correct"] = {
+            "old_score": old_score, "new_score": new_score,
+            "kept": "new" if kept_new else "old",
+        }
+        quality_file.write_text(
+            json.dumps(final, indent=2, default=str, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"  [Self-Correct] Page {page_num}: {old_score}% -> {new_score}%, "
+              f"kept {'new' if kept_new else 'original'}")
+
+        try:
+            from src.agents.agent_log import log_event
+            log_event(
+                self.book_id,
+                chapter_dir.name.replace("ch", "").lstrip("0") or "0",
+                "qa", "self_correct",
+                f"Page {page_num}: {old_score}% < threshold, regenerated with QA feedback",
+                result=f"{old_score}% -> {new_score}%, kept {'new' if kept_new else 'original'}",
+                status="done" if kept_new else "warn",
+            )
+        except Exception:
+            pass
+
+        return new_path if kept_new else str(old_file)
 
     def generate_book_cover(self, title: str, profiles: list[dict]) -> str:
         """Generate book cover illustration."""

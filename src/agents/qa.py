@@ -105,6 +105,12 @@ class QAAgent:
 
         return result
 
+    def record_cached(self, result: dict) -> None:
+        """Include a previously saved per-page report in this run's summary."""
+        self.per_page_results.append(result)
+        for c in result.get("character_consistency", {}).get("characters", []):
+            self.per_character_scores.setdefault(c["name"], []).append(c.get("score", 100))
+
     def check_style_coherence(
         self, illustrations: list[dict], chapter_dir: Path,
     ) -> dict:

@@ -53,6 +53,7 @@ def generate_chapter(
     chapter_idx: int,
     page_filter: list[int] | None = None,
     age_group: str = "4-6",
+    self_correct: bool = False,
 ) -> dict | None:
     """Generate a chapter by coordinating all agents."""
     from src.agents.analyzer import AnalyzerAgent
@@ -151,7 +152,7 @@ def generate_chapter(
     qa = QAAgent(book_id)
     illustrations = artist.generate_illustrations(
         page_prompts, simplified, character_sheets, chapter_dir, qa_agent=qa,
-        progress_callback=_progress_with_log,
+        progress_callback=_progress_with_log, self_correct=self_correct,
     )
     log_event(book_id, chapter_idx, "artist", "illustrate", f"All {total_pages} pages illustrated", status="done")
 
@@ -162,19 +163,37 @@ def generate_chapter(
     log_event(book_id, chapter_idx, "qa", "summarize", "Quality summary complete", status="done")
 
     # --- Save chapter data ---
-    chapter_data = {
-        "chapter_idx": chapter_idx,
-        "chapter_title": ch_title,
-        "pages": [],
-    }
-    for idx, scene in enumerate(simplified):
-        ill = illustrations[idx] if idx < len(illustrations) else {}
-        chapter_data["pages"].append({
-            "text": scene.get("page_text", scene.get("text", "")),
-            "image_path": ill.get("image_path", ""),
-        })
-
     chapter_data_path = chapter_dir / "chapter_data.json"
+    chapter_data = None
+    if page_filter and chapter_data_path.exists():
+        # Partial run: merge regenerated pages into the existing chapter data
+        # instead of clobbering it with only the filtered pages
+        try:
+            chapter_data = json.loads(chapter_data_path.read_text(encoding="utf-8"))
+            pages = chapter_data.get("pages", [])
+            for idx, scene in enumerate(simplified):
+                ill = illustrations[idx] if idx < len(illustrations) else {}
+                pn = scene.get("page_number", 0)
+                if 1 <= pn <= len(pages):
+                    pages[pn - 1] = {
+                        "text": scene.get("page_text", scene.get("text", "")),
+                        "image_path": ill.get("image_path", pages[pn - 1].get("image_path", "")),
+                    }
+        except (json.JSONDecodeError, OSError):
+            chapter_data = None
+    if chapter_data is None:
+        chapter_data = {
+            "chapter_idx": chapter_idx,
+            "chapter_title": ch_title,
+            "pages": [],
+        }
+        for idx, scene in enumerate(simplified):
+            ill = illustrations[idx] if idx < len(illustrations) else {}
+            chapter_data["pages"].append({
+                "text": scene.get("page_text", scene.get("text", "")),
+                "image_path": ill.get("image_path", ""),
+            })
+
     chapter_data_path.write_text(
         json.dumps(chapter_data, indent=2, default=str, ensure_ascii=False),
         encoding="utf-8",
@@ -266,6 +285,8 @@ def main():
     parser.add_argument("--special-only", action="store_true", help="Only generate special pages")
     parser.add_argument("--cover-only", action="store_true", help="Only generate book cover")
     parser.add_argument("--pdf-only", action="store_true", help="Only rebuild PDF")
+    parser.add_argument("--self-correct", action="store_true",
+                        help="Auto-regenerate pages whose QA score is below 50 (max 1 retry per page)")
     args = parser.parse_args()
 
     from src.agents.analyzer import AnalyzerAgent
@@ -315,7 +336,8 @@ def main():
     page_filter = [int(p.strip()) for p in args.pages.split(",")] if args.pages else None
 
     for ch_idx in chapter_indices:
-        generate_chapter(args.book, data, ch_idx, page_filter=page_filter, age_group=args.age)
+        generate_chapter(args.book, data, ch_idx, page_filter=page_filter, age_group=args.age,
+                         self_correct=args.self_correct)
 
     # Rebuild the PDF from ALL generated chapters, not just the one(s) just
     # generated — otherwise regenerating one chapter clobbers the full-book PDF.

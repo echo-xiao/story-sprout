@@ -247,11 +247,19 @@ def _generate_single_page(
     save_path: Path,
     style_ref_path: str | None = None,
     scene_sheet_path: str | None = None,
+    correction_feedback: str | None = None,
 ) -> tuple[bool, str, str]:
     """Generate a single page illustration. Returns (success, image_path, prompt_used)."""
     from src.config import IMAGE_LLM
 
     prompt_text, in_scene_names = _build_page_prompt(page, valid_sheets)
+    if correction_feedback:
+        prompt_text += (
+            "\n\nQUALITY REVIEW FEEDBACK — a previous version of this page failed review. "
+            "Fix the issues below. If the feedback quotes story text that differs from the "
+            "story text above, the story text above is authoritative.\n"
+            + correction_feedback
+        )
 
     if IMAGE_LLM == "alicloud":
         from src.generation.alicloud_image import generate_image_alicloud
