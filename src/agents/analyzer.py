@@ -26,17 +26,59 @@ class AnalyzerAgent:
         self.preprocess_dir = GENERATED_DIR / book_id / "preprocess"
 
     def load_preprocess(self) -> dict:
-        """Load all preprocessed data for a book."""
-        if not self.preprocess_dir.exists():
-            print(f"Error: No preprocessed data found at {self.preprocess_dir}")
-            print(f"Run: python scripts/preprocess_book.py --input <book_file>")
-            sys.exit(1)
+        """Load all preprocessed data for a book.
 
-        data = {}
-        for name in ["meta", "chapters", "full_text", "analysis", "chapter_segments"]:
+        Read path priority (each best-effort, falling through on failure):
+          1. MongoDB MCP server (Model Context Protocol) — the partner
+             integration: data is fetched via the official mongodb-mcp-server
+             over stdio.
+          2. Direct pymongo read of the same preprocess_files documents.
+          3. Local JSON files on disk.
+        Preprocess writes each JSON doc to MongoDB and disk, so all three
+        return the identical structure — no field mapping needed.
+        """
+        names = ["meta", "chapters", "full_text", "analysis", "chapter_segments"]
+        data: dict = {}
+
+        # 1) MongoDB MCP server (partner integration).
+        try:
+            from src.core.mcp_client import load_preprocess_files_via_mcp
+            mcp_data = load_preprocess_files_via_mcp(self.book_id, names)
+            if mcp_data:
+                data.update(mcp_data)
+                logger.info("load_preprocess: %d/%d docs via MongoDB MCP server for %s",
+                            len(mcp_data), len(names), self.book_id)
+        except Exception as e:
+            logger.warning("load_preprocess: MCP path unavailable (%s)", e)
+
+        # 2) Direct pymongo fallback for anything MCP didn't return.
+        if len(data) < len(names):
+            try:
+                from src.core.db import load_preprocess_file, is_available
+                if is_available():
+                    for name in names:
+                        if name in data:
+                            continue
+                        doc = load_preprocess_file(self.book_id, f"{name}.json")
+                        if doc is not None:
+                            data[name] = doc
+            except Exception as e:
+                logger.warning("load_preprocess: pymongo fallback failed (%s)", e)
+
+        # 3) Local file fallback.
+        for name in names:
+            if name in data:
+                continue
             path = self.preprocess_dir / f"{name}.json"
             if path.exists():
                 data[name] = json.loads(path.read_text(encoding="utf-8"))
+
+        if not data:
+            print(f"Error: No preprocessed data found for '{self.book_id}'")
+            print(f"  (checked MongoDB MCP, MongoDB, and {self.preprocess_dir})")
+            print(f"Run: python scripts/preprocess_book.py --input <book_file>")
+            sys.exit(1)
+
         return data
 
     def get_chapter_segments(self, data: dict, chapter_idx: int) -> tuple[list[dict], str]:

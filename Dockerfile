@@ -13,11 +13,14 @@ RUN npm run build
 FROM python:3.13-slim
 WORKDIR /app
 
-# Install Node.js for Next.js standalone server
+# Install Node.js 22 for Next.js standalone server AND the MongoDB MCP server
+# (mongodb-mcp-server requires Node >=22.13). Pre-install it so the runtime
+# doesn't download it on first use.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
+    && npm install -g mongodb-mcp-server@latest \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps
