@@ -36,7 +36,7 @@ import SceneManagement from "@/components/editor/SceneManagement";
 import AutoTextarea from "@/components/editor/AutoTextarea";
 import AgentActivityPanel from "@/components/editor/AgentActivityPanel";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 const SENTIMENTS = ["positive", "negative", "neutral", "tense", "emotional"];
 
 const AGENT_LABELS: Record<string, { icon: string; name: string }> = {

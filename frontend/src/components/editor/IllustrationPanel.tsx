@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Image, BookOpen } from "lucide-react";
 import type { Segment } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 interface IllustrationPanelProps {
   selectedSegment: Segment;

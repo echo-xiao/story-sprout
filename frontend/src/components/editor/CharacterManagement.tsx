@@ -6,7 +6,7 @@ import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterS
 import AutoTextarea from "./AutoTextarea";
 import type { CharacterInfo } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 interface CharacterManagementProps {
   bookId: string;

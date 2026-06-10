@@ -5,7 +5,7 @@ import { MapPin, RefreshCw } from "lucide-react";
 import { getLocations, regenerateSceneSheet, getSceneSheetHistory } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 interface SceneManagementProps {
   bookId: string;

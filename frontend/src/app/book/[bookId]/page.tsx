@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 
 import { ChevronLeft, ChevronRight, Edit3 } from "lucide-react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 interface PageInfo {
   page_number: number;

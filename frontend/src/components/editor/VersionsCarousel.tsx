@@ -1,6 +1,6 @@
 import type { Segment } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 interface HistoryImage {
   url: string;
