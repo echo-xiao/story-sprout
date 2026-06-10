@@ -68,7 +68,7 @@ class CharacterUpdate(BaseModel):
     appearance: Optional[str] = None
     description: Optional[str] = None
     aliases: Optional[list[str]] = None
-    visual_details: Optional[dict[str, str]] = None
+    visual_details: Optional[dict[str, Any]] = None
 
 
 @router.put("/api/book/{book_id}/preprocess/characters/{char_name}")
@@ -109,8 +109,8 @@ async def update_character(book_id: str, char_name: str, update: CharacterUpdate
     try:
         from src.core.db import update_character as db_update_char
         db_update_char(book_id, char_name, update_dict)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("MongoDB sync skipped for character %s: %s", char_name, e)
 
     return {"status": "updated", "character": char_name, "updated_fields": list(update_dict.keys())}
 
@@ -209,6 +209,19 @@ async def get_special_pages(book_id: str) -> dict[str, Any]:
             "url": cover_url,
         })
 
+        # Chapter ending
+        ending_url = None
+        for ext in (".png", ".jpg"):
+            p = special_dir / f"chapter_{ch_num:02d}_ending{ext}"
+            if p.exists():
+                ending_url = f"/static/{book_id}/special/{p.name}"
+                break
+        pages.append({
+            "type": "chapter_ending",
+            "chapter": ch_num,
+            "label": f"Ch {ch_num + 1} Ending",
+            "url": ending_url,
+        })
 
     # Back cover
     for ext in (".png", ".jpg"):
@@ -384,8 +397,8 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
     try:
         from src.core.db import update_segment as db_update_segment
         db_update_segment(book_id, seg_id, update_dict)
-    except Exception:
-        pass  # MongoDB is best-effort
+    except Exception as e:
+        logger.debug("MongoDB sync skipped for segment %d: %s", seg_id, e)
 
     return {"status": "updated", "segment_id": seg_id, "updated_fields": list(update_dict.keys())}
 

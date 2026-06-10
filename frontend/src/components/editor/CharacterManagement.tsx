@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { Users, RefreshCw, Save } from "lucide-react";
-import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails } from "@/lib/api";
+import { useState, useEffect } from "react";
+import { Users, RefreshCw, Shield } from "lucide-react";
+import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails, checkCharacterSheetQuality } from "@/lib/api";
+import AutoTextarea from "./AutoTextarea";
 import type { CharacterInfo } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -12,7 +13,7 @@ interface CharacterManagementProps {
   characters: CharacterInfo[];
   sheets: Record<string, string>;
   aliasMap: Record<string, string>;
-  onCharactersUpdate: (characters: CharacterInfo[], sheets: Record<string, string>) => void;
+  onCharactersUpdate: (characters: CharacterInfo[], sheets: Record<string, string>, renamedFrom?: string, renamedTo?: string) => void;
   navigateToChar?: string | null;
   onSelectChar?: (name: string) => void;
 }
@@ -32,6 +33,18 @@ export default function CharacterManagement({
   const [regenning, setRegenning] = useState(false);
   const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
+  const [checkingQuality, setCheckingQuality] = useState(false);
+  const [qualityResult, setQualityResult] = useState<{
+    overall_score: number;
+    character_name: string;
+    is_group: boolean;
+    appearance_match: { score: number; issues: string[] };
+    internal_consistency: { score: number; issues: string[] };
+    multi_angle: { score: number; has_front: boolean; has_side: boolean; has_back: boolean; has_expressions: boolean; issues: string[] };
+    style_quality: { score: number; issues: string[] };
+    text_labels: { score: number; issues: string[] };
+    regeneration_feedback: string;
+  } | null>(null);
 
   const selected = characters.find(c => c.canonical_name === selectedChar);
 
@@ -43,6 +56,7 @@ export default function CharacterManagement({
   const selectChar = (char: CharacterInfo) => {
     if (selectedChar !== char.canonical_name) {
       setActiveSheetUrl(null);
+      setQualityResult(null);
       // Show current sheet immediately as placeholder while history loads
       const sheetUrl = sheets[char.canonical_name];
       setSheetHistory(sheetUrl ? [{ url: sheetUrl, version: "current", timestamp: Date.now() }] : []);
@@ -85,11 +99,22 @@ export default function CharacterManagement({
 
   const handleSave = async () => {
     if (!selectedChar) return;
+    const oldName = selectedChar;
+    const newName = editing.canonical_name || oldName;
     setSaving(true);
     try {
-      await updateCharacter(bookId, selectedChar, editing);
+      await updateCharacter(bookId, oldName, editing);
       const data = await getCharacters(bookId);
-      onCharactersUpdate(data.characters || [], data.sheets || {});
+      onCharactersUpdate(
+        data.characters || [],
+        data.sheets || {},
+        oldName !== newName ? oldName : undefined,
+        oldName !== newName ? newName : undefined,
+      );
+      // Update local selectedChar to new name if renamed
+      if (oldName !== newName) {
+        setSelectedChar(newName);
+      }
     } catch (e) {
       console.error("Save failed:", e);
     } finally {
@@ -99,14 +124,35 @@ export default function CharacterManagement({
 
   const handleRegenSheet = async () => {
     if (!selectedChar) return;
+    const charName = selectedChar;
     setRegenning(true);
+    setQualityResult(null);
     try {
-      await regenerateCharacterSheet(bookId, selectedChar);
-      setTimeout(async () => {
-        const data = await getCharacters(bookId);
-        onCharactersUpdate(data.characters || [], data.sheets || {});
-        setRegenning(false);
-      }, 30000);
+      await regenerateCharacterSheet(bookId, charName);
+      // Poll until new sheet appears instead of blindly waiting 30s
+      await new Promise<void>((resolve) => {
+        const poll = setInterval(async () => {
+          try {
+            const hist = await getCharacterSheetHistory(bookId, charName);
+            if (hist.images?.some(img => img.version === "current")) {
+              clearInterval(poll);
+              const data = await getCharacters(bookId);
+              onCharactersUpdate(data.characters || [], data.sheets || {});
+              setRegenning(false);
+              resolve();
+            }
+          } catch {}
+        }, 5000);
+        setTimeout(() => { clearInterval(poll); setRegenning(false); resolve(); }, 120000);
+      });
+      // Auto quality check after generation completes
+      setCheckingQuality(true);
+      try {
+        const result = await checkCharacterSheetQuality(bookId, charName);
+        setQualityResult(result);
+      } catch {} finally {
+        setCheckingQuality(false);
+      }
     } catch (e) {
       console.error("Regen failed:", e);
       setRegenning(false);
@@ -116,9 +162,8 @@ export default function CharacterManagement({
   const mainChars = characters.filter(c => c.role === "main");
   const otherChars = characters.filter(c => c.role !== "main");
   const [genAllRunning, setGenAllRunning] = useState(false);
-  const genAllProgressRef = useRef("");
+  const [genAllProgress, setGenAllProgress] = useState("");
   const [genAllCurrentChar, setGenAllCurrentChar] = useState<string | null>(null);
-  const genAllBtnRef = useRef<HTMLButtonElement>(null);
   const [autoFilling, setAutoFilling] = useState(false);
 
   const handleGenerateAll = async () => {
@@ -130,13 +175,11 @@ export default function CharacterManagement({
     setGenAllRunning(true);
     for (let i = 0; i < toGenerate.length; i++) {
       const char = toGenerate[i];
-      genAllProgressRef.current = `${i + 1}/${toGenerate.length}: ${char.canonical_name}`;
+      setGenAllProgress(`${i + 1}/${toGenerate.length}`);
       setGenAllCurrentChar(char.canonical_name);
-      // Update button text directly (no re-render)
-      if (genAllBtnRef.current) genAllBtnRef.current.textContent = genAllProgressRef.current;
       try {
         await regenerateCharacterSheet(bookId, char.canonical_name);
-        // Wait for sheet to appear (lightweight, no state updates)
+        // Wait for sheet to appear
         await new Promise<void>((resolve) => {
           const poll = setInterval(async () => {
             try {
@@ -154,7 +197,7 @@ export default function CharacterManagement({
     // Final refresh
     const finalData = await getCharacters(bookId);
     onCharactersUpdate(finalData.characters || [], finalData.sheets || {});
-    genAllProgressRef.current = "";
+    setGenAllProgress("");
     setGenAllCurrentChar(null);
     setGenAllRunning(false);
   };
@@ -187,12 +230,11 @@ export default function CharacterManagement({
         <div className="px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-cream/50 flex items-center justify-between">
           <span>Main ({mainChars.length})</span>
           <button
-            ref={genAllBtnRef}
             onClick={handleGenerateAll}
             disabled={genAllRunning || regenning}
             className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
           >
-            {genAllRunning ? "Generating..." : "Gen All"}
+            {genAllRunning ? genAllProgress || "Generating..." : "Gen All"}
           </button>
         </div>
         {mainChars.map(char => (
@@ -288,7 +330,111 @@ export default function CharacterManagement({
             })()}
           </div>
 
-          {/* Right: Portrait + Edit Fields */}
+          {/* Quality Check column (between thumbnails and edit fields) */}
+          {!!(selectedChar && sheets[selectedChar]) && (
+            <div className="w-[240px] shrink-0 overflow-y-auto p-3 border-r border-peach/20">
+              <div className="card !p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display font-bold text-gray-700 text-xs flex items-center gap-1">
+                    <Shield size={12} /> Quality Check
+                  </h3>
+                  <button
+                    onClick={async () => {
+                      if (!selectedChar) return;
+                      setCheckingQuality(true);
+                      try {
+                        const result = await checkCharacterSheetQuality(bookId, selectedChar);
+                        setQualityResult(result);
+                      } catch (e) {
+                        console.error("Quality check failed:", e);
+                      } finally {
+                        setCheckingQuality(false);
+                      }
+                    }}
+                    disabled={checkingQuality}
+                    className="text-[10px] font-semibold bg-sky/50 hover:bg-sky text-gray-700 px-2 py-0.5 rounded transition-colors disabled:opacity-50 flex items-center gap-1"
+                  >
+                    <Shield size={10} className={checkingQuality ? "animate-spin" : ""} />
+                    {checkingQuality ? "..." : "Run"}
+                  </button>
+                </div>
+
+                {qualityResult ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xl font-bold ${
+                        qualityResult.overall_score >= 80 ? "text-green-600" :
+                        qualityResult.overall_score >= 60 ? "text-yellow-600" : "text-red-600"
+                      }`}>{qualityResult.overall_score}%</span>
+                      {qualityResult.is_group && (
+                        <span className="text-[9px] bg-lavender/30 px-1.5 py-0.5 rounded text-gray-600">Group</span>
+                      )}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {[
+                        { key: "appearance_match", label: "Appearance", data: qualityResult.appearance_match },
+                        { key: "internal_consistency", label: "Consistency", data: qualityResult.internal_consistency },
+                        { key: "multi_angle", label: "Multi-Angle", data: qualityResult.multi_angle },
+                        { key: "style_quality", label: "Style", data: qualityResult.style_quality },
+                        { key: "text_labels", label: "Text & Labels", data: qualityResult.text_labels },
+                      ].map(({ key, label, data }) => {
+                        const score = data?.score ?? 100;
+                        return (
+                          <div key={key}>
+                            <div className="flex items-center gap-1 text-xs">
+                              <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                                score >= 80 ? "bg-green-500" : score >= 60 ? "bg-yellow-500" : "bg-red-500"
+                              }`} />
+                              <span className="text-gray-600 flex-1">{label}</span>
+                              <span className={`font-bold ${
+                                score >= 80 ? "text-green-600" : score >= 60 ? "text-yellow-600" : "text-red-600"
+                              }`}>{score}%</span>
+                            </div>
+                            {(data?.issues?.length ?? 0) > 0 && (
+                              <ul className="text-[10px] text-gray-500 pl-4 mt-0.5 space-y-0.5">
+                                {data.issues.slice(0, 5).map((issue: string, i: number) => (
+                                  <li key={i} className="list-disc">{issue}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {qualityResult.multi_angle && (
+                      <div className="flex gap-1 flex-wrap">
+                        {(["front", "side", "back", "expressions"] as const).map(view => {
+                          const has = qualityResult.multi_angle[`has_${view}` as keyof typeof qualityResult.multi_angle];
+                          return (
+                            <span key={view} className={`text-[9px] px-1.5 py-0.5 rounded ${
+                              has ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                            }`}>
+                              {has ? "\u2713" : "\u2717"} {view}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {qualityResult.regeneration_feedback && (
+                      <div className="bg-amber-50 rounded-lg p-2 text-[10px] text-amber-800">
+                        <p className="font-semibold mb-0.5">Suggested fix:</p>
+                        <p>{qualityResult.regeneration_feedback}</p>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-gray-400">
+                    {checkingQuality ? "Analyzing sheet with AI..." : "Click Run to check quality."}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Right: Edit Fields */}
           <div className="w-[320px] shrink-0 overflow-y-auto p-5 space-y-3">
             {/* Editable Name */}
             <div>
@@ -337,11 +483,10 @@ export default function CharacterManagement({
                   {autoFilling ? "Filling..." : "Auto Fill"}
                 </button>
               </div>
-              <textarea
+              <AutoTextarea
                 value={editing.appearance || ""}
                 onChange={e => setEditing(prev => ({ ...prev, appearance: e.target.value }))}
-                rows={Math.max(2, Math.ceil((editing.appearance || "").length / 35) + 1)}
-                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm resize-y"
+                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm min-h-[3rem]"
                 placeholder="Physical description from the book..."
               />
             </div>
@@ -362,14 +507,13 @@ export default function CharacterManagement({
               ].map(({ key, label, placeholder }) => (
                 <div key={key} className="flex items-start gap-2">
                   <label className="text-[10px] text-gray-500 w-20 shrink-0 text-right pt-1">{label}</label>
-                  <textarea
+                  <AutoTextarea
                     value={(editing.visual_details || {})[key] || ""}
                     onChange={e => setEditing(prev => ({
                       ...prev,
                       visual_details: { ...(prev.visual_details || {}), [key]: e.target.value }
                     }))}
-                    rows={Math.max(1, Math.ceil(((editing.visual_details || {})[key] || "").length / 25))}
-                    className="flex-1 rounded-md border border-peach/40 px-2 py-1 text-xs resize-none"
+                    className="flex-1 rounded-md border border-peach/40 px-2 py-1 text-xs min-h-[1.75rem]"
                     placeholder={placeholder}
                   />
                 </div>
@@ -378,11 +522,10 @@ export default function CharacterManagement({
 
             <div>
               <label className="text-xs text-gray-500 font-semibold mb-1 block">Description</label>
-              <textarea
+              <AutoTextarea
                 value={editing.description || ""}
                 onChange={e => setEditing(prev => ({ ...prev, description: e.target.value }))}
-                rows={Math.max(2, Math.ceil((editing.description || "").length / 35) + 1)}
-                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm resize-y"
+                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm min-h-[3rem]"
                 placeholder="Character background, personality, role in the story..."
               />
             </div>
@@ -427,6 +570,7 @@ export default function CharacterManagement({
               </button>
             </div>
           </div>
+
         </div>
       ) : (
         <div className="flex-1 flex items-center justify-center text-gray-400">

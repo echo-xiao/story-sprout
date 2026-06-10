@@ -156,6 +156,8 @@ def generate_book_cover(
         if name and vi:
             char_desc += f"- {name}: {vi}\n"
 
+    title_spelled = "-".join(title.upper())
+
     prompt = f"""Create a beautiful BOOK COVER illustration for a children's picture book.
 
 TITLE: "{title}"
@@ -166,11 +168,17 @@ MAIN CHARACTERS (draw them prominently):
 REQUIREMENTS:
 - This is the FRONT COVER of the book
 - Draw the title "{title}" in large, playful, hand-drawn lettering at the top
+- SPELL THE TITLE EXACTLY letter by letter: {title_spelled}
 - Add "A Picture Book" as subtitle below the title
 - The main characters should be front and center, looking inviting and friendly
 - Use a warm, eye-catching color scheme that makes kids want to pick up the book
 - Include a hint of the story's setting in the background
 - The composition should be balanced and professional, like a real published book cover
+
+STRICT TEXT RULES:
+- The ONLY text in this image should be the title "{title}" and subtitle "A Picture Book".
+- Do NOT add any other text, labels, credits, or metadata.
+- Do NOT misspell the title. Copy it letter by letter: {title_spelled}
 
 Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
@@ -200,6 +208,8 @@ def generate_chapter_cover(
         if name and vi:
             char_desc += f"- {name}: {vi}\n"
 
+    chapter_title_spelled = "-".join(chapter_title.upper())
+
     prompt = f"""Create a CHAPTER TITLE PAGE illustration for a children's picture book.
 
 CHAPTER {chapter_num}: "{chapter_title}"
@@ -209,12 +219,16 @@ CHARACTERS:
 {char_desc or "Draw characters that match the chapter's mood."}
 
 REQUIREMENTS:
-- Draw the chapter number and title in playful hand-drawn lettering
+- Draw "Chapter {chapter_num}" and "{chapter_title}" in playful hand-drawn lettering
+- Spell the chapter title exactly: {chapter_title_spelled}
 - The illustration should hint at what this chapter is about
 - MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
 - Leave some breathing room — this is a transition page, not a full scene
-- The illustration should make the reader excited to turn the page
 - Include decorative elements (vines, stars, swirls) around the title
+
+STRICT TEXT RULES:
+- The ONLY text should be "Chapter {chapter_num}" and "{chapter_title}".
+- Do NOT add any other text, page numbers, or metadata.
 
 Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
@@ -245,7 +259,6 @@ def generate_chapter_ending(
 
     prompt = f"""Create a CHAPTER ENDING illustration for a children's picture book.
 
-END OF CHAPTER {chapter_num}: "{chapter_title}"
 CLOSING SCENE: {ending_text[:200]}
 
 CHARACTERS:
@@ -255,10 +268,14 @@ REQUIREMENTS:
 - This is a TRANSITION page between chapters — create a sense of anticipation
 - The mood should be contemplative but forward-looking ("what happens next?")
 - MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
-- Include a small decorative "To be continued..." or "..." text element
-- Do NOT write "End of Chapter" or "The End" — the story continues!
+- Include a small decorative "... To be continued..." text element
 - Use softer, more muted colors than the main pages
 - Add small decorative elements (a small ornament, a trailing vine, etc.)
+
+STRICT TEXT RULES:
+- The ONLY text allowed is "... To be continued..." or "..."
+- Do NOT write "End of Chapter", "The End", chapter numbers, or any other text.
+- Do NOT add page numbers or metadata.
 
 Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
@@ -277,16 +294,20 @@ def generate_back_cover(
     active_style = style or DEFAULT_STYLE
     style_ref = _find_book_cover(book_id)
 
-    prompt = f"""Create a beautiful BACK COVER illustration for a children's picture book titled "{title}".
+    prompt = f"""Create a beautiful BACK COVER illustration for a children's picture book.
 
 REQUIREMENTS:
-- Draw "The End" in large, playful, hand-drawn lettering in the center
+- Draw "The End" in large, playful, hand-drawn lettering in the center. Spell exactly: T-H-E E-N-D
 - Add "Thank you for reading!" below it in smaller text
 - MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
 - The illustration should feel warm, cozy, and satisfying — like finishing a good bedtime story
 - Include small references to the story (tiny versions of characters waving goodbye, key objects from the story)
 - Use warm sunset/twilight colors
 - Add decorative borders or frames
+
+STRICT TEXT RULES:
+- The ONLY text allowed is "The End" and "Thank you for reading!"
+- Do NOT add the book title, credits, page numbers, or any other text.
 
 Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""

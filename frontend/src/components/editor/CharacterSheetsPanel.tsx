@@ -7,11 +7,11 @@ interface CharacterSheetsPanelProps {
   selectedSegment: Segment;
   characters: CharacterInfo[];
   sheets: Record<string, string>;
-  portraits: Record<string, string>;
+  portraits?: Record<string, string>;
   locations: any[];
   sceneSheets: Record<string, string>;
-  bookId: string;
-  onRegenerateSheet: (canonicalName: string) => void;
+  bookId?: string;
+  onRegenerateSheet?: (canonicalName: string) => void;
   onNavigateToCharacter?: (charName: string) => void;
   onNavigateToScene?: (locName: string) => void;
 }
@@ -25,30 +25,40 @@ export default function CharacterSheetsPanel({
   onNavigateToCharacter,
   onNavigateToScene,
 }: CharacterSheetsPanelProps) {
-  // Match characters to scene (show all that are in characters_in_scene, even without sheets)
+  // Show exactly the characters listed in characters_in_scene (from Characters & Actions editor)
   const sceneChars = selectedSegment?.characters_in_scene || [];
-  const filteredCharacters = sceneChars.length === 0 ? [] : characters.filter((c) => {
-    const cName = c.canonical_name.toLowerCase();
-    const cParts = cName.split(/\s+/).filter((p) => p.length > 3);
-    return sceneChars.some((sc) => {
-      const scLower = sc.toLowerCase();
-      if (cName === scLower) return true;
-      const scParts = scLower.split(/\s+/).filter((p) => p.length > 3);
-      return cParts.some((p) => scLower.includes(p)) || scParts.some((p) => cName.includes(p));
-    });
+  const filteredCharacters = sceneChars.map((name) => {
+    // Find matching character info (exact match first, then case-insensitive)
+    return characters.find((c) => c.canonical_name === name)
+      || characters.find((c) => c.canonical_name.toLowerCase() === name.toLowerCase())
+      || { canonical_name: name, gender: "?", role: "?", aliases: [], description: "", appearance: "" } as CharacterInfo;
   });
 
-  // Match location to scene_background
+  // Match location to scene_background — score each location and pick the best
   const bg = (selectedSegment?.scene_background || "").toLowerCase();
-  const matchedLocations = locations.filter((loc) => {
+  const scoredLocations = locations.map((loc) => {
     const locName = loc.name.toLowerCase();
-    const locParts = locName.split(/\s+/).filter((p: string) => p.length > 3);
     const aliases = (loc.aliases || []).map((a: string) => a.toLowerCase());
-    // Check if any location name/alias word appears in scene_background
-    return locParts.some((p: string) => bg.includes(p))
-      || aliases.some((a: string) => bg.includes(a))
-      || bg.includes(locName);
+    let score = 0;
+    // Full name match is strongest signal
+    if (bg.includes(locName)) score += 10;
+    // Full alias match
+    for (const a of aliases) {
+      if (bg.includes(a)) score += 8;
+    }
+    // Partial word match (only significant words >4 chars, skip generic like "house", "room")
+    const genericWords = new Set(["house", "room", "place", "street", "building", "area", "town", "city"]);
+    const locParts = locName.split(/\s+/).filter((p: string) => p.length > 4 && !genericWords.has(p));
+    for (const p of locParts) {
+      if (bg.includes(p)) score += 3;
+    }
+    return { loc, score };
   });
+  const matchedLocations = scoredLocations
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map((s) => s.loc);
 
   return (
     <div className="w-1/2 overflow-y-auto p-3 space-y-3">
@@ -66,7 +76,7 @@ export default function CharacterSheetsPanel({
               >
                 {sheetUrl ? (
                   <img
-                    src={`${API_BASE}${sheetUrl}?t=${Date.now()}`}
+                    src={`${API_BASE}${sheetUrl}`}
                     alt={char.canonical_name}
                     className="w-full rounded-xl mb-2"
                   />

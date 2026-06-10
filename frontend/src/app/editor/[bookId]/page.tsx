@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, type TextareaHTMLAttributes } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
-import { RefreshCw, Save, Users, MapPin, Smile, BookOpen, Image } from "lucide-react";
+
+import { RefreshCw, Save, Users, MapPin, Smile, BookOpen, Image, Activity } from "lucide-react";
 import {
   getChapters,
   getCharacters,
@@ -32,21 +33,18 @@ import AIChatPanel from "@/components/editor/AIChatPanel";
 import VersionsCarousel from "@/components/editor/VersionsCarousel";
 import CharacterManagement from "@/components/editor/CharacterManagement";
 import SceneManagement from "@/components/editor/SceneManagement";
+import AutoTextarea from "@/components/editor/AutoTextarea";
+import AgentActivityPanel from "@/components/editor/AgentActivityPanel";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const SENTIMENTS = ["positive", "negative", "neutral", "tense", "emotional"];
 
-/** Auto-resizing textarea that grows with content */
-function AutoTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const resize = () => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = el.scrollHeight + "px";
-  };
-  useEffect(resize, [props.value]);
-  return <textarea ref={ref} {...props} onInput={resize} style={{ ...props.style, overflow: "hidden" }} />;
-}
+const AGENT_LABELS: Record<string, { icon: string; name: string }> = {
+  analyzer: { icon: "\uD83D\uDD0D", name: "Analyzer" },
+  writer: { icon: "\u270D\uFE0F", name: "Writer" },
+  artist: { icon: "\uD83C\uDFA8", name: "Artist" },
+  qa: { icon: "\u2705", name: "QA" },
+};
 
 export default function EditorPage() {
   const params = useParams();
@@ -117,6 +115,9 @@ export default function EditorPage() {
   } | null>(null);
   const [checkingQuality, setCheckingQuality] = useState(false);
 
+  // Agent Activity Panel
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+
   // AI Chat state
   const [chatMessages, setChatMessages] = useState<Array<{ role: string; content: string }>>([]);
   const [chatInput, setChatInput] = useState("");
@@ -152,6 +153,7 @@ export default function EditorPage() {
     const chapterIndices = Object.keys(chapters).map(Number).sort((a, b) => a - b);
     setGenAllChapters(true);
     genAllChaptersRef.current = true;
+    setAgentPanelOpen(true);
 
     for (const chIdx of chapterIndices) {
       if (!genAllChaptersRef.current) break; // allow cancel
@@ -255,9 +257,11 @@ export default function EditorPage() {
   useEffect(() => {
     setQualityResult(null);
     if (selectedChapter === null) return;
+    let cancelled = false;
     async function loadSegments() {
       try {
         const data = await getChapterSegments(bookId, selectedChapter!);
+        if (cancelled) return;
         setSegments(data.segments || []);
         if (data.segments?.length > 0) {
           // On first load, restore segment from URL
@@ -268,12 +272,19 @@ export default function EditorPage() {
           } else {
             setSelectedSegment(data.segments[0]);
           }
+        } else {
+          setSelectedSegment(null);
         }
-      } catch (e) {
-        console.error("Failed to load segments:", e);
+      } catch {
+        // 404 means analysis.json not ready yet — clear segments silently
+        if (!cancelled) {
+          setSegments([]);
+          setSelectedSegment(null);
+        }
       }
     }
     loadSegments();
+    return () => { cancelled = true; };
   }, [bookId, selectedChapter]);
 
   // Update URL when tab/selection changes
@@ -303,12 +314,12 @@ export default function EditorPage() {
   // Auto-generate simplified text if empty
   useEffect(() => {
     if (selectedSegId < 0 || !selectedSegment || selectedSegment.simplified_text) return;
-    generateSimplifiedText(bookId, selectedSegId)
+    const segId = selectedSegId;
+    generateSimplifiedText(bookId, segId)
       .then((res) => {
         if (res.simplified_text) {
-          const updated = { ...selectedSegment, simplified_text: res.simplified_text };
-          setSelectedSegment(updated);
-          setSegments((prev) => prev.map((s) => (s.id === selectedSegId ? updated : s)));
+          setSelectedSegment(prev => prev?.id === segId ? { ...prev, simplified_text: res.simplified_text } : prev);
+          setSegments(prev => prev.map(s => s.id === segId ? { ...s, simplified_text: res.simplified_text } : s));
         }
       })
       .catch(() => {});
@@ -351,11 +362,14 @@ export default function EditorPage() {
 
   // Regenerate illustration
   const handleRegenerate = async () => {
-    if (!selectedSegment) return;
+    if (!selectedSegment || selectedChapter === null) return;
+    // Capture IDs at call time to avoid stale closures
+    const segId = selectedSegment.id;
+    const chIdx = selectedChapter;
     setRegenerating(true);
     try {
       // Save first
-      await updateSegment(bookId, selectedSegment.id, {
+      await updateSegment(bookId, segId, {
         simplified_text: selectedSegment.simplified_text,
         characters_in_scene: selectedSegment.characters_in_scene,
         character_actions: selectedSegment.character_actions,
@@ -364,55 +378,118 @@ export default function EditorPage() {
         sentiment: selectedSegment.sentiment,
       });
       // Trigger regeneration
-      await regenerateSegment(bookId, selectedSegment.id);
+      await regenerateSegment(bookId, segId);
       // Poll regen-status every 5s until complete
+      let cleared = false;
       const pollInterval = setInterval(async () => {
+        if (cleared) return;
         try {
-          const status = await getRegenStatus(bookId, selectedSegment.id);
+          const status = await getRegenStatus(bookId, segId);
           if (status.status === "complete") {
+            cleared = true;
             clearInterval(pollInterval);
             // Reload segments to get new illustration URL
-            if (selectedChapter !== null) {
-              const data = await getChapterSegments(bookId, selectedChapter);
-              const updated = data.segments?.find((s: Segment) => s.id === selectedSegment.id);
-              if (updated) {
-                setSegments(data.segments || []);
-                setSelectedSegment(updated);
-              }
+            const data = await getChapterSegments(bookId, chIdx);
+            const updated = data.segments?.find((s: Segment) => s.id === segId);
+            if (updated) {
+              setSegments(data.segments || []);
+              setSelectedSegment(prev => prev?.id === segId ? updated : prev);
             }
             setRegenerating(false);
 
-            // Auto quality check
-            setCheckingQuality(true);
-            try {
-              const result = await checkSegmentQuality(bookId, selectedSegment.id);
-              setQualityResult(result);
-              // Auto-fix if score < 70%
-              if (result.overall_score < 70 && result.regeneration_feedback) {
-                const fixMsg = `Quality check found issues (score: ${result.overall_score}%). Please fix the prompts based on this feedback:\n${result.regeneration_feedback}`;
+            // Auto quality check + retry loop (up to 3 rounds if score < 75%)
+            const MAX_QUALITY_RETRIES = 3;
+            for (let attempt = 1; attempt <= MAX_QUALITY_RETRIES; attempt++) {
+              setCheckingQuality(true);
+              try {
+                const result = await checkSegmentQuality(bookId, segId);
+                setQualityResult(result);
+
+                if (result.overall_score >= 75 || attempt >= MAX_QUALITY_RETRIES) {
+                  // Good enough or exhausted retries
+                  if (attempt >= MAX_QUALITY_RETRIES && result.overall_score < 75) {
+                    console.warn(`Quality still ${result.overall_score}% after ${MAX_QUALITY_RETRIES} attempts`);
+                  }
+                  break;
+                }
+
+                // Score < 75%: use AI to fix prompts, then auto-regen
+                const fixMsg = `Quality check found issues (score: ${result.overall_score}%, attempt ${attempt}/${MAX_QUALITY_RETRIES}). Please fix the prompts based on this feedback:\n${result.regeneration_feedback}`;
                 setChatOpen(true);
-                setChatMessages([{ role: "user", content: fixMsg }]);
+                setChatMessages(prev => [...prev, { role: "user", content: fixMsg }]);
                 setChatLoading(true);
                 try {
-                  const res = await chatWithAI(bookId, selectedSegment.id, fixMsg, []);
+                  const res = await chatWithAI(bookId, segId, fixMsg, []);
                   setChatMessages(prev => [...prev, { role: "assistant", content: res.reply }]);
                   if (res.updates && Object.keys(res.updates).length > 0) {
-                    const seg = selectedSegment;
-                    const fix = { ...seg, ...res.updates } as any;
-                    if (res.updates.character_actions) {
-                      fix.characters_in_scene = (res.updates.character_actions as any[]).map((a: any) => a.name).filter(Boolean);
+                    // Apply AI fixes to segment
+                    const applyUpdates = (seg: Segment) => {
+                      const fix = { ...seg, ...res.updates } as any;
+                      if (res.updates.character_actions) {
+                        fix.characters_in_scene = (res.updates.character_actions as any[]).map((a: any) => a.name).filter(Boolean);
+                      }
+                      return fix;
+                    };
+                    setSelectedSegment(prev => prev?.id === segId ? applyUpdates(prev) : prev);
+                    setSegments(prev => prev.map(s => s.id === segId ? applyUpdates(s) : s));
+
+                    // Save updated prompts
+                    const latestSeg = segments.find(s => s.id === segId);
+                    if (latestSeg) {
+                      const merged = { ...latestSeg, ...res.updates };
+                      await updateSegment(bookId, segId, {
+                        simplified_text: merged.simplified_text,
+                        characters_in_scene: merged.characters_in_scene,
+                        character_actions: merged.character_actions,
+                        scene_background: merged.scene_background,
+                        scene_summary: merged.scene_summary,
+                        sentiment: merged.sentiment,
+                      });
                     }
-                    setSelectedSegment(fix);
-                    setSegments(prev => prev.map(s => s.id === seg.id ? fix : s));
                   }
                 } catch {} finally { setChatLoading(false); }
+
+                // Auto-regenerate illustration with fixed prompts
+                setRegenerating(true);
+                await regenerateSegment(bookId, segId);
+                // Wait for regen to complete
+                await new Promise<void>((resolve) => {
+                  const regenPoll = setInterval(async () => {
+                    try {
+                      const st = await getRegenStatus(bookId, segId);
+                      if (st.status === "complete") {
+                        clearInterval(regenPoll);
+                        // Reload segments
+                        const freshData = await getChapterSegments(bookId, chIdx);
+                        const freshSeg = freshData.segments?.find((s: Segment) => s.id === segId);
+                        if (freshSeg) {
+                          setSegments(freshData.segments || []);
+                          setSelectedSegment(prev => prev?.id === segId ? freshSeg : prev);
+                        }
+                        setRegenerating(false);
+                        resolve();
+                      }
+                    } catch {}
+                  }, 5000);
+                  setTimeout(() => { clearInterval(regenPoll); setRegenerating(false); resolve(); }, 180000);
+                });
+              } catch {
+                break;
+              } finally {
+                setCheckingQuality(false);
               }
-            } catch {} finally { setCheckingQuality(false); }
+            }
           }
         } catch {}
       }, 5000);
       // Timeout after 3 minutes
-      setTimeout(() => { clearInterval(pollInterval); setRegenerating(false); }, 180000);
+      setTimeout(() => {
+        if (!cleared) {
+          cleared = true;
+          clearInterval(pollInterval);
+          setRegenerating(false);
+        }
+      }, 180000);
     } catch (e: any) {
       console.error("Regenerate failed:", e);
       alert(`Regenerate failed: ${e?.message || e}`);
@@ -546,14 +623,21 @@ export default function EditorPage() {
     }
   };
 
-  // Handle regenerate character sheet
+  // Handle regenerate character sheet (called from CharacterSheetsPanel in Pages tab)
   const handleRegenerateSheet = async (canonicalName: string) => {
     await regenerateCharacterSheet(bookId, canonicalName);
-    // Refresh after delay
-    setTimeout(async () => {
-      const data = await getCharacters(bookId);
-      setSheets(data.sheets || {});
-    }, 15000);
+    // Poll until sheet is ready instead of blindly waiting
+    const poll = setInterval(async () => {
+      try {
+        const data = await getCharacters(bookId);
+        if (data.sheets?.[canonicalName]) {
+          clearInterval(poll);
+          setSheets(data.sheets || {});
+          setPortraits(data.portraits || {});
+        }
+      } catch {}
+    }, 5000);
+    setTimeout(() => clearInterval(poll), 120000);
   };
 
   // Handle version selection from carousel
@@ -584,17 +668,19 @@ export default function EditorPage() {
   }, [loading, bookId]);
 
   const PREPROCESS_STEPS = [
-    { key: "extract_text", label: "Extracting text and chapters" },
-    { key: "identify_characters", label: "Identifying characters with AI" },
-    { key: "build_aliases", label: "Building alias map" },
-    { key: "replace_aliases", label: "Replacing name aliases" },
-    { key: "segment_text", label: "Segmenting into scenes" },
-    { key: "annotate_complete", label: "Annotating characters, actions, sentiment" },
+    { key: "extract_text", label: "Extracting text and chapters", agent: "analyzer" },
+    { key: "identify_characters", label: "Identifying characters with AI", agent: "analyzer" },
+    { key: "build_aliases", label: "Building alias map", agent: "analyzer" },
+    { key: "replace_aliases", label: "Replacing name aliases", agent: "analyzer" },
+    { key: "segment_text", label: "Segmenting into scenes", agent: "analyzer" },
+    { key: "annotate_complete", label: "Annotating characters, actions, sentiment", agent: "analyzer" },
   ];
 
   if (loading) {
     const progress = preprocessProgress?.progress || 0;
     const stepsDone = new Set(preprocessProgress?.steps_done || []);
+
+    const currentAgent = (preprocessProgress as any)?.agent ? AGENT_LABELS[(preprocessProgress as any).agent] : null;
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-cream">
@@ -603,6 +689,12 @@ export default function EditorPage() {
           <p className="text-gray-700 font-semibold mb-2">
             Preprocessing Book...
           </p>
+          {currentAgent && (
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white shadow-sm border border-gray-100 mb-2 text-blue-600">
+              <span className="text-sm">{currentAgent.icon}</span>
+              <span className="text-xs font-semibold">{currentAgent.name} Agent</span>
+            </div>
+          )}
           <p className="text-gray-500 text-sm mb-2">{loadingStatus}</p>
           {preprocessProgress && (preprocessProgress.annotated_chapters ?? 0) > 0 && (
             <p className="text-coral font-semibold text-sm mb-2">
@@ -619,11 +711,12 @@ export default function EditorPage() {
           </div>
           <p className="text-sm text-gray-400 mb-4">{progress}%</p>
 
-          {/* Steps with color */}
+          {/* Steps with agent labels */}
           <div className="bg-white rounded-xl p-4 text-left text-xs space-y-2">
             {PREPROCESS_STEPS.map((s, idx) => {
               const done = stepsDone.has(s.key);
               const current = !done && idx === PREPROCESS_STEPS.findIndex(st => !stepsDone.has(st.key));
+              const agentInfo = AGENT_LABELS[s.agent];
               return (
                 <div key={s.key} className={`flex items-center gap-2 ${
                   done ? "text-gray-400" : current ? "text-coral font-semibold" : "text-gray-300"
@@ -633,6 +726,7 @@ export default function EditorPage() {
                   }`}>
                     {done ? "\u2713" : idx + 1}
                   </span>
+                  <span className="text-sm">{agentInfo?.icon}</span>
                   {s.label}
                 </div>
               );
@@ -698,6 +792,36 @@ export default function EditorPage() {
               <BookOpen size={12} /> Pages
             </button>
           </div>
+          {/* Agent Activity Indicator */}
+          <button
+            onClick={() => setAgentPanelOpen(!agentPanelOpen)}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors flex items-center gap-1.5 font-semibold border ${
+              generatingChapter !== null
+                ? "bg-gradient-to-r from-blue-50 to-purple-50 border-purple-200 text-purple-700"
+                : agentPanelOpen
+                ? "bg-gray-100 border-gray-300 text-gray-700"
+                : "border-gray-200 text-gray-500 hover:bg-gray-50"
+            }`}
+          >
+            {generatingChapter !== null ? (
+              <>
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+                </span>
+                {(() => {
+                  const agent = (chapterProgress as any)?.agent;
+                  const info = agent ? AGENT_LABELS[agent] : null;
+                  return info ? `${info.icon} ${info.name}` : "Agents";
+                })()}
+              </>
+            ) : (
+              <>
+                <Activity size={12} />
+                Agents
+              </>
+            )}
+          </button>
           <a
             href={`/book/${bookId}`}
             className="px-3 py-1.5 text-xs rounded-lg bg-coral text-white hover:bg-coral/80 transition-colors flex items-center gap-1 font-semibold"
@@ -707,6 +831,17 @@ export default function EditorPage() {
         </div>
       </header>
 
+      {/* Agent Activity Panel (drawer) */}
+      {agentPanelOpen && (
+        <AgentActivityPanel
+          bookId={bookId}
+          chapterIdx={generatingChapter ?? selectedChapter}
+          isGenerating={generatingChapter !== null}
+          currentAgent={(chapterProgress as any)?.agent || null}
+          onClose={() => setAgentPanelOpen(false)}
+        />
+      )}
+
       {/* Character Management Tab */}
       {activeTab === "characters" && (
         <CharacterManagement
@@ -715,10 +850,28 @@ export default function EditorPage() {
           sheets={sheets}
           aliasMap={aliasMap}
           navigateToChar={navigateToChar || initialChar}
-          onCharactersUpdate={(chars, newSheets) => {
+          onCharactersUpdate={(chars, newSheets, renamedFrom?: string, renamedTo?: string) => {
             setCharacters(chars);
             setSheets(newSheets);
             setNavigateToChar(null);
+            // Cascade rename into segments if a character was renamed
+            if (renamedFrom && renamedTo && renamedFrom !== renamedTo) {
+              const renameInSegment = (seg: Segment): Segment => {
+                const newChars = (seg.characters_in_scene || []).map(c => c === renamedFrom ? renamedTo : c);
+                const newActions = (seg.character_actions || []).map(a =>
+                  a.name === renamedFrom ? { ...a, name: renamedTo } : a
+                );
+                if (
+                  newChars.join(",") !== (seg.characters_in_scene || []).join(",") ||
+                  newActions.some((a, i) => a.name !== (seg.character_actions || [])[i]?.name)
+                ) {
+                  return { ...seg, characters_in_scene: newChars, character_actions: newActions };
+                }
+                return seg;
+              };
+              setSegments(prev => prev.map(renameInSegment));
+              setSelectedSegment(prev => prev ? renameInSegment(prev) : prev);
+            }
           }}
           onSelectChar={setSelectedCharName}
         />
@@ -796,7 +949,7 @@ export default function EditorPage() {
                     <span className="text-[10px] text-gray-400 shrink-0 ml-1">{info.num_segments}</span>
                   </button>
                   {generatingChapter === +chIdx ? (
-                    <div className="mr-2 w-24">
+                    <div className="mr-2 w-28">
                       <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-amber-400 rounded-full transition-all duration-500"
@@ -804,7 +957,12 @@ export default function EditorPage() {
                         />
                       </div>
                       <p className="text-[8px] text-amber-600 text-center mt-0.5 animate-pulse">
-                        {chapterProgress?.current_step || "Starting..."}
+                        {(() => {
+                          const agent = (chapterProgress as any)?.agent;
+                          const agentInfo = agent ? AGENT_LABELS[agent] : null;
+                          const step = chapterProgress?.current_step || "Starting...";
+                          return agentInfo ? `${agentInfo.icon} ${step}` : step;
+                        })()}
                       </p>
                     </div>
                   ) : (
@@ -812,6 +970,7 @@ export default function EditorPage() {
                       onClick={async (e) => {
                         e.stopPropagation();
                         setGeneratingChapter(+chIdx);
+                        setAgentPanelOpen(true);
                         try {
                           await generateChapter(bookId, +chIdx);
                         } catch (err) {
@@ -918,7 +1077,7 @@ export default function EditorPage() {
                 <h2 className="font-display text-lg font-bold text-gray-800 mb-4">{selectedSpecial.label}</h2>
                 {selectedSpecial.url ? (
                   <img
-                    src={`http://localhost:8000${selectedSpecial.url}?t=${Date.now()}`}
+                    src={`${API_BASE}${selectedSpecial.url}`}
                     alt={selectedSpecial.label}
                     className="max-h-[calc(100vh-200px)] max-w-full rounded-xl shadow-md object-contain"
                   />
@@ -1009,16 +1168,28 @@ export default function EditorPage() {
 
                 <button
                   onClick={async () => {
+                    const spType = selectedSpecial.type;
+                    const spChapter = selectedSpecial.chapter ?? 0;
                     setRegenSpecial(true);
                     try {
-                      await regenerateSpecialPage(bookId, selectedSpecial.type, selectedSpecial.chapter ?? 0);
-                      setTimeout(async () => {
-                        const data = await getSpecialPages(bookId);
-                        setSpecialPages(data.pages || []);
-                        const updated = data.pages.find(p => p.type === selectedSpecial.type && p.chapter === selectedSpecial.chapter);
-                        if (updated) setSelectedSpecial(updated);
-                        setRegenSpecial(false);
-                      }, 30000);
+                      await regenerateSpecialPage(bookId, spType, spChapter);
+                      // Poll until the special page URL appears
+                      await new Promise<void>((resolve) => {
+                        const poll = setInterval(async () => {
+                          try {
+                            const data = await getSpecialPages(bookId);
+                            const found = data.pages.find(p => p.type === spType && (p.chapter ?? 0) === spChapter);
+                            if (found?.url) {
+                              clearInterval(poll);
+                              setSpecialPages(data.pages || []);
+                              setSelectedSpecial(found);
+                              setRegenSpecial(false);
+                              resolve();
+                            }
+                          } catch {}
+                        }, 5000);
+                        setTimeout(() => { clearInterval(poll); setRegenSpecial(false); resolve(); }, 120000);
+                      });
                     } catch { setRegenSpecial(false); }
                   }}
                   disabled={regenSpecial}

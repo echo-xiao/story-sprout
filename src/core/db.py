@@ -238,3 +238,56 @@ def save_preprocess(book_id: str, title: str, characters: list[dict],
     save_segments(book_id, segments)
     logger.info("Saved preprocess to MongoDB: %d characters, %d segments", len(characters), len(segments))
     return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# Preprocess files collection (generic JSON document store)
+# ═══════════════════════════════════════════════════════════════
+
+def save_preprocess_file(book_id: str, filename: str, data: Any) -> bool:
+    """Save a preprocess JSON file to MongoDB."""
+    db = _get_db()
+    if db is None:
+        return False
+    db.preprocess_files.update_one(
+        {"book_id": book_id, "filename": filename},
+        {"$set": {"book_id": book_id, "filename": filename, "data": data,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return True
+
+
+def load_preprocess_file(book_id: str, filename: str) -> Optional[Any]:
+    """Load a preprocess JSON file from MongoDB."""
+    db = _get_db()
+    if db is None:
+        return None
+    doc = db.preprocess_files.find_one(
+        {"book_id": book_id, "filename": filename},
+        {"_id": 0, "data": 1},
+    )
+    if doc is None:
+        return None
+    return doc.get("data")
+
+
+def list_preprocess_books() -> list[dict]:
+    """List all books that have preprocess data in MongoDB."""
+    db = _get_db()
+    if db is None:
+        return []
+    pipeline = [
+        {"$match": {"filename": "meta.json"}},
+        {"$project": {"_id": 0, "book_id": 1, "data": 1}},
+        {"$sort": {"book_id": 1}},
+    ]
+    results = []
+    for doc in db.preprocess_files.aggregate(pipeline):
+        meta = doc.get("data", {})
+        results.append({
+            "book_id": doc["book_id"],
+            "title": meta.get("title", doc["book_id"]),
+            "num_chapters": meta.get("num_chapters", 0),
+        })
+    return results

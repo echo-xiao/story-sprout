@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { Image, BookOpen } from "lucide-react";
 import type { Segment } from "@/types";
 
@@ -12,6 +13,12 @@ export default function IllustrationPanel({
   selectedSegment,
   regenerating,
 }: IllustrationPanelProps) {
+  // Stable cache key: changes when illustration URL changes or after regeneration completes
+  const [imgCacheKey, setImgCacheKey] = useState(0);
+  useEffect(() => {
+    setImgCacheKey(prev => prev + 1);
+  }, [selectedSegment.id, selectedSegment.illustration_url, regenerating]);
+
   return (
     <div className="w-[40%] shrink-0 overflow-y-auto p-3 border-r border-peach/20">
       <div className="card !p-3 mb-3">
@@ -26,8 +33,8 @@ export default function IllustrationPanel({
           </div>
         ) : selectedSegment.illustration_url ? (
           <img
-            key={`${selectedSegment.id}`}
-            src={`${API_BASE}${selectedSegment.illustration_url}?t=${Date.now()}`}
+            key={`${selectedSegment.id}-${imgCacheKey}`}
+            src={`${API_BASE}${selectedSegment.illustration_url}?v=${imgCacheKey}`}
             alt="Page illustration"
             className="w-full rounded-xl shadow-md"
           />

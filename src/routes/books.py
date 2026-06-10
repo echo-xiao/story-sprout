@@ -81,6 +81,43 @@ class GenerateRequest(BaseModel):
 # Background task wrapper
 # ---------------------------------------------------------------------------
 
+def _save_user_info(book_id: str, email: str, api_key: str | None = None) -> None:
+    """Save user info to book's preprocess dir for tracking."""
+    info_dir = GENERATED_DIR / book_id / "preprocess"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    user_info = {"email": email}
+    if api_key:
+        user_info["has_api_key"] = True  # Don't store the actual key on disk
+    (info_dir / "user.json").write_text(json.dumps(user_info))
+
+
+async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None = None) -> None:
+    """Run preprocess_book.py with error tracking."""
+    import subprocess, os
+    env = os.environ.copy()
+    if gemini_api_key:
+        env["GEMINI_API_KEY"] = gemini_api_key
+    try:
+        result = subprocess.run(
+            ["python", "scripts/preprocess_book.py", "--input", str(dest), "--skip-sheets"],
+            cwd=str(Path(__file__).parent.parent.parent),
+            capture_output=True, text=True, timeout=600,
+            env=env,
+        )
+        if result.returncode != 0:
+            logger.error("Preprocess failed for %s (exit %d): %s", book_id, result.returncode, result.stderr[-500:] if result.stderr else "")
+            error_dir = GENERATED_DIR / book_id / "preprocess"
+            error_dir.mkdir(parents=True, exist_ok=True)
+            (error_dir / "error.json").write_text(json.dumps({
+                "error": result.stderr[-1000:] if result.stderr else "Unknown error",
+                "returncode": result.returncode,
+            }))
+    except subprocess.TimeoutExpired:
+        logger.error("Preprocess timed out for %s", book_id)
+    except Exception:
+        logger.exception("Preprocess crashed for %s", book_id)
+
+
 async def _run_generation(source: str, config: GenerationConfig, book_id: str) -> None:
     try:
         await generate_picture_book(source, config, book_id=book_id)
@@ -119,12 +156,12 @@ async def start_generation(
     sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', first_line)
     book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
 
-    # Run preprocess as a separate process (non-blocking)
-    import subprocess
-    subprocess.Popen(
-        ["python", "scripts/preprocess_book.py", "--input", str(dest), "--skip-sheets"],
-        cwd=str(Path(__file__).parent.parent.parent),
-    )
+    # Save user info if provided
+    user_api_key = request.config.gemini_api_key
+    if request.config.email:
+        _save_user_info(book_id, request.config.email, user_api_key)
+
+    background_tasks.add_task(_run_preprocess, book_id, dest, gemini_api_key=user_api_key)
 
     return {"book_id": book_id, "status": "preprocessing"}
 
@@ -148,12 +185,13 @@ async def start_generation_upload(
     sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', stem)
     book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
 
-    # Run preprocess as a separate process (non-blocking)
-    import subprocess
-    subprocess.Popen(
-        ["python", "scripts/preprocess_book.py", "--input", str(dest), "--skip-sheets"],
-        cwd=str(Path(__file__).parent.parent.parent),
-    )
+    # Extract API key from config form field
+    parsed_config = json.loads(config) if config else {}
+    user_api_key = parsed_config.get("gemini_api_key")
+    if parsed_config.get("email"):
+        _save_user_info(book_id, parsed_config["email"], user_api_key)
+
+    background_tasks.add_task(_run_preprocess, book_id, dest, gemini_api_key=user_api_key)
 
     return {"book_id": book_id, "status": "preprocessing"}
 
@@ -228,6 +266,12 @@ async def get_preprocess_progress(book_id: str) -> dict[str, Any]:
     if not preprocess_dir.exists():
         return {"status": "not_started", "progress": 0, "step": "Waiting to start...", "steps_done": []}
 
+    # Check for error marker
+    error_file = preprocess_dir / "error.json"
+    if error_file.exists():
+        error_data = json.loads(error_file.read_text())
+        return {"status": "error", "progress": 0, "step": "Preprocess failed", "error": error_data.get("error", "Unknown error"), "steps_done": []}
+
     steps_done = []
     # Check each layer
     if (preprocess_dir / "chapters.json").exists():
@@ -267,25 +311,26 @@ async def get_preprocess_progress(book_id: str) -> dict[str, Any]:
     if "annotate_complete" in steps_done:
         progress = 100
 
-    # Current step label
-    step_labels = {
-        0: "Extracting text and chapters...",
-        1: "Identifying characters with AI...",
-        2: "Building alias map...",
-        3: "Replacing aliases in text...",
-        4: "Segmenting into scenes...",
-        5: f"Annotating scenes ({annotated_chapters}/{total_chapters} chapters)...",
+    # Current step label + agent mapping
+    step_info = {
+        0: {"step": "Extracting text and chapters...", "agent": "analyzer"},
+        1: {"step": "Identifying characters with AI...", "agent": "analyzer"},
+        2: {"step": "Building alias map...", "agent": "analyzer"},
+        3: {"step": "Replacing aliases in text...", "agent": "analyzer"},
+        4: {"step": "Segmenting into scenes...", "agent": "analyzer"},
+        5: {"step": f"Annotating scenes ({annotated_chapters}/{total_chapters} chapters)...", "agent": "analyzer"},
     }
     current = len([s for s in steps_done if s != "annotate_complete"])
     if current >= 5 and "annotate_complete" not in steps_done:
-        step = step_labels.get(5, "Annotating...")
+        info = step_info.get(5, {"step": "Annotating...", "agent": "analyzer"})
     else:
-        step = step_labels.get(current, "Processing...")
+        info = step_info.get(current, {"step": "Processing...", "agent": "analyzer"})
 
     return {
         "status": "complete" if progress >= 100 else "processing",
         "progress": round(progress),
-        "step": step,
+        "step": info["step"],
+        "agent": info["agent"],
         "steps_done": steps_done,
         "annotated_chapters": annotated_chapters,
         "total_chapters": total_chapters,
@@ -294,15 +339,48 @@ async def get_preprocess_progress(book_id: str) -> dict[str, Any]:
 
 @router.get("/api/books/preprocessed")
 async def list_preprocessed_books() -> list[dict[str, Any]]:
-    """List all books that have preprocess data (from disk)."""
+    """List all books that have preprocess data (from MongoDB, fallback to disk)."""
+    from src.core.db import list_preprocess_books
+    from src.routes.helpers import _load_json
+
+    # Try MongoDB first
+    mongo_books = list_preprocess_books()
+    if mongo_books:
+        books = []
+        for b in mongo_books:
+            book_id = b["book_id"]
+            llm_chars = _load_json(book_id, "llm_characters.json")
+            num_characters = len(llm_chars.get("characters", [])) if llm_chars else 0
+            chapters_dir = GENERATED_DIR / book_id / "chapters"
+            generated_chapters = 0
+            total_pages = 0
+            if chapters_dir.exists():
+                for ch_dir in chapters_dir.iterdir():
+                    if ch_dir.is_dir() and ch_dir.name.startswith("ch"):
+                        generated_chapters += 1
+                        pages_dir = ch_dir / "pages"
+                        if pages_dir.exists():
+                            total_pages += len(list(pages_dir.glob("page_*.*")))
+            books.append({
+                "book_id": book_id,
+                "title": b.get("title", book_id),
+                "num_chapters": b.get("num_chapters", 0),
+                "num_characters": num_characters,
+                "generated_chapters": generated_chapters,
+                "total_pages": total_pages,
+            })
+        return books
+
+    # Fallback to disk scan
     books = []
+    if not GENERATED_DIR.exists():
+        return books
     for d in sorted(GENERATED_DIR.iterdir()):
         if not d.is_dir():
             continue
         meta_path = d / "preprocess" / "meta.json"
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            # Count generated chapters
             chapters_dir = d / "chapters"
             generated_chapters = 0
             total_pages = 0
@@ -313,14 +391,11 @@ async def list_preprocessed_books() -> list[dict[str, Any]]:
                         pages_dir = ch_dir / "pages"
                         if pages_dir.exists():
                             total_pages += len(list(pages_dir.glob("page_*.*")))
-
-            # Get character count
             chars_path = d / "preprocess" / "llm_characters.json"
             num_characters = 0
             if chars_path.exists():
                 chars_data = json.loads(chars_path.read_text(encoding="utf-8"))
                 num_characters = len(chars_data.get("characters", []))
-
             books.append({
                 "book_id": d.name,
                 "title": meta.get("title", d.name),

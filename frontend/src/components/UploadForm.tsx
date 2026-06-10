@@ -25,7 +25,7 @@ Rosie smiled her warmest smile. "Well, Hazel, you don't need to steal! I'll shar
 The End.`;
 
 export function UploadForm({ onStartGeneration }: Props) {
-  const [inputMode, setInputMode] = useState<"text" | "file" | "url">("text");
+  const [inputMode, setInputMode] = useState<"text" | "file" | "url">("url");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [url, setUrl] = useState("");
@@ -35,18 +35,36 @@ export function UploadForm({ onStartGeneration }: Props) {
     template: "classic",
   });
   const [educationGoal, setEducationGoal] = useState("");
+  const [email, setEmail] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pbg_email") || "" : "");
+  const [apiKey, setApiKey] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pbg_api_key") || "" : "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleSubmit = async () => {
     setError("");
+
+    if (!email.trim()) {
+      setError("Please enter your email address.");
+      return;
+    }
+    if (!apiKey.trim()) {
+      setError("Please enter your Gemini API key.");
+      return;
+    }
+
+    // Persist for convenience
+    localStorage.setItem("pbg_email", email.trim());
+    localStorage.setItem("pbg_api_key", apiKey.trim());
+
     setLoading(true);
 
     try {
       const finalConfig = {
         ...config,
         ...(educationGoal ? { education_goal: educationGoal } : {}),
+        email: email.trim(),
+        gemini_api_key: apiKey.trim(),
       };
 
       let result;
@@ -60,7 +78,7 @@ export function UploadForm({ onStartGeneration }: Props) {
       } else if (inputMode === "text" && text.trim()) {
         result = await startGeneration(text, finalConfig);
       } else {
-        setError("Please provide text, a file, or a URL.");
+        setError("Please provide a URL.");
         setLoading(false);
         return;
       }
@@ -90,29 +108,48 @@ export function UploadForm({ onStartGeneration }: Props) {
       </div>
 
       <div className="max-w-3xl mx-auto">
+        {/* User Info */}
+        <div className="card mb-6">
+          <h3 className="font-display font-bold text-gray-700 mb-3">Your Info</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-semibold text-gray-600 mb-1 block">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="w-full p-3 border border-peach/50 rounded-xl
+                           focus:outline-none focus:ring-2 focus:ring-coral/30 focus:border-coral
+                           font-body text-gray-700 bg-cream/50"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-gray-600 mb-1 block">
+                Gemini API Key
+              </label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="AIza..."
+                className="w-full p-3 border border-peach/50 rounded-xl
+                           focus:outline-none focus:ring-2 focus:ring-coral/30 focus:border-coral
+                           font-body text-gray-700 bg-cream/50"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                Get a free key at{" "}
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-coral hover:underline">
+                  aistudio.google.com/apikey
+                </a>
+              </p>
+            </div>
+          </div>
+        </div>
+
         {/* Input Panel */}
         <div className="card">
           <div className="flex gap-2 mb-4">
-            <button
-              onClick={() => setInputMode("text")}
-              className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
-                inputMode === "text"
-                  ? "bg-sage text-gray-800 shadow-sm"
-                  : "text-gray-500 hover:bg-gray-100"
-              }`}
-            >
-              Paste Text
-            </button>
-            <button
-              onClick={() => setInputMode("file")}
-              className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
-                inputMode === "file"
-                  ? "bg-sage text-gray-800 shadow-sm"
-                  : "text-gray-500 hover:bg-gray-100"
-              }`}
-            >
-              Upload File
-            </button>
             <button
               onClick={() => setInputMode("url")}
               className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${

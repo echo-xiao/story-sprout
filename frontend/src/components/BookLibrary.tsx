@@ -102,13 +102,12 @@ export function BookLibrary({ onSelectBook }: Props) {
                 Editor
               </span>
               {book.generated_chapters > 0 && (
-                <a
-                  href={`/book/${book.book_id}`}
-                  onClick={(e) => e.stopPropagation()}
+                <button
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.location.href = `/book/${book.book_id}`; }}
                   className="text-xs bg-coral text-white px-2 py-1 rounded-lg hover:bg-coral/80 transition-colors"
                 >
                   View Book
-                </a>
+                </button>
               )}
             </div>
           </a>

@@ -4,7 +4,7 @@ import json
 import logging
 
 from src.config import DEFAULT_STYLE, NEGATIVE_PROMPT
-from src.agent.gemini_client import generate_json
+from src.llm_client import generate_json
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def _generate_character_sheets(
         characters_json=json.dumps(character_profiles, indent=2, default=str),
     )
 
-    result = generate_json(prompt, system_instruction=ILLUSTRATION_SYSTEM)
+    result = generate_json(prompt, system=ILLUSTRATION_SYSTEM)
     sheets = result.get("character_sheets", [])
 
     # Ensure each prompt starts with the style prefix
@@ -164,7 +164,7 @@ def _generate_page_prompts(
         pages_json=json.dumps(scenes, indent=2, default=str),
     )
 
-    result = generate_json(prompt, system_instruction=ILLUSTRATION_SYSTEM)
+    result = generate_json(prompt, system=ILLUSTRATION_SYSTEM)
     page_prompts = result.get("page_prompts", [])
 
     # Ensure each prompt starts with the style prefix

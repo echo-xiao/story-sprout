@@ -1,17 +1,22 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
   async rewrites() {
+    // In production (Docker), FastAPI runs on port 8000 internally
+    const apiUrl = process.env.API_URL || "http://localhost:8000";
     return [
       {
         source: "/api/:path*",
-        destination: "http://localhost:8000/api/:path*",
+        destination: `${apiUrl}/api/:path*`,
+      },
+      {
+        source: "/static/:path*",
+        destination: `${apiUrl}/static/:path*`,
       },
     ];
   },
   images: {
-    remotePatterns: [
-      { protocol: "http", hostname: "localhost", port: "8000" },
-    ],
+    unoptimized: true,
   },
 };
 

@@ -39,6 +39,7 @@ IMAGE_LLM = os.getenv("IMAGE_LLM", _default_image_llm)  # "alicloud" or "gemini"
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "picture_book_generator")
 
+
 # NLP
 SPACY_MODEL = "en_core_web_lg"
 

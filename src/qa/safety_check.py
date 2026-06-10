@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any
 
-from src.agent.gemini_client import generate_json
+from src.llm_client import generate_json
 from src.config import AGE_PRESETS
 
 logger = logging.getLogger(__name__)

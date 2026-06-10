@@ -45,6 +45,8 @@ class GenerationConfig(BaseModel):
         default="en",
         description="Output language for the picture book text ('en', 'zh', etc.).",
     )
+    email: Optional[str] = Field(default=None, description="User's email address.")
+    gemini_api_key: Optional[str] = Field(default=None, description="User's Gemini API key.")
 
 
 # ---------------------------------------------------------------------------

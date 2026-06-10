@@ -394,12 +394,21 @@ Return JSON: {{"annotations": [...]}}"""
 # ═══════════════════════════════════════════════════════════════
 
 def _save(preprocess_dir, name, data, subdir=None):
-    """Save data as JSON to the preprocess directory."""
+    """Save data as JSON to the preprocess directory and MongoDB."""
     target = preprocess_dir / subdir if subdir else preprocess_dir
     target.mkdir(parents=True, exist_ok=True)
     path = target / f"{name}.json"
     path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
     print(f"  → {path.relative_to(GENERATED_DIR)}")
+
+    # Also save to MongoDB (extract book_id from preprocess_dir path)
+    if not subdir:
+        try:
+            from src.core.db import save_preprocess_file
+            bid = preprocess_dir.parent.name  # data/generated/<book_id>/preprocess -> <book_id>
+            save_preprocess_file(bid, f"{name}.json", data)
+        except Exception:
+            pass  # graceful fallback
 
 
 def _layer1_extract_text(input_path, book_id, preprocess_dir):

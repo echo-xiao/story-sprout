@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/api/book/{book_id}/chapter/{ch_idx}/agent-log")
+async def get_agent_log(book_id: str, ch_idx: int) -> list[dict]:
+    """Get agent activity log for a chapter generation session."""
+    from src.agents.agent_log import get_log
+    return get_log(book_id, ch_idx)
+
+
 @router.post("/api/book/{book_id}/segment/{seg_id}/regenerate")
 async def regenerate_segment_illustration(
     book_id: str, seg_id: int, background_tasks: BackgroundTasks
@@ -143,20 +150,20 @@ async def regenerate_segment_illustration(
                 if img.exists():
                     save_illustration(book_id, seg_id, str(page_prompt), str(img))
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("MongoDB sync failed for segment %d: %s", seg_id, e)
 
         # Write completion marker
         import time as _t
         marker = ch_base / f"regen_{seg_id}.json"
         marker.write_text(json.dumps({"status": "complete", "segment_id": seg_id, "page_number": page_num, "timestamp": _t.time()}))
 
-    background_tasks.add_task(_regen)
-
-    # Clear old marker
+    # Clear old marker BEFORE starting task so status check returns "generating"
     marker = ch_base / f"regen_{seg_id}.json"
     if marker.exists():
         marker.unlink()
+
+    background_tasks.add_task(_regen)
 
     return {"status": "regenerating", "segment_id": seg_id, "page_number": page_num}
 
@@ -174,7 +181,6 @@ async def get_regen_status(book_id: str, seg_id: int) -> dict[str, Any]:
     marker = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / f"regen_{seg_id}.json"
     if marker.exists():
         result = json.loads(marker.read_text())
-        marker.unlink()  # One-time read
         return result
     return {"status": "generating"}
 
@@ -196,7 +202,7 @@ async def generate_chapter_endpoint(
     async def _gen():
         import subprocess
         subprocess.run(
-            ["python", "scripts/generate_chapter.py", "--book", book_id, "--chapter", str(ch_idx)],
+            ["python", "scripts/generate_chapter.py", "--book", book_id, "--chapter", str(ch_idx), "--with-special"],
             cwd=str(Path(__file__).parent.parent.parent),
         )
         # Mark complete
@@ -222,7 +228,8 @@ async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
     if completed >= total and total > 0:
         return {
             "status": "complete", "progress": 100,
-            "current_step": "Done", "total_pages": total, "completed_pages": completed,
+            "current_step": "Done", "agent": "complete",
+            "total_pages": total, "completed_pages": completed,
         }
 
     # Check progress.json for live updates during generation
@@ -652,3 +659,54 @@ async def regenerate_character_sheet(
 
     background_tasks.add_task(_regen)
     return {"status": "regenerating", "character": char_name}
+
+
+@router.post("/api/book/{book_id}/characters/{char_name}/quality")
+async def check_character_sheet_quality_endpoint(
+    book_id: str, char_name: str
+) -> dict[str, Any]:
+    """Run quality check on a character's reference sheet."""
+    from src.generation.character_sheet import _safe_filename
+    from src.generation.gemini_consistency_check import check_character_sheet_quality
+
+    # Find the sheet image
+    chars_dir = GENERATED_DIR / book_id / "characters"
+    safe = _safe_filename(char_name)
+    sheet_path = ""
+    for ext in (".png", ".jpg"):
+        candidate = chars_dir / f"{safe}_sheet{ext}"
+        if candidate.exists():
+            sheet_path = str(candidate)
+            break
+    if not sheet_path:
+        raise HTTPException(status_code=404, detail=f"No sheet found for '{char_name}'.")
+
+    # Load character info
+    llm_chars = _load_json(book_id, "llm_characters.json") or {}
+    appearance = ""
+    visual_details = {}
+    gender = "unknown"
+    role = "supporting"
+    for c in llm_chars.get("characters", []):
+        if c.get("canonical_name") == char_name:
+            appearance = c.get("appearance", "")
+            visual_details = c.get("visual_details", {})
+            gender = c.get("gender", "unknown")
+            role = c.get("role", "supporting")
+            break
+
+    try:
+        result = check_character_sheet_quality(
+            sheet_path, char_name, appearance, visual_details, gender, role
+        )
+    except Exception as e:
+        logger.error("Character sheet quality check failed for '%s': %s", char_name, e)
+        raise HTTPException(status_code=500, detail=f"Quality check failed: {str(e)}")
+
+    # Cache result
+    quality_dir = chars_dir / "quality"
+    quality_dir.mkdir(parents=True, exist_ok=True)
+    quality_file = quality_dir / f"{safe}_quality.json"
+    quality_file.write_text(json.dumps(result, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+
+    return result

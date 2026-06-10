@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { MapPin, RefreshCw } from "lucide-react";
 import { getLocations, regenerateSceneSheet, getSceneSheetHistory } from "@/lib/api";
+import AutoTextarea from "./AutoTextarea";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -66,14 +67,26 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
 
   const handleRegenerate = async () => {
     if (!selected) return;
-    setGenerating(selected.name);
+    const sceneName = selected.name;
+    setGenerating(sceneName);
     try {
-      await regenerateSceneSheet(bookId, selected.name);
-      setTimeout(async () => {
-        const data = await getLocations(bookId);
-        setSceneSheets(data.scene_sheets || {});
-        setGenerating(null);
-      }, 30000);
+      await regenerateSceneSheet(bookId, sceneName);
+      // Poll until sheet appears instead of blindly waiting 30s
+      await new Promise<void>((resolve) => {
+        const poll = setInterval(async () => {
+          try {
+            const hist = await getSceneSheetHistory(bookId, sceneName);
+            if (hist.images?.some(img => img.version === "current")) {
+              clearInterval(poll);
+              const data = await getLocations(bookId);
+              setSceneSheets(data.scene_sheets || {});
+              setGenerating(null);
+              resolve();
+            }
+          } catch {}
+        }, 5000);
+        setTimeout(() => { clearInterval(poll); setGenerating(null); resolve(); }, 120000);
+      });
     } catch {
       setGenerating(null);
     }
@@ -202,7 +215,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
               <div className="flex-1 flex items-center justify-center min-h-0">
                 {(activeSheetUrl || sceneSheets[selected.name]) ? (
                   <img
-                    src={`${API_BASE}${activeSheetUrl || sceneSheets[selected.name]}?t=${Date.now()}`}
+                    src={`${API_BASE}${activeSheetUrl || sceneSheets[selected.name]}`}
                     alt={selected.name}
                     className="max-h-[calc(100vh-180px)] max-w-full rounded-xl shadow-md object-contain"
                   />
@@ -260,11 +273,10 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
             </div>
             <div>
               <label className="text-xs text-gray-500 font-semibold mb-1 block">Description</label>
-              <textarea
+              <AutoTextarea
                 value={editing._description ?? selected.description ?? ""}
                 onChange={e => setEditing(prev => ({ ...prev, _description: e.target.value }))}
-                rows={Math.max(2, Math.ceil((selected.description || "").length / 35))}
-                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm resize-y"
+                className="w-full rounded-lg border border-peach/50 px-3 py-2 text-sm min-h-[3rem]"
                 placeholder="Location description..."
               />
             </div>
@@ -283,11 +295,10 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
               ].map(({ key, label, placeholder }) => (
                 <div key={key} className="flex items-start gap-2">
                   <label className="text-[10px] text-gray-500 w-20 shrink-0 text-right pt-1">{label}</label>
-                  <textarea
+                  <AutoTextarea
                     value={editing[key] || ""}
                     onChange={e => setEditing(prev => ({ ...prev, [key]: e.target.value }))}
-                    rows={Math.max(1, Math.ceil((editing[key] || "").length / 25))}
-                    className="flex-1 rounded-md border border-peach/40 px-2 py-1 text-xs resize-none"
+                    className="flex-1 rounded-md border border-peach/40 px-2 py-1 text-xs min-h-[1.75rem]"
                     placeholder={placeholder}
                   />
                 </div>

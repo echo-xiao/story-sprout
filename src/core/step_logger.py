@@ -16,6 +16,7 @@ from src.config import GENERATED_DIR, MONGODB_URI, MONGODB_DB
 logger = logging.getLogger(__name__)
 
 _step_counter: dict[str, int] = {}
+_mongo_client = None
 
 
 def _get_step_num(book_id: str) -> int:
@@ -48,15 +49,7 @@ def log_step(
     tool_output: dict[str, Any],
     duration_ms: int = 0,
 ) -> None:
-    """Save a pipeline step to files and MongoDB.
-
-    Args:
-        book_id: The book being generated.
-        tool_name: Which tool was called.
-        tool_input: The arguments passed to the tool (truncated for storage).
-        tool_output: The result returned by the tool (truncated for storage).
-        duration_ms: How long the tool call took.
-    """
+    """Save a pipeline step to files and MongoDB."""
     step_num = _get_step_num(book_id)
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -97,15 +90,17 @@ def _save_to_file(book_id: str, step_num: int, tool_name: str, doc: dict) -> Non
 
 
 def _save_to_mongo(doc: dict) -> None:
-    """Save step to MongoDB (best effort, won't crash if unavailable)."""
+    """Save step to MongoDB (best effort, reuses connection)."""
+    global _mongo_client
     try:
-        import pymongo
-        client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
-        db = client[MONGODB_DB]
+        if _mongo_client is None:
+            import pymongo
+            _mongo_client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
+        db = _mongo_client[MONGODB_DB]
         db.steps.insert_one(doc.copy())
-        client.close()
     except Exception as e:
         logger.debug("MongoDB step save skipped: %s", e)
+        _mongo_client = None  # Reset so next call retries connection
 
 
 def get_steps(book_id: str) -> list[dict]:

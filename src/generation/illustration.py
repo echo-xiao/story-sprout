@@ -143,7 +143,16 @@ def _build_page_prompt(page: dict, character_sheets: list[dict]) -> tuple[str, l
 
     summary = page.get("scene_summary", "")
 
-    prompt = f"""Children's picture book illustration, page {page_num}.
+    # Build name label spelling instructions
+    name_labels_block = ""
+    if in_scene_names:
+        label_lines = []
+        for n in in_scene_names:
+            spelled = "-".join(n.upper())
+            label_lines.append(f'- "{n}" (spell exactly: {spelled})')
+        name_labels_block = "\n".join(label_lines)
+
+    prompt = f"""Children's picture book illustration.
 
 IMPORTANT: Draw ONE single scene, ONE single moment in time. Do NOT split the image into multiple panels or scenes.
 
@@ -165,12 +174,21 @@ CHARACTER APPEARANCE (match reference sheets EXACTLY):
 - Do NOT change any visual detail. The reference sheets are the ground truth.
 
 NAME LABELS:
-- Small wooden sign or ribbon on the ground directly below each character's feet.
+- Small wooden sign or ribbon below each character's feet.
 - Every character MUST have a name label.
+- Spell each name EXACTLY as shown below. Do NOT add numbers, suffixes, or modify names in any way.
+{name_labels_block}
 
 STORY TEXT:
 "{text}"
-Embed naturally: speech bubbles for dialogue, scrolls/banners for narration. Spell every word correctly.
+Embed naturally: speech bubbles for dialogue, scrolls/banners for narration.
+
+STRICT TEXT RULES:
+- Spell every word EXACTLY as provided above. Do NOT rephrase, abbreviate, or improvise any text.
+- Do NOT add any text that is not in the STORY TEXT or NAME LABELS above.
+- Do NOT write page numbers, "Page X", or any metadata in the image.
+- Do NOT add numbers after character names (no "Jordan Baker 2", just "Jordan Baker").
+- If you are unsure how to spell a word, copy it letter by letter from above.
 
 Style: {DEFAULT_STYLE}
 Do NOT include: {NEGATIVE_PROMPT}"""

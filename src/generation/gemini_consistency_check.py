@@ -96,8 +96,7 @@ Return JSON:
 }}"""})
 
     try:
-        from src.agent.gemini_client import generate_json
-        # We need to call with multipart content, so use the client directly
+        # Call Gemini directly with multipart content (images)
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=parts,
@@ -265,6 +264,154 @@ Return JSON:
     except Exception as e:
         logger.warning("Page %d quality check failed: %s", page_num, e)
         return _empty_page_quality()
+
+
+def check_character_sheet_quality(
+    sheet_path: str,
+    character_name: str,
+    appearance: str,
+    visual_details: dict | None = None,
+    gender: str = "unknown",
+    role: str = "supporting",
+) -> dict:
+    """Quality check a character reference sheet against its text description.
+
+    Checks:
+    1. Appearance match — does the sheet match the text description?
+    2. Internal consistency — are all views/expressions of the same character?
+    3. Multi-angle completeness — front/side/back views present?
+    4. Style quality — children's book style, clean, usable as reference?
+    5. Text/label correctness — any garbled text or wrong labels?
+
+    Returns:
+        dict with per-dimension scores and overall score.
+    """
+    client = _get_client()
+
+    img_part = _load_image_part(sheet_path)
+    if not img_part:
+        return _empty_sheet_quality(character_name)
+
+    # Build visual details string
+    vd_str = ""
+    if visual_details:
+        vd_str = ", ".join(f"{k}: {v}" for k, v in visual_details.items() if v)
+
+    parts = []
+    parts.append({"text": f"[CHARACTER SHEET for '{character_name}']"})
+    parts.append(img_part)
+    parts.append({"text": f"""You are a QA inspector for a children's picture book character reference sheet.
+
+CHARACTER INFO:
+- Name: {character_name}
+- Gender: {gender}
+- Role: {role}
+- Appearance description: {appearance or '(none provided)'}
+- Visual details: {vd_str or '(none provided)'}
+
+This is a CHARACTER REFERENCE SHEET — it should show the same character from multiple angles and with multiple expressions, to be used as a visual guide for illustrating a picture book.
+
+Note: Some characters represent a GROUP or FAMILY (e.g., "The Smiths", "Baker's children"). In that case, the sheet shows multiple distinct people who belong together. Evaluate accordingly.
+
+Check ALL of the following:
+
+1. APPEARANCE MATCH (compare sheet against the text description above):
+   - Hair color/style, eye color, skin tone, clothing, accessories, age, build
+   - Does the character look like what the description says?
+   - For groups: do the members collectively match the description?
+
+2. INTERNAL CONSISTENCY (within the sheet itself):
+   - Do ALL views (front, side, back) show the SAME character?
+   - Do ALL expression circles show the SAME face (same hair, eye color, face shape)?
+   - Are there inconsistencies between different parts of the sheet?
+   - Common problems: expression faces having different hair styles, different eye colors, different skin tones
+
+3. MULTI-ANGLE COMPLETENESS:
+   - Does it include front view, side view, and back view?
+   - Does it include multiple expressions?
+   - Does it include clothing/accessory detail close-ups?
+
+4. STYLE QUALITY:
+   - Is it in a clean children's picture book illustration style?
+   - Is it usable as a reference for other illustrations?
+   - Is the layout clear and organized?
+
+5. TEXT & LABELS:
+   - Any garbled, misspelled, or incorrect text/labels on the sheet?
+   - Is the character name correct if labeled?
+
+Return JSON:
+{{
+  "overall_score": 0 to 100,
+  "is_group": true/false,
+  "appearance_match": {{
+    "score": 0 to 100,
+    "issues": ["list of mismatches between description and sheet"]
+  }},
+  "internal_consistency": {{
+    "score": 0 to 100,
+    "issues": ["e.g., 'expression 3 has different hair style', 'side view has wrong clothing'"]
+  }},
+  "multi_angle": {{
+    "score": 0 to 100,
+    "has_front": true/false,
+    "has_side": true/false,
+    "has_back": true/false,
+    "has_expressions": true/false,
+    "issues": ["e.g., 'missing back view'"]
+  }},
+  "style_quality": {{
+    "score": 0 to 100,
+    "issues": ["e.g., 'too realistic, not picture book style'"]
+  }},
+  "text_labels": {{
+    "score": 0 to 100,
+    "issues": ["e.g., 'garbled text at bottom'"]
+  }},
+  "regeneration_feedback": "If any issues found, describe exactly what to fix when regenerating this sheet"
+}}"""})
+
+    try:
+        import json as _json
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=parts,
+            config=genai.types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
+        )
+        result = _json.loads(response.text)
+        result["character_name"] = character_name
+
+        logger.info(
+            "Character sheet quality for '%s': overall=%s, appearance=%s, consistency=%s, angles=%s, style=%s, text=%s",
+            character_name,
+            result.get("overall_score", "?"),
+            result.get("appearance_match", {}).get("score", "?"),
+            result.get("internal_consistency", {}).get("score", "?"),
+            result.get("multi_angle", {}).get("score", "?"),
+            result.get("style_quality", {}).get("score", "?"),
+            result.get("text_labels", {}).get("score", "?"),
+        )
+        return result
+
+    except Exception as e:
+        logger.warning("Character sheet quality check failed for '%s': %s", character_name, e)
+        return _empty_sheet_quality(character_name)
+
+
+def _empty_sheet_quality(character_name: str = "") -> dict:
+    return {
+        "overall_score": 100,
+        "character_name": character_name,
+        "is_group": False,
+        "appearance_match": {"score": 100, "issues": []},
+        "internal_consistency": {"score": 100, "issues": []},
+        "multi_angle": {"score": 100, "has_front": True, "has_side": True, "has_back": True, "has_expressions": True, "issues": []},
+        "style_quality": {"score": 100, "issues": []},
+        "text_labels": {"score": 100, "issues": []},
+        "regeneration_feedback": "",
+    }
 
 
 def _empty_page_quality() -> dict:

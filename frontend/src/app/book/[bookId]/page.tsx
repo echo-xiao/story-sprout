@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
+
 import { ChevronLeft, ChevronRight, Edit3 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -39,7 +40,7 @@ export default function BookViewerPage() {
           const segRes = await fetch(`/api/book/${bookId}/preprocess/chapter/${chIdx}/segments`);
           const segData = await segRes.json();
           const segments = segData.segments || [];
-          segments.forEach((seg: any, idx: number) => {
+          segments.forEach((seg: any) => {
             if (seg.illustration_url) {
               allPages.push({
                 page_number: allPages.length + 1,
@@ -120,7 +121,7 @@ export default function BookViewerPage() {
             {currentPage + 1} / {pages.length}
           </span>
           <button
-            onClick={() => router.push(`/editor/${bookId}`)}
+            onClick={() => router.push(`/editor/${bookId}?ch=${page.chapter_idx}&seg=${page.segment_id}&tab=pages`)}
             className="text-xs bg-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1"
           >
             <Edit3 size={12} /> Edit
@@ -144,13 +145,13 @@ export default function BookViewerPage() {
           className="max-w-2xl w-full cursor-pointer group"
           onClick={() => {
             // Click to go to editor for this specific segment
-            router.push(`/editor/${bookId}`);
+            router.push(`/editor/${bookId}?ch=${page.chapter_idx}&seg=${page.segment_id}&tab=pages`);
           }}
           title="Click to edit this page"
         >
           <div className="relative">
             <img
-              src={`${API_BASE}${page.image_url}?t=${Date.now()}`}
+              src={`${API_BASE}${page.image_url}`}
               alt={`Page ${currentPage + 1}`}
               className="w-full rounded-2xl shadow-2xl"
             />

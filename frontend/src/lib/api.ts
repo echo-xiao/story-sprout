@@ -178,6 +178,18 @@ export async function getChapterProgress(bookId: string, chapterIdx: number) {
   return data;
 }
 
+export async function getAgentLog(bookId: string, chapterIdx: number) {
+  const { data } = await api.get(`/book/${bookId}/chapter/${chapterIdx}/agent-log`);
+  return data as Array<{
+    ts: number;
+    agent: string;
+    action: string;
+    detail: string;
+    result: string;
+    status: string;
+  }>;
+}
+
 export async function checkSegmentQuality(bookId: string, segId: number) {
   const { data } = await api.post(`/book/${bookId}/segment/${segId}/quality`);
   return data;
@@ -191,6 +203,21 @@ export async function getChapterConsistency(bookId: string, chapterIdx: number) 
 export async function checkChapterConsistency(bookId: string, chapterIdx: number) {
   const { data } = await api.post(`/book/${bookId}/chapter/${chapterIdx}/consistency`);
   return data;
+}
+
+export async function checkCharacterSheetQuality(bookId: string, charName: string) {
+  const { data } = await api.post(`/book/${bookId}/characters/${encodeURIComponent(charName)}/quality`);
+  return data as {
+    overall_score: number;
+    character_name: string;
+    is_group: boolean;
+    appearance_match: { score: number; issues: string[] };
+    internal_consistency: { score: number; issues: string[] };
+    multi_angle: { score: number; has_front: boolean; has_side: boolean; has_back: boolean; has_expressions: boolean; issues: string[] };
+    style_quality: { score: number; issues: string[] };
+    text_labels: { score: number; issues: string[] };
+    regeneration_feedback: string;
+  };
 }
 
 export async function chatWithAI(

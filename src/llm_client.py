@@ -103,14 +103,23 @@ def generate_json(prompt: str, system: str = "", max_retries: int = 3) -> dict[s
     """
     provider = TEXT_LLM.lower()
 
-    if provider == "deepseek" and DEEPSEEK_API_KEY:
-        raw = _call_deepseek(prompt, system, max_retries)
-        logger.debug("Using DeepSeek for text LLM")
-    elif GEMINI_API_KEY:
+    if provider == "deepseek":
+        if not DEEPSEEK_API_KEY:
+            if GEMINI_API_KEY:
+                logger.warning("TEXT_LLM=deepseek but DEEPSEEK_API_KEY not set, falling back to Gemini")
+                raw = _call_gemini(prompt, system, max_retries)
+            else:
+                raise ValueError("TEXT_LLM=deepseek but DEEPSEEK_API_KEY is not set.")
+        else:
+            raw = _call_deepseek(prompt, system, max_retries)
+            logger.debug("Using DeepSeek for text LLM")
+    elif provider == "gemini":
+        if not GEMINI_API_KEY:
+            raise ValueError("TEXT_LLM=gemini but GEMINI_API_KEY is not set.")
         raw = _call_gemini(prompt, system, max_retries)
         logger.debug("Using Gemini for text LLM")
     else:
-        raise ValueError("No LLM API key configured. Set DEEPSEEK_API_KEY or GEMINI_API_KEY.")
+        raise ValueError(f"Unknown TEXT_LLM provider: {provider}. Use 'deepseek' or 'gemini'.")
 
     try:
         return json.loads(raw)

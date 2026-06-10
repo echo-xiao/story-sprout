@@ -48,9 +48,6 @@ def _build_sheet_prompt(profile: dict, style: str, all_profiles: list[dict] | No
 
     # Extract concrete visual details (highest priority)
     vd = profile.get("visual_details", {})
-    if not vd and hasattr(profile, 'get'):
-        # Try from appearance_description
-        pass
 
     # Build the MUST-HAVE physical spec from visual_details
     physical_specs = []

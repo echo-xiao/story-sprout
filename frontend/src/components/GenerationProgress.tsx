@@ -1,144 +1,124 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { getChapters } from "@/lib/api";
-import type { PictureBook } from "@/types";
 
 interface Props {
   bookId: string;
-  onComplete: (book: PictureBook) => void;
+  onComplete?: (book: any) => void;
   onBack: () => void;
 }
 
+const AGENT_LABELS: Record<string, { icon: string; name: string; color: string }> = {
+  analyzer: { icon: "\uD83D\uDD0D", name: "Analyzer Agent", color: "text-blue-600" },
+  writer: { icon: "\u270D\uFE0F", name: "Writer Agent", color: "text-purple-600" },
+  artist: { icon: "\uD83C\uDFA8", name: "Artist Agent", color: "text-pink-600" },
+  qa: { icon: "\u2705", name: "QA Agent", color: "text-green-600" },
+};
+
 const STEPS = [
-  { label: "Extracting Text", detail: "Splitting book into chapters..." },
-  { label: "Identifying Characters", detail: "AI reading the story to find all characters and aliases..." },
-  { label: "Replacing Aliases", detail: "Standardizing character names in text..." },
-  { label: "Segmenting Scenes", detail: "Splitting chapters into visual scenes..." },
-  { label: "Annotating Scenes", detail: "AI identifying characters, actions, backgrounds per scene..." },
-  { label: "Saving to Database", detail: "Storing results in MongoDB..." },
+  { key: "extract_text", label: "Extracting text and chapters", agent: "analyzer" },
+  { key: "identify_characters", label: "Identifying characters with AI", agent: "analyzer" },
+  { key: "build_aliases", label: "Building alias map", agent: "analyzer" },
+  { key: "replace_aliases", label: "Replacing name aliases", agent: "analyzer" },
+  { key: "segment_text", label: "Segmenting into scenes", agent: "analyzer" },
+  { key: "annotate_complete", label: "Annotating characters, actions, sentiment", agent: "analyzer" },
 ];
 
-export function GenerationProgress({ bookId, onComplete, onBack }: Props) {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const [error, setError] = useState("");
+export function GenerationProgress({ bookId, onBack }: Props) {
+  const router = useRouter();
+  const [progress, setProgress] = useState(0);
+  const [loadingStatus, setLoadingStatus] = useState("Starting...");
   const [done, setDone] = useState(false);
+  const [preprocessProgress, setPreprocessProgress] = useState<any>(null);
 
-  // Poll for preprocess completion
+  // Poll for preprocess progress + completion
   useEffect(() => {
     let timer: NodeJS.Timeout;
-    let elapsedTimer: NodeJS.Timeout;
 
-    // Update elapsed time
-    elapsedTimer = setInterval(() => {
-      setElapsed((prev) => prev + 1);
-    }, 1000);
-
-    // Estimate current step from elapsed time
-    const stepInterval = setInterval(() => {
-      setCurrentStep((prev) => Math.min(prev + 1, STEPS.length - 1));
-    }, 15000);
-
-    // Poll for completion
     async function poll() {
+      // Check progress endpoint
+      try {
+        const prog = await fetch(`/api/book/${bookId}/preprocess/progress`).then(r => r.json());
+        setPreprocessProgress(prog);
+        setProgress(prog.progress || 0);
+        setLoadingStatus(prog.step || "Processing...");
+      } catch {}
+
+      // Check completion
       try {
         const data = await getChapters(bookId);
         if (data.chapters && Object.keys(data.chapters).length > 0) {
           setDone(true);
-          clearInterval(stepInterval);
-          clearInterval(elapsedTimer);
-          // Redirect to editor
+          setProgress(100);
           setTimeout(() => {
-            window.location.href = `/editor/${bookId}`;
+            router.push(`/editor/${bookId}`);
           }, 1500);
           return;
         }
-      } catch {
-        // Not ready yet, keep polling
-      }
-      timer = setTimeout(poll, 5000);
+      } catch {}
+
+      timer = setTimeout(poll, 3000);
     }
 
-    // Start polling after a delay (give preprocess time to start)
-    timer = setTimeout(poll, 10000);
+    timer = setTimeout(poll, 3000);
+    return () => clearTimeout(timer);
+  }, [bookId, router]);
 
-    return () => {
-      clearTimeout(timer);
-      clearInterval(stepInterval);
-      clearInterval(elapsedTimer);
-    };
-  }, [bookId]);
-
-  const progress = done ? 100 : Math.min(95, (currentStep / STEPS.length) * 100 + elapsed * 0.3);
-  const step = STEPS[currentStep] || STEPS[STEPS.length - 1];
+  const stepsDone = new Set(preprocessProgress?.steps_done || []);
+  const currentAgent = preprocessProgress?.agent ? AGENT_LABELS[preprocessProgress.agent] : null;
 
   return (
-    <div className="animate-fade-in max-w-2xl mx-auto py-12">
-      <div className="card text-center space-y-8">
-        {/* Icon */}
-        <div className="animate-float">
-          <span className="text-6xl">{done ? "🎉" : "📖"}</span>
-        </div>
-
-        {/* Status */}
-        <div>
-          <h2 className="font-display text-2xl font-bold text-gray-800">
-            {done ? "Preprocessing Complete!" : "Preprocessing Book..."}
-          </h2>
-          <p className="text-gray-500 mt-2">
-            {done ? "Redirecting to editor..." : step.detail}
-          </p>
-          <p className="text-sm text-coral mt-1 font-semibold">
-            {done ? "" : step.label}
-          </p>
-        </div>
-
-        {/* Progress bar */}
-        <div className="w-full">
-          <div className="w-full h-4 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-coral to-sunshine rounded-full transition-all duration-700"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-          <p className="text-sm text-gray-400 mt-2">
-            {done ? "100%" : `${Math.round(progress)}%`} — {Math.floor(elapsed / 60)}:{(elapsed % 60).toString().padStart(2, "0")}
-          </p>
-        </div>
-
-        {/* Step indicators */}
-        <div className="grid grid-cols-3 gap-3 text-left">
-          {STEPS.map((s, idx) => (
-            <div
-              key={idx}
-              className={`flex items-center gap-2 text-xs ${
-                idx < currentStep ? "text-gray-400" :
-                idx === currentStep ? "text-coral font-semibold" :
-                "text-gray-300"
-              }`}
-            >
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${
-                idx < currentStep ? "bg-sage text-white" :
-                idx === currentStep ? "bg-coral text-white" :
-                "bg-gray-200"
-              }`}>
-                {idx < currentStep ? "✓" : idx + 1}
-              </span>
-              {s.label}
-            </div>
-          ))}
-        </div>
-
-        {/* Error */}
-        {error && (
-          <div className="bg-red-50 text-red-600 p-4 rounded-xl">
-            <p className="font-semibold">Error</p>
-            <p className="text-sm mt-1">{error}</p>
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="text-center max-w-md w-full px-4">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-coral mx-auto mb-4" />
+        <p className="text-gray-700 font-semibold mb-2">
+          {done ? "Preprocessing Complete!" : "Preprocessing Book..."}
+        </p>
+        {/* Active Agent Badge */}
+        {!done && currentAgent && (
+          <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white shadow-sm border border-gray-100 mb-2 ${currentAgent.color}`}>
+            <span className="text-sm">{currentAgent.icon}</span>
+            <span className="text-xs font-semibold">{currentAgent.name}</span>
           </div>
         )}
+        <p className="text-gray-500 text-sm mb-2">
+          {done ? "Redirecting to editor..." : loadingStatus}
+        </p>
 
-        <button onClick={onBack} className="text-sm text-gray-400 hover:text-gray-600">
+        {/* Progress bar */}
+        <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden mb-2">
+          <div
+            className="h-full bg-gradient-to-r from-coral to-sunshine rounded-full transition-all duration-700"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <p className="text-sm text-gray-400 mb-4">{Math.round(progress)}%</p>
+
+        {/* Steps with agent labels */}
+        <div className="bg-white rounded-xl p-4 text-left text-xs space-y-2">
+          {STEPS.map((s, idx) => {
+            const isDone = stepsDone.has(s.key);
+            const isCurrent = !isDone && idx === STEPS.findIndex(st => !stepsDone.has(st.key));
+            const agentInfo = AGENT_LABELS[s.agent];
+            return (
+              <div key={s.key} className={`flex items-center gap-2 ${
+                isDone ? "text-gray-400" : isCurrent ? "text-coral font-semibold" : "text-gray-300"
+              }`}>
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${
+                  isDone ? "bg-sage text-white" : isCurrent ? "bg-coral text-white animate-pulse" : "bg-gray-200"
+                }`}>
+                  {isDone ? "\u2713" : idx + 1}
+                </span>
+                <span className="text-sm">{agentInfo?.icon}</span>
+                {s.label}
+              </div>
+            );
+          })}
+        </div>
+
+        <button onClick={onBack} className="text-sm text-gray-400 hover:text-gray-600 mt-4">
           Cancel
         </button>
       </div>

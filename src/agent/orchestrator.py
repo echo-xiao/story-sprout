@@ -302,6 +302,13 @@ async def run_agent(
             # Track state from results
             _update_agent_state(agent_state, tool_name, tool_args, result)
 
+            # Sync agent_state back to state_store for consistency
+            from src.core.state_store import save as _save
+            if agent_state.get("_scenes"):
+                _save(book_id, "simplified_scenes", agent_state["_scenes"])
+            if agent_state.get("_illustrations"):
+                _save(book_id, "image_result", {"illustrations": agent_state["_illustrations"]})
+
             # Update book_id if it changed (e.g., after extract_text)
             if agent_state.get("book_id") and agent_state["book_id"] != book_id:
                 book_id = agent_state["book_id"]
@@ -324,14 +331,22 @@ async def run_agent(
         # Add function responses to history
         contents.append({"role": "user", "parts": function_responses})
 
-    # Build final PictureBook from state store
+    # Build final PictureBook from agent_state (primary) with state_store fallback
     from src.core.state_store import load as _load
-    simplified = _load(book_id, "simplified_scenes", [])
-    image_result = _load(book_id, "image_result", {})
-    illustrations = image_result.get("illustrations", [])
+
+    # Use agent_state accumulated during tool execution (most reliable source)
+    scenes = agent_state.get("_scenes", [])
+    illustrations = agent_state.get("_illustrations", [])
+
+    # Fallback to state_store if agent_state is empty
+    if not scenes:
+        scenes = _load(book_id, "simplified_scenes", [])
+    if not illustrations:
+        image_result = _load(book_id, "image_result", {})
+        illustrations = image_result.get("illustrations", [])
 
     final_pages = []
-    for idx, scene in enumerate(simplified):
+    for idx, scene in enumerate(scenes):
         ill = illustrations[idx] if idx < len(illustrations) else {}
         final_pages.append(PageData(
             page_number=idx + 1,
@@ -371,6 +386,11 @@ def _update_agent_state(
     state: dict, tool_name: str, args: dict, result: dict
 ) -> None:
     """Track important outputs from tool calls to build the final book."""
+    # Handle tool failures explicitly
+    if "error" in result:
+        logger.warning("Tool %s failed: %s", tool_name, result["error"])
+        return
+
     data = result.get("result", result)
     if isinstance(data, str):
         try:
@@ -392,7 +412,7 @@ def _update_agent_state(
         state["_analyzed"] = True
 
     elif tool_name == "simplify_text":
-        scenes = data.get("scenes", [])
+        scenes = data.get("scenes", []) or data.get("pages", [])
         if scenes:
             state["_scenes"] = scenes
         state["_simplified"] = True

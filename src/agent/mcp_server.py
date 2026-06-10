@@ -750,7 +750,7 @@ def _tool_generate_illustration_prompts(args: dict) -> dict:
         # Convert sheets to profile format with visual descriptions
         profiles = [
             {
-                "name": s["character_name"],
+                "name": s.get("character_name", "Unknown"),
                 "appearance": s.get("appearance", []),
                 "personality_traits": s.get("traits", []),
                 "visual_description": s.get("description", ""),
@@ -987,6 +987,11 @@ def _tool_save_book_to_db(args: dict) -> dict:
             characters, analysis.get("segments", []),
             alias_map, gender_map,
         )
+
+        # Clear in-memory state store to prevent memory leak
+        from src.core.state_store import clear
+        clear(book_id)
+
         return {"saved": True, "book_id": book_id, "storage": "mongodb"}
 
     return {"saved": False, "error": "No preprocess data found"}

@@ -40,7 +40,7 @@ export default function VersionsCarousel({
                   : "border-transparent hover:border-coral/50"
               }`}
             />
-            <p className="text-[9px] text-gray-400 text-center mt-0.5">{img.version === "current" ? "Current" : `v${historyImages.length - idx}`}</p>
+            <p className="text-[9px] text-gray-400 text-center mt-0.5">{img.version === "current" ? "Current" : `v${idx}`}</p>
           </div>
         ))}
       </div>
