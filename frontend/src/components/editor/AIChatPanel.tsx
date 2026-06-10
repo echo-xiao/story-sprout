@@ -59,7 +59,7 @@ Embed naturally: speech bubbles for dialogue, scrolls/banners for narration.
 
       {chatOpen && (
         <div className="mt-2">
-          <pre className="bg-cream/50 rounded-lg p-3 text-[10px] text-gray-600 whitespace-pre-wrap break-words max-h-64 overflow-y-auto font-mono !leading-[1.4] border border-peach/20">
+          <pre className="bg-cream/50 rounded-lg p-3 text-[10px] text-gray-600 whitespace-pre-wrap break-words max-h-64 overflow-y-auto font-sans !leading-[1.4] border border-peach/20">
             {prompt || "Select a segment to preview the prompt."}
           </pre>
           <p className="text-[9px] text-gray-400 mt-1">

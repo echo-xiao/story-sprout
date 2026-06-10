@@ -143,6 +143,32 @@ async def regenerate_segment_illustration(
         )
         logger.info("Regeneration complete for segment %d (page %d)", seg_id, page_num)
 
+        # Auto quality check on the freshly generated page
+        try:
+            from src.generation.gemini_consistency_check import check_page_quality
+            ill_path = ""
+            for ext in (".png", ".jpg"):
+                img = ch_dir / f"page_{page_num:03d}{ext}"
+                if img.exists():
+                    ill_path = str(img)
+                    break
+            if ill_path:
+                scene_chars = target.get("characters_in_scene", [])
+                page_text = simplified_text or target.get("text", "")
+                q_result = await run_in_threadpool(
+                    check_page_quality, ill_path, character_sheets, page_text, scene_chars, page_num
+                )
+                q_result["page"] = page_num
+                q_result["segment_id"] = seg_id
+                q_dir = ch_base / "quality"
+                q_dir.mkdir(parents=True, exist_ok=True)
+                (q_dir / f"page_{page_num:03d}_quality.json").write_text(
+                    json.dumps(q_result, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
+                )
+                logger.info("Auto quality check done for segment %d", seg_id)
+        except Exception as e:
+            logger.warning("Auto quality check failed for segment %d: %s", seg_id, e)
+
         # Sync to MongoDB
         try:
             from src.core.db import save_illustration
