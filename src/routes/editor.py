@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from src.config import GENERATED_DIR
 from src.routes.helpers import _load_json, _save_json
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ async def autofill_character_details(book_id: str, char_name: str) -> dict[str, 
     book_title = meta.get("title", "")
 
     from src.llm_client import generate_json
-    result = generate_json(
+    result = await run_in_threadpool(generate_json,
         f"""Given this character from the book "{book_title}", generate detailed visual appearance for a children's picture book illustration.
 
 Character: {char_name}
@@ -491,7 +492,7 @@ async def simplify_segment_text(book_id: str, seg_id: int) -> dict[str, Any]:
         "key_characters": target.get("characters_in_scene", []),
         "scene_summary": target.get("scene_summary", ""),
     }
-    result = simplify_text([scene], "4-6")
+    result = await run_in_threadpool(simplify_text, [scene], "4-6")
     simplified = result[0].get("page_text", "") if result else ""
     scene_direction = result[0].get("scene_direction", "") if result else ""
 
@@ -523,7 +524,7 @@ async def generate_segment_background(book_id: str, seg_id: int) -> dict[str, An
     elif chars_in_scene:
         char_context = ", ".join(chars_in_scene)
 
-    result = generate_json(
+    result = await run_in_threadpool(generate_json,
         f"""Describe the physical setting/environment of this scene from a novel.
 Be specific and visual: location, time of day, weather, objects, atmosphere, colors.
 Include details relevant to the characters and their actions in this scene.
@@ -555,7 +556,7 @@ async def summarize_segment(book_id: str, seg_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
 
     from src.llm_client import generate_json
-    result = generate_json(
+    result = await run_in_threadpool(generate_json,
         f"""Summarize this scene in one sentence. Also determine the sentiment.
 
 Scene text:
@@ -625,7 +626,7 @@ Example response:
     conversation += f"User: {req.message}"
 
     from src.llm_client import generate_json
-    result = generate_json(conversation, system=system_prompt)
+    result = await run_in_threadpool(generate_json,conversation, system=system_prompt)
 
     reply = result.get("reply", "")
     updates = result.get("updates", {})

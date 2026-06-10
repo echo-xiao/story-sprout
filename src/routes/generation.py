@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from src.config import GENERATED_DIR
 from src.routes.helpers import _load_json, _save_json
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +355,7 @@ async def check_segment_quality(book_id: str, seg_id: int) -> dict[str, Any]:
 
     page_text = target.get("simplified_text", target.get("text", ""))
     try:
-        result = check_page_quality(ill_path, character_sheets, page_text, scene_chars, page_num)
+        result = await run_in_threadpool(check_page_quality, ill_path, character_sheets, page_text, scene_chars, page_num)
     except Exception as e:
         logger.error("Quality check failed for segment %d: %s", seg_id, e)
         raise HTTPException(status_code=500, detail=f"Quality check failed: {str(e)}")
@@ -448,7 +449,7 @@ async def check_chapter_consistency(book_id: str, ch_idx: int) -> dict[str, Any]
         page_text = seg.get("simplified_text", seg.get("text", ""))
         relevant_sheets = [s for s in character_sheets if s["character_name"] in scene_chars]
 
-        result = check_page_quality(ill_path, relevant_sheets, page_text, scene_chars, page_num)
+        result = await run_in_threadpool(check_page_quality, ill_path, relevant_sheets, page_text, scene_chars, page_num)
         result["page"] = page_num
         per_page_results.append(result)
 
@@ -472,7 +473,7 @@ async def check_chapter_consistency(book_id: str, ch_idx: int) -> dict[str, Any]
             if candidate.exists():
                 cover_path = str(candidate)
                 break
-    style_result = check_style_consistency(ill_paths, reference_path=cover_path)
+    style_result = await run_in_threadpool(check_style_consistency, ill_paths, reference_path=cover_path)
 
     # Aggregate dimension scores
     n = max(len(per_page_results), 1)
