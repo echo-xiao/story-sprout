@@ -426,7 +426,9 @@ def _layer1_extract_text(input_path, book_id, preprocess_dir):
     title = result.get("title", input_path.stem)
 
     sanitized = re.sub(r'[^\w\s\u4e00-\u9fff-]', '', title)
-    book_id = re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or input_path.stem.lower()
+    # Caller (web route) may pass an explicit book_id so its progress-polling
+    # path matches; only derive from the title when none was provided.
+    book_id = book_id or re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or input_path.stem.lower()
 
     chapters = [ch for ch in chapters if len(ch.get("text", "")) > 200]
 
@@ -750,6 +752,8 @@ def main():
     parser = argparse.ArgumentParser(description="Preprocess a book (6-layer pipeline).")
     parser.add_argument("--input", required=True, help="Path to book .txt file")
     parser.add_argument("--skip-sheets", action="store_true", help="Skip character sheet generation (layer 3)")
+    parser.add_argument("--book-id", default=None,
+                        help="Override book_id to match the caller (defaults to a slug of the extracted title)")
     args = parser.parse_args()
 
     input_path = Path(args.input).resolve()
@@ -759,7 +763,7 @@ def main():
 
     # Layer 1: Text extraction + chapter split
     title, book_id, full_text, chapters, preprocess_dir = _layer1_extract_text(
-        input_path, None, None)
+        input_path, args.book_id, None)
 
     # Layer 2: LLM character identification
     characters = _layer2_identify_characters(

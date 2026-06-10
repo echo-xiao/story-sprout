@@ -108,13 +108,13 @@ def _save_user_info(book_id: str, email: str, api_key: str | None = None) -> Non
 
 async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None = None) -> None:
     """Run preprocess_book.py with error tracking (non-blocking)."""
-    import asyncio, os
+    import asyncio, os, sys
     env = os.environ.copy()
     if gemini_api_key:
         env["GEMINI_API_KEY"] = gemini_api_key
     try:
         proc = await asyncio.create_subprocess_exec(
-            "python", "scripts/preprocess_book.py", "--input", str(dest), "--skip-sheets",
+            sys.executable, "scripts/preprocess_book.py", "--input", str(dest), "--book-id", book_id, "--skip-sheets",
             cwd=str(Path(__file__).parent.parent.parent),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
