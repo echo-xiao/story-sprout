@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Users, RefreshCw, Shield } from "lucide-react";
 import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails, checkCharacterSheetQuality } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
@@ -52,6 +52,10 @@ export default function CharacterManagement({
   } | null>(null);
 
   const selected = characters.find(c => c.canonical_name === selectedChar);
+
+  // Stop handler-started polls after the component unmounts.
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
 
   // Report selected char to parent via effect (avoids setState-during-render)
   useEffect(() => {
@@ -143,6 +147,7 @@ export default function CharacterManagement({
       // Poll until new sheet appears instead of blindly waiting 30s
       await new Promise<void>((resolve) => {
         const poll = setInterval(async () => {
+          if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
           try {
             const hist = await getCharacterSheetHistory(bookId, charName);
             if (hist.images?.some(img => img.version === "current")) {
@@ -190,6 +195,7 @@ export default function CharacterManagement({
         // Wait for sheet to appear
         await new Promise<void>((resolve) => {
           const poll = setInterval(async () => {
+            if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
             try {
               const hist = await getCharacterSheetHistory(bookId, char.canonical_name);
               if (hist.images?.some(img => img.version === "current")) {

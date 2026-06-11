@@ -25,6 +25,27 @@ def _get_client() -> genai.Client:
     return _client
 
 
+def save_inline_image(response: object, save_path: Path) -> str:
+    """Save the first inline image from a Gemini response.
+
+    The extension is chosen from the returned mime type, replacing
+    `save_path`'s suffix. Returns the final path as a string, or "" when the
+    response carried no image.
+    """
+    candidates = getattr(response, "candidates", None)
+    if not candidates:
+        return ""
+    for part in candidates[0].content.parts:
+        if hasattr(part, "inline_data") and part.inline_data is not None:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            mime = part.inline_data.mime_type or "image/png"
+            ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
+            final = save_path.with_suffix(ext)
+            final.write_bytes(part.inline_data.data)
+            return str(final)
+    return ""
+
+
 def _load_image_part(image_path: str) -> dict | None:
     """Load an image file and return a Gemini-compatible Part dict."""
     path = Path(image_path)

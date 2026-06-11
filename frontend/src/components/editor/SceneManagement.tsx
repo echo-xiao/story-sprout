@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { MapPin, RefreshCw } from "lucide-react";
 import { getLocations, regenerateSceneSheet, getSceneSheetHistory, updateScene } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
@@ -25,6 +25,10 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
   const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
   const [sceneCacheBust, setSceneCacheBust] = useState(Date.now());
+
+  // Stop handler-started polls after the component unmounts.
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
 
   useEffect(() => {
     getLocations(bookId)
@@ -97,6 +101,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
       // Poll until sheet appears instead of blindly waiting 30s
       await new Promise<void>((resolve) => {
         const poll = setInterval(async () => {
+          if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
           try {
             const hist = await getSceneSheetHistory(bookId, newName);
             if (hist.images?.some(img => img.version === "current")) {
@@ -139,6 +144,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
     let completed = 0;
     await new Promise<void>((resolve) => {
       const poll = setInterval(async () => {
+        if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
         try {
           const data = await getLocations(bookId);
           const newSheets = data.scene_sheets || {};

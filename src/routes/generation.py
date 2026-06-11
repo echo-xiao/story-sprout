@@ -10,7 +10,8 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from src.config import GENERATED_DIR
-from src.routes.helpers import _load_json, _require_user_key, _save_json
+from src.generation.character_sheet import _safe_filename
+from src.routes.helpers import _load_json, _require_user_key, _save_json, segment_page_num
 from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,6 @@ async def get_stale_pages(book_id: str, ch_idx: int) -> dict[str, Any]:
     file newer than the page image — i.e. the page should be regenerated. Pure
     mtime comparison; no persisted state.
     """
-    from src.generation.character_sheet import _safe_filename
 
     analysis = _load_json(book_id, "analysis.json") or {}
     segments = analysis.get("segments", [])
@@ -118,9 +118,7 @@ async def regenerate_segment_illustration(
     ch_idx = target.get("chapter_idx", 0)
 
     # Find page number within chapter
-    ch_segments = [s for s in segments if s.get("chapter_idx") == ch_idx]
-    ch_segments.sort(key=lambda s: s.get("id", 0))
-    page_num = next((i + 1 for i, s in enumerate(ch_segments) if s.get("id") == seg_id), 1)
+    page_num = segment_page_num(segments, ch_idx, seg_id)
 
     # Move existing illustration + quality file to history before regenerating
     ch_base = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
@@ -141,7 +139,7 @@ async def regenerate_segment_illustration(
     async def _regen():
         from src.generation.text_simplifier import simplify_text
         from src.generation.illustration import generate_illustrations
-        from src.generation.character_sheet import _safe_filename, generate_character_sheets
+        from src.generation.character_sheet import generate_character_sheets
 
         # Step 1: Generate character sheets if missing
         chars_dir = GENERATED_DIR / book_id / "characters"
@@ -464,8 +462,7 @@ async def get_segment_quality(book_id: str, seg_id: int, version: str = "current
         return {}
 
     ch_idx = target.get("chapter_idx", 0)
-    ch_segments = sorted([s for s in segments if s.get("chapter_idx") == ch_idx], key=lambda s: s.get("id", 0))
-    page_num = next((i + 1 for i, s in enumerate(ch_segments) if s.get("id") == seg_id), 1)
+    page_num = segment_page_num(segments, ch_idx, seg_id)
 
     ch_base = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
 
@@ -494,8 +491,7 @@ async def check_segment_quality(book_id: str, seg_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
 
     ch_idx = target.get("chapter_idx", 0)
-    ch_segments = sorted([s for s in segments if s.get("chapter_idx") == ch_idx], key=lambda s: s.get("id", 0))
-    page_num = next((i + 1 for i, s in enumerate(ch_segments) if s.get("id") == seg_id), 1)
+    page_num = segment_page_num(segments, ch_idx, seg_id)
 
     # Find illustration
     ch_dir = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "pages"
@@ -509,7 +505,6 @@ async def check_segment_quality(book_id: str, seg_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="No illustration found for this segment.")
 
     # Find character sheets — match by scene character name directly
-    from src.generation.character_sheet import _safe_filename
     chars_dir = GENERATED_DIR / book_id / "characters"
     llm_chars = _load_json(book_id, "llm_characters.json") or {}
     scene_chars = target.get("characters_in_scene", [])
@@ -737,6 +732,10 @@ async def regenerate_special_page(
         token = set_user_api_key(user_key)
         try:
             await _gen_inner()
+        except Exception:
+            # Best-effort: the frontend's poll timeout covers the UI; log so the
+            # failure isn't swallowed by the background-task runner.
+            logger.exception("Special page regen failed for %s/%s", book_id, page_type)
         finally:
             reset_user_api_key(token)
 
@@ -857,6 +856,8 @@ async def regenerate_scene_sheet(
         token = set_user_api_key(user_key)
         try:
             await _gen_inner()
+        except Exception:
+            logger.exception("Scene sheet regen failed for %s/%s", book_id, scene_name)
         finally:
             reset_user_api_key(token)
 
@@ -870,7 +871,6 @@ def _run_character_sheet_quality(book_id: str, char_name: str) -> dict | None:
     Returns the result, or None if no sheet exists yet. Shared by the quality
     endpoint and the auto-QC that runs after every sheet (re)generation.
     """
-    from src.generation.character_sheet import _safe_filename
     from src.generation.gemini_consistency_check import check_character_sheet_quality
     from src.routes.helpers import load_characters
 
@@ -908,7 +908,6 @@ async def regenerate_character_sheet(
     user_key: str = Depends(_require_user_key),
 ) -> dict[str, Any]:
     """Regenerate character sheet for a specific character."""
-    from src.generation.character_sheet import _safe_filename
 
     # Move existing sheet to history
     chars_dir = GENERATED_DIR / book_id / "characters"
@@ -955,6 +954,8 @@ async def regenerate_character_sheet(
         token = set_user_api_key(user_key)
         try:
             await _regen_inner()
+        except Exception:
+            logger.exception("Character sheet regen failed for %s/%s", book_id, char_name)
         finally:
             reset_user_api_key(token)
 

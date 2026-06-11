@@ -24,22 +24,9 @@ from src.config import (
     GENERATED_DIR,
     NEGATIVE_PROMPT,
 )
-from src.gemini_backend import make_genai_client
+from src.generation.image_utils import _get_client, save_inline_image
 
 logger = logging.getLogger(__name__)
-
-_client: genai.Client | None = None
-
-
-def _get_client() -> genai.Client:
-    global _client
-    # BYOK: a per-request user key must not reuse the cached project client.
-    from src.gemini_backend import get_user_api_key
-    if get_user_api_key():
-        return make_genai_client()
-    if _client is None:
-        _client = make_genai_client()
-    return _client
 
 
 def _build_sheet_prompt(profile: dict, style: str, all_profiles: list[dict] | None = None) -> str:
@@ -175,123 +162,6 @@ def _assign_visual_identities(profiles: list[dict]) -> list[dict]:
     return profiles
 
 
-def _add_labels_to_sheet(image_path: str, name: str, profile: dict) -> str:
-    """Add clear labels to a character sheet image using Pillow.
-
-    Adds a bottom banner with character name and key physical details.
-    """
-    from PIL import Image, ImageDraw, ImageFont
-
-    try:
-        img = Image.open(image_path)
-        w, h = img.size
-
-        # Find a font
-        font_paths = [
-            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-            "/System/Library/Fonts/Supplemental/Helvetica.ttc",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        ]
-        title_font = None
-        detail_font = None
-        for fp in font_paths:
-            if Path(fp).exists():
-                try:
-                    title_font = ImageFont.truetype(fp, 28)
-                    detail_font = ImageFont.truetype(fp, 14)
-                    break
-                except Exception:
-                    continue
-        if not title_font:
-            title_font = ImageFont.load_default()
-            detail_font = ImageFont.load_default()
-
-        # Build detail text from visual_details
-        vd = profile.get("visual_details", {})
-        detail_parts = []
-        for key in ("hair", "eyes", "clothing", "distinctive"):
-            val = vd.get(key, "")
-            if val and val.lower() not in ("not described", "unknown"):
-                detail_parts.append(val)
-        detail = " | ".join(detail_parts)[:120] if detail_parts else ""
-
-        banner_h = 70 if detail else 50
-        banner = Image.new("RGBA", (w, banner_h), (255, 255, 255, 220))
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-        img.paste(banner, (0, h - banner_h), banner)
-        draw = ImageDraw.Draw(img)
-
-        # Character name
-        try:
-            tw = draw.textlength(name, font=title_font)
-        except Exception:
-            tw = len(name) * 16
-        draw.text(((w - tw) // 2, h - banner_h + 6), name, fill=(40, 40, 40), font=title_font)
-
-        # Key physical details
-        if detail:
-            try:
-                dw = draw.textlength(detail, font=detail_font)
-            except Exception:
-                dw = len(detail) * 8
-            x = max(10, (w - dw) // 2)
-            draw.text((x, h - banner_h + 40), detail, fill=(100, 90, 80), font=detail_font)
-
-        img = img.convert("RGB")
-        img.save(image_path, quality=95)
-        return image_path
-
-    except Exception as e:
-        logger.warning("Failed to add labels to %s: %s", image_path, e)
-        return image_path
-
-
-def crop_portrait_from_sheet(sheet_path: str, output_path: str) -> str:
-    """Crop the FRONT view from a character sheet as a square portrait.
-
-    Strategy: crop the first character (top-left 1/3 of the sheet),
-    then find the non-white bounding box and center it in a square.
-    """
-    try:
-        from PIL import Image, ImageChops
-        img = Image.open(sheet_path).convert("RGB")
-        w, h = img.size
-
-        # Step 1: Crop top-left region (FRONT view area)
-        region = img.crop((0, 0, int(w * 0.35), int(h * 0.38)))
-
-        # Step 2: Find non-white content bounding box
-        bg = Image.new("RGB", region.size, (255, 255, 255))
-        diff = ImageChops.difference(region, bg)
-        bbox = diff.getbbox()
-        if bbox:
-            # Add padding
-            pad = 15
-            x1 = max(0, bbox[0] - pad)
-            y1 = max(0, bbox[1] - pad)
-            x2 = min(region.width, bbox[2] + pad)
-            y2 = min(region.height, bbox[3] + pad)
-            content = region.crop((x1, y1, x2, y2))
-        else:
-            content = region
-
-        # Step 3: Make square, centered
-        cw, ch = content.size
-        size = max(cw, ch)
-        square = Image.new("RGB", (size, size), (255, 255, 255))
-        square.paste(content, ((size - cw) // 2, (size - ch) // 2))
-
-        # Step 4: Resize to consistent size
-        square = square.resize((512, 512), Image.LANCZOS)
-        square.save(output_path, quality=95)
-        return output_path
-    except Exception as e:
-        logger.warning("Failed to crop portrait from %s: %s", sheet_path, e)
-        return ""
-
-
 def _safe_filename(name: str) -> str:
     """Convert a character name to a safe filename."""
     safe = re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
@@ -362,15 +232,10 @@ Do NOT include: {NEGATIVE_PROMPT}"""
                     image_config=genai.types.ImageConfig(aspect_ratio="1:1"),
                 ),
             )
-            if response.candidates:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, "inline_data") and part.inline_data is not None:
-                        mime = part.inline_data.mime_type or "image/png"
-                        ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
-                        final = portrait_path.with_suffix(ext)
-                        final.write_bytes(part.inline_data.data)
-                        logger.info("Portrait for '%s' saved to %s", name, final)
-                        return str(final)
+            final = save_inline_image(response, portrait_path)
+            if final:
+                logger.info("Portrait for '%s' saved to %s", name, final)
+                return final
         except Exception as e:
             logger.warning("Portrait attempt %d for '%s' failed: %s", attempt + 1, name, e)
             if attempt == 0:
@@ -467,15 +332,7 @@ def generate_character_sheets(
                                 image_config=genai.types.ImageConfig(aspect_ratio="1:1"),
                             ),
                         )
-                        if response.candidates:
-                            for part in response.candidates[0].content.parts:
-                                if hasattr(part, "inline_data") and part.inline_data is not None:
-                                    mime = part.inline_data.mime_type or "image/png"
-                                    ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
-                                    final = save_path.with_suffix(ext)
-                                    final.write_bytes(part.inline_data.data)
-                                    sheet_path = str(final)
-                                    break
+                        sheet_path = save_inline_image(response, save_path)
                         if sheet_path:
                             break
                     except Exception as e:

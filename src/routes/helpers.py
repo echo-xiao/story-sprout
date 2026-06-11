@@ -80,6 +80,17 @@ def load_characters(book_id: str) -> list[dict]:
     return data.get("characters", []) if isinstance(data, dict) else []
 
 
+def segment_page_num(segments: list[dict], ch_idx: int, seg_id: int) -> int:
+    """Page number of a segment: 1-based position within its chapter's
+    segments sorted by id. Falls back to 1 when the segment isn't found —
+    the same semantics every route previously open-coded."""
+    ch_segments = sorted(
+        (s for s in segments if s.get("chapter_idx") == ch_idx),
+        key=lambda s: s.get("id", 0),
+    )
+    return next((i + 1 for i, s in enumerate(ch_segments) if s.get("id") == seg_id), 1)
+
+
 def _save_json(book_id: str, filename: str, data: Any) -> None:
     """Save preprocess data to MongoDB and local disk."""
     # Save to MongoDB

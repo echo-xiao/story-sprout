@@ -23,7 +23,7 @@ from src.config import (
     GENERATED_DIR,
     NEGATIVE_PROMPT,
 )
-from src.generation.image_utils import _get_client, _load_image_part
+from src.generation.image_utils import _get_client, _load_image_part, save_inline_image
 
 logger = logging.getLogger(__name__)
 
@@ -110,16 +110,10 @@ def _generate_image_with_refs(
                     ),
                 ),
             )
-            if not response.candidates:
-                continue
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, "inline_data") and part.inline_data is not None:
-                    mime = part.inline_data.mime_type or "image/png"
-                    ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
-                    final_path = save_path.with_suffix(ext)
-                    final_path.write_bytes(part.inline_data.data)
-                    logger.info("Saved special page to %s", final_path)
-                    return str(final_path)
+            final_path = save_inline_image(response, save_path)
+            if final_path:
+                logger.info("Saved special page to %s", final_path)
+                return final_path
         except Exception as e:
             logger.warning("Special page attempt %d failed: %s", attempt + 1, e)
             if attempt < max_retries - 1:

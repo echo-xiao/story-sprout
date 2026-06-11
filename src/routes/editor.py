@@ -12,7 +12,8 @@ from pydantic import BaseModel
 import asyncio
 
 from src.config import GENERATED_DIR
-from src.routes.helpers import _load_json, _require_user_key, _save_json
+from src.generation.character_sheet import _safe_filename
+from src.routes.helpers import _load_json, _require_user_key, _save_json, segment_page_num
 from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,6 @@ def _cascade_character_rename(book_id: str, old_name: str, new_name: str) -> Non
         _save_json(book_id, "character_genders.json", genders)
 
     # 4) Rename sheet / portrait / history image files
-    from src.generation.character_sheet import _safe_filename
     chars_dir = GENERATED_DIR / book_id / "characters"
     old_safe, new_safe = _safe_filename(old_name), _safe_filename(new_name)
     if chars_dir.exists() and old_safe != new_safe:
@@ -425,7 +425,6 @@ async def update_scene(book_id: str, scene_name: str, update: SceneUpdate) -> di
     # Rename the scene reference sheet files so they keep matching the new name
     # (otherwise sceneSheets[new_name] finds nothing and the image "disappears").
     if new_name != scene_name:
-        from src.generation.character_sheet import _safe_filename
         scenes_dir = GENERATED_DIR / book_id / "scenes"
         old_safe, new_safe = _safe_filename(scene_name), _safe_filename(new_name)
         if scenes_dir.exists() and old_safe != new_safe:
@@ -512,7 +511,6 @@ async def get_scene_sheet_history(book_id: str, scene_name: str) -> dict[str, An
 async def get_character_sheet_history(book_id: str, char_name: str) -> dict[str, Any]:
     """Get current + historical character sheet images."""
     import re as _re
-    from src.generation.character_sheet import _safe_filename
 
     chars_dir = GENERATED_DIR / book_id / "characters"
     safe = _safe_filename(char_name)
@@ -605,11 +603,7 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
     if "simplified_text" in update_dict or "text" in update_dict:
         try:
             ch_idx = target.get("chapter_idx", 0)
-            ch_segments = sorted(
-                [s for s in analysis.get("segments", []) if s.get("chapter_idx") == ch_idx],
-                key=lambda s: s.get("id", 0),
-            )
-            page_num = next((i + 1 for i, s in enumerate(ch_segments) if s.get("id") == seg_id), 1)
+            page_num = segment_page_num(analysis.get("segments", []), ch_idx, seg_id)
             quality_file = (
                 GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
                 / "quality" / f"page_{page_num:03d}_quality.json"
@@ -642,8 +636,7 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
         return {"images": []}
 
     ch_idx = target.get("chapter_idx", 0)
-    ch_segments = sorted([s for s in segments if s.get("chapter_idx") == ch_idx], key=lambda s: s.get("id", 0))
-    page_num = next((i + 1 for i, s in enumerate(ch_segments) if s.get("id") == seg_id), 1)
+    page_num = segment_page_num(segments, ch_idx, seg_id)
 
     # Find all versions in pages dir + history dir
     images = []

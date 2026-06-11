@@ -17,7 +17,7 @@ from src.config import (
     GENERATED_DIR,
     NEGATIVE_PROMPT,
 )
-from src.generation.image_utils import _get_client, _load_image_part
+from src.generation.image_utils import _get_client, _load_image_part, save_inline_image
 
 logger = logging.getLogger(__name__)
 
@@ -191,17 +191,10 @@ Do NOT include: {NEGATIVE_PROMPT}"""
 
 def _extract_image(response: object, save_path: Path) -> bool:
     """Save the first image from a Gemini response to disk."""
-    if not response.candidates:
-        return False
-    for part in response.candidates[0].content.parts:
-        if hasattr(part, "inline_data") and part.inline_data is not None:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            mime_type = part.inline_data.mime_type or "image/png"
-            ext = ".jpg" if "jpeg" in mime_type or "jpg" in mime_type else ".png"
-            final_path = save_path.with_suffix(ext)
-            final_path.write_bytes(part.inline_data.data)
-            logger.info("Saved illustration to %s", final_path)
-            return True
+    final_path = save_inline_image(response, save_path)
+    if final_path:
+        logger.info("Saved illustration to %s", final_path)
+        return True
     return False
 
 

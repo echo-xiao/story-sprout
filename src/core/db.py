@@ -154,16 +154,6 @@ def save_segments(book_id: str, segments: list[dict]) -> bool:
     return True
 
 
-def get_segments(book_id: str, chapter_idx: Optional[int] = None) -> list[dict]:
-    db = _get_db()
-    if db is None:
-        return []
-    query: dict = {"book_id": book_id}
-    if chapter_idx is not None:
-        query["chapter_idx"] = chapter_idx
-    return list(db.segments.find(query, {"_id": 0}).sort("id", 1))
-
-
 def update_segment(book_id: str, segment_id: int, updates: dict) -> bool:
     db = _get_db()
     if db is None:
@@ -194,47 +184,6 @@ def save_illustration(book_id: str, segment_id: int, prompt: str,
     }
     db.illustrations.insert_one(doc)
     return True
-
-
-def get_illustrations(book_id: str, segment_id: Optional[int] = None) -> list[dict]:
-    db = _get_db()
-    if db is None:
-        return []
-    query: dict = {"book_id": book_id}
-    if segment_id is not None:
-        query["segment_id"] = segment_id
-    return list(db.illustrations.find(query, {"_id": 0}).sort("created_at", -1))
-
-
-# ═══════════════════════════════════════════════════════════════
-# Generation log
-# ═══════════════════════════════════════════════════════════════
-
-def log_llm_call(book_id: str, step: str, model: str,
-                 input_text: str, output_text: str,
-                 tokens: int = 0, duration_s: float = 0) -> bool:
-    db = _get_db()
-    if db is None:
-        return False
-    doc = {
-        "book_id": book_id,
-        "step": step,
-        "model": model,
-        "input_preview": input_text[:500],
-        "output_preview": output_text[:500],
-        "tokens": tokens,
-        "duration_s": round(duration_s, 2),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    db.generation_log.insert_one(doc)
-    return True
-
-
-def get_generation_log(book_id: str) -> list[dict]:
-    db = _get_db()
-    if db is None:
-        return []
-    return list(db.generation_log.find({"book_id": book_id}, {"_id": 0}).sort("created_at", 1))
 
 
 # ═══════════════════════════════════════════════════════════════

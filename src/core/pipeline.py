@@ -6,25 +6,16 @@ Also provides MongoDB helpers for the FastAPI app to use.
 from __future__ import annotations
 
 import logging
-import traceback
-import uuid
-from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any, Optional
 
 import motor.motor_asyncio
 
 from src.config import GENERATED_DIR, MONGODB_DB, MONGODB_URI
-from src.core.models import (
-    GenerationConfig,
-    GenerationStatus,
-    PictureBook,
-    StatusEnum,
-)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# MongoDB helpers (used by FastAPI for status polling and book retrieval)
+# MongoDB helpers (used by FastAPI for the book library and deletion)
 # ---------------------------------------------------------------------------
 
 _mongo_client: Optional[motor.motor_asyncio.AsyncIOMotorClient] = None
@@ -37,36 +28,6 @@ def _get_db() -> motor.motor_asyncio.AsyncIOMotorDatabase:
             MONGODB_URI, serverSelectionTimeoutMS=5000
         )
     return _mongo_client[MONGODB_DB]
-
-
-async def save_status(status: GenerationStatus) -> None:
-    db = _get_db()
-    await db.statuses.update_one(
-        {"book_id": status.book_id},
-        {"$set": status.model_dump()},
-        upsert=True,
-    )
-
-
-async def save_book(book: PictureBook) -> None:
-    db = _get_db()
-    doc = book.model_dump()
-    doc["created_at"] = book.created_at.isoformat()
-    await db.books.update_one(
-        {"book_id": book.book_id},
-        {"$set": doc},
-        upsert=True,
-    )
-
-
-async def get_status(book_id: str) -> Optional[dict[str, Any]]:
-    db = _get_db()
-    return await db.statuses.find_one({"book_id": book_id}, {"_id": 0})
-
-
-async def get_book(book_id: str) -> Optional[dict[str, Any]]:
-    db = _get_db()
-    return await db.books.find_one({"book_id": book_id}, {"_id": 0})
 
 
 async def list_books() -> list[dict[str, Any]]:
@@ -107,7 +68,6 @@ async def delete_book(book_id: str) -> bool:
             pass
     # A preprocess-only book has a generated dir but no chapter docs yet — treat
     # that as deletable too, so the endpoint proceeds to rmtree instead of 404.
-    from src.config import GENERATED_DIR
     has_dir = (GENERATED_DIR / book_id).exists()
     return res.deleted_count > 0 or has_dir
 

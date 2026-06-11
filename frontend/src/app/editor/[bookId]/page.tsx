@@ -156,6 +156,12 @@ export default function EditorPage() {
     selectedChapterRef.current = selectedChapter;
   }, [selectedChapter]);
 
+  // Set on unmount so handler-started polls (Gen All / regen / sheet / special)
+  // stop instead of polling — and in Gen All's case launching new chapter
+  // generations — for minutes after the user navigates away.
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
+
   // Refresh the set of stale pages (deps regenerated after the page image) for a chapter
   const refreshStale = async (chIdx: number | null) => {
     if (chIdx === null) return;
@@ -236,6 +242,7 @@ export default function EditorPage() {
         // Wait for completion by polling progress
         await new Promise<void>((resolve) => {
           const poll = setInterval(async () => {
+            if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
             try {
               const prog = await getChapterProgress(bookId, chIdx).catch(() => null);
               if (!prog) return;
@@ -496,6 +503,7 @@ export default function EditorPage() {
         let done = false;
         const poll = setInterval(async () => {
           if (done) return;
+          if (unmountedRef.current) { done = true; clearInterval(poll); resolve(); return; }
           try {
             const status = await getRegenStatus(bookId, segId);
             if (status.status === "complete" || status.status === "error") {
@@ -630,9 +638,15 @@ export default function EditorPage() {
 
   // Handle regenerate character sheet (called from CharacterSheetsPanel in Pages tab)
   const handleRegenerateSheet = async (canonicalName: string) => {
-    await regenerateCharacterSheet(bookId, canonicalName);
+    try {
+      await regenerateCharacterSheet(bookId, canonicalName);
+    } catch (err: any) {
+      alert(`Sheet regeneration failed: ${err?.response?.data?.detail || err?.message || "unknown error"}`);
+      return;
+    }
     // Poll until sheet is ready instead of blindly waiting
     const poll = setInterval(async () => {
+      if (unmountedRef.current) { clearInterval(poll); return; }
       try {
         const data = await getCharacters(bookId);
         if (data.sheets?.[canonicalName]) {
@@ -658,6 +672,7 @@ export default function EditorPage() {
       await regenerateSpecialPage(bookId, spType, spChapter);
       await new Promise<void>((resolve) => {
         const poll = setInterval(async () => {
+          if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
           try {
             const data = await getSpecialPages(bookId);
             const found = data.pages.find(p => p.type === spType && (p.chapter ?? 0) === spChapter);
