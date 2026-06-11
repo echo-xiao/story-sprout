@@ -559,12 +559,19 @@ export default function CharacterManagement({
               <button
                 onClick={async () => {
                   if (!selectedChar) return;
+                  const oldName = selectedChar;
+                  const newName = editing.canonical_name || oldName;
                   setSaving(true);
                   try {
                     await updateCharacter(bookId, selectedChar, editing);
                     await handleRegenSheet();
                     const data = await getCharacters(bookId);
-                    onCharactersUpdate(data.characters || [], data.sheets || {});
+                    onCharactersUpdate(
+                      data.characters || [],
+                      data.sheets || {},
+                      oldName !== newName ? oldName : undefined,
+                      oldName !== newName ? newName : undefined,
+                    );
                   } catch (e) {
                     console.error("Save & regen failed:", e);
                   } finally {

@@ -38,7 +38,7 @@ export default function Home() {
             onClick={() => setView("home")}
             className="flex items-center gap-3 hover:opacity-80 transition-opacity"
           >
-            <span className="text-3xl">🌱</span>
+            <img src="/logo.png" alt="StorySprout" className="w-11 h-11 rounded-full object-cover shadow-sm" />
             <div>
               <h1 className="font-display text-xl font-bold text-gray-800">
                 StorySprout
@@ -83,7 +83,14 @@ export default function Home() {
       {/* Content */}
       <div className="page-container">
         {view === "home" && (
-          <UploadForm onStartGeneration={handleStartGeneration} />
+          <div className="relative">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 -z-10 bg-cover bg-bottom bg-no-repeat opacity-35"
+              style={{ backgroundImage: "url('/create-bg.png')" }}
+            />
+            <UploadForm onStartGeneration={handleStartGeneration} />
+          </div>
         )}
         {view === "generating" && (
           <GenerationProgress

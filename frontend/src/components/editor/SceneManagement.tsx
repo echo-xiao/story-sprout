@@ -11,9 +11,10 @@ interface SceneManagementProps {
   bookId: string;
   initialScene?: string | null;
   onSelectScene?: (name: string) => void;
+  onSceneRegen?: () => void;
 }
 
-export default function SceneManagement({ bookId, initialScene, onSelectScene }: SceneManagementProps) {
+export default function SceneManagement({ bookId, initialScene, onSelectScene, onSceneRegen }: SceneManagementProps) {
   const [locations, setLocations] = useState<any[]>([]);
   const [sceneSheets, setSceneSheets] = useState<Record<string, string>>({});
   const [selectedLoc, setSelectedLoc] = useState<string | null>(null);
@@ -96,6 +97,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
         }, 5000);
         setTimeout(() => { clearInterval(poll); setGenerating(null); resolve(); }, 120000);
       });
+      onSceneRegen?.();  // notify parent → refresh stale pages (scene → pages linkage)
     } catch {
       setGenerating(null);
     }

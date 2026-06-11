@@ -240,6 +240,9 @@ export default function EditorPage() {
       const charData = await getCharacters(bookId);
       setSheets(charData.sheets || {});
     } catch {}
+
+    // Pages were regenerated — refresh stale indicators
+    refreshStale(selectedChapter);
   };
 
   // Load chapters + characters on mount (retry until preprocess is done)
@@ -903,8 +906,23 @@ export default function EditorPage() {
                 }
                 return seg;
               };
-              setSegments(prev => prev.map(renameInSegment));
+              const renamed = segmentsRef.current.map(renameInSegment);
+              setSegments(renamed);
               setSelectedSegment(prev => prev ? renameInSegment(prev) : prev);
+              // Persist each segment that actually changed
+              (async () => {
+                for (let i = 0; i < renamed.length; i++) {
+                  if (renamed[i] === segmentsRef.current[i]) continue;
+                  try {
+                    await updateSegment(bookId, renamed[i].id, {
+                      characters_in_scene: renamed[i].characters_in_scene,
+                      character_actions: renamed[i].character_actions,
+                    });
+                  } catch (e) {
+                    console.error("Persist rename cascade failed:", e);
+                  }
+                }
+              })();
             }
             // A character may have been regenerated — refresh stale pages
             refreshStale(selectedChapter);
@@ -919,6 +937,7 @@ export default function EditorPage() {
           bookId={bookId}
           initialScene={initialScene}
           onSelectScene={setSelectedSceneName}
+          onSceneRegen={() => refreshStale(selectedChapter)}
         />
       )}
 

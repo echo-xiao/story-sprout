@@ -56,8 +56,7 @@ async def get_stale_pages(book_id: str, ch_idx: int) -> dict[str, Any]:
 
     char_cache: dict[str, float | None] = {}
     scene_cache: dict[str, float | None] = {}
-    locations = (_load_json(book_id, "llm_locations.json") or {}).get("locations", [])
-    loc_names = [l.get("name", "") for l in locations if l.get("name")]
+    locations = [l for l in (_load_json(book_id, "llm_locations.json") or {}).get("locations", []) if l.get("name")]
 
     stale = []
     for idx, seg in enumerate(ch_segs):
@@ -72,9 +71,14 @@ async def get_stale_pages(book_id: str, ch_idx: int) -> dict[str, Any]:
             m = char_cache[name]
             if m and m > page_mtime:
                 reasons.append({"type": "character", "name": name})
-        bg = (seg.get("scene_background") or "").lower()
-        for ln in loc_names:
-            if ln.lower() in bg:
+        haystack = " ".join(
+            (seg.get(f) or "")
+            for f in ("scene_background", "scene_summary", "scene_direction", "text")
+        ).lower()
+        for loc in locations:
+            ln = loc.get("name", "")
+            needles = [ln.lower()] + [str(a).lower() for a in loc.get("aliases", [])]
+            if any(n and n in haystack for n in needles):
                 if ln not in scene_cache:
                     scene_cache[ln] = _mtime(scenes_dir / f"{_safe_filename(ln)}_scene")
                 m = scene_cache[ln]
