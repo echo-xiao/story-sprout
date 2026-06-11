@@ -120,8 +120,8 @@ export default function EditorPage() {
   } | null>(null);
   const [checkingQuality, setCheckingQuality] = useState(false);
 
-  // Agent Activity Panel
-  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  // Agent Activity Panel (open by default so the live agent log is always visible)
+  const [agentPanelOpen, setAgentPanelOpen] = useState(true);
 
   // AI Chat state
   const [chatMessages, setChatMessages] = useState<Array<{ role: string; content: string }>>([]);
@@ -176,6 +176,12 @@ export default function EditorPage() {
     }, 5000);
     return () => clearInterval(interval);
   }, [generatingChapter, bookId, selectedChapter]);
+
+  // Auto-open the agent activity panel the moment a chapter generation starts,
+  // so the user can watch the agent interactions live.
+  useEffect(() => {
+    if (generatingChapter !== null) setAgentPanelOpen(true);
+  }, [generatingChapter]);
 
   // Gen All Chapters: generate all chapters sequentially
   const handleGenAllChapters = async () => {
@@ -866,17 +872,10 @@ export default function EditorPage() {
         </div>
       </header>
 
-      {/* Agent Activity Panel (drawer) */}
-      {agentPanelOpen && (
-        <AgentActivityPanel
-          bookId={bookId}
-          chapterIdx={generatingChapter ?? selectedChapter}
-          isGenerating={generatingChapter !== null}
-          currentAgent={(chapterProgress as any)?.agent || null}
-          onClose={() => setAgentPanelOpen(false)}
-        />
-      )}
-
+      {/* Body: tab content + persistent live Agent Activity column side by side */}
+      <div className="flex flex-1 overflow-hidden">
+      {/* Tab content area */}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
       {/* Character Management Tab */}
       {activeTab === "characters" && (
         <CharacterManagement
@@ -1493,6 +1492,19 @@ export default function EditorPage() {
         </div>
       </div>
       )}
+      </div>
+
+      {/* Persistent live Agent Activity column (sits alongside tab content) */}
+      {agentPanelOpen && (
+        <AgentActivityPanel
+          bookId={bookId}
+          chapterIdx={generatingChapter ?? selectedChapter}
+          isGenerating={generatingChapter !== null}
+          currentAgent={(chapterProgress as any)?.agent || null}
+          onClose={() => setAgentPanelOpen(false)}
+        />
+      )}
+      </div>
     </div>
   );
 }

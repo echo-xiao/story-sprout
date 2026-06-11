@@ -76,10 +76,10 @@ export default function AgentActivityPanel({
     return () => clearTimeout(timer);
   }, [bookId, chapterIdx, isGenerating]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll the activity log to the newest entry as logs arrive
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs.length]);
+  }, [logs]);
 
   const agentStatuses = getAgentStatuses(logs, currentAgent);
 
@@ -97,7 +97,7 @@ export default function AgentActivityPanel({
   }
 
   return (
-    <div className="fixed inset-y-0 right-0 w-[380px] bg-white shadow-2xl border-l border-gray-200 z-50 flex flex-col animate-in slide-in-from-right duration-200">
+    <div className="w-[340px] bg-white border-l border-gray-200 flex flex-col h-full shrink-0">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-blue-50 to-purple-50">
         <div>
