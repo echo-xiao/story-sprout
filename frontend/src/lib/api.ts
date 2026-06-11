@@ -118,6 +118,18 @@ export async function updateCharacter(
   return data;
 }
 
+export async function updateScene(
+  bookId: string,
+  sceneName: string,
+  updates: Record<string, unknown>
+) {
+  const { data } = await api.put(
+    `/book/${bookId}/preprocess/scenes/${encodeURIComponent(sceneName)}`,
+    updates
+  );
+  return data;
+}
+
 export async function getChapterSegments(bookId: string, chapterIdx: number) {
   const { data } = await api.get(`/book/${bookId}/preprocess/chapter/${chapterIdx}/segments`);
   return data;
@@ -198,6 +210,11 @@ export async function checkSegmentQuality(bookId: string, segId: number) {
 export async function getChapterConsistency(bookId: string, chapterIdx: number) {
   const { data } = await api.get(`/book/${bookId}/chapter/${chapterIdx}/consistency`);
   return data;
+}
+
+export async function getStalePages(bookId: string, chIdx: number) {
+  const { data } = await api.get(`/book/${bookId}/chapter/${chIdx}/stale-pages`);
+  return data as { stale: Array<{ page: number; segment_id: number; reasons: Array<{ type: "character" | "scene"; name: string }> }> };
 }
 
 export async function checkChapterConsistency(bookId: string, chapterIdx: number) {

@@ -87,15 +87,25 @@ class CharacterUpdate(BaseModel):
 @router.put("/api/book/{book_id}/preprocess/characters/{char_name}")
 async def update_character(book_id: str, char_name: str, update: CharacterUpdate) -> dict[str, Any]:
     """Update a character's profile."""
-    llm_chars = _load_json(book_id, "llm_characters.json")
-    if not llm_chars:
-        raise HTTPException(status_code=404, detail="No character data.")
+    update_dict = update.model_dump(exclude_none=True)
 
-    target = next((c for c in llm_chars.get("characters", []) if c.get("canonical_name") == char_name), None)
-    if not target:
+    llm_chars = _load_json(book_id, "llm_characters.json")
+    target = None
+    if llm_chars:
+        target = next((c for c in llm_chars.get("characters", []) if c.get("canonical_name") == char_name), None)
+
+    if target is None:
+        # llm_characters.json is missing or blanked (e.g. after a failed re-preprocess).
+        # The canonical `characters` collection still has the character — update it there.
+        try:
+            from src.core.db import update_character as db_update_char, is_available
+            if is_available() and db_update_char(book_id, char_name, update_dict):
+                return {"status": "updated", "character": char_name,
+                        "updated_fields": list(update_dict.keys())}
+        except Exception as e:
+            logger.warning("MongoDB character update failed for %s: %s", char_name, e)
         raise HTTPException(status_code=404, detail=f"Character '{char_name}' not found.")
 
-    update_dict = update.model_dump(exclude_none=True)
     for key, value in update_dict.items():
         target[key] = value
 
@@ -270,6 +280,33 @@ async def get_locations(book_id: str) -> dict[str, Any]:
                     break
 
     return {"locations": locations, "scene_sheets": scene_sheets}
+
+
+class SceneUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    visual_details: Optional[dict[str, Any]] = None
+
+
+@router.put("/api/book/{book_id}/preprocess/scenes/{scene_name}")
+async def update_scene(book_id: str, scene_name: str, update: SceneUpdate) -> dict[str, Any]:
+    """Update a location's profile in llm_locations.json."""
+    update_dict = update.model_dump(exclude_none=True)
+
+    llm_locs = _load_json(book_id, "llm_locations.json")
+    target = None
+    if llm_locs:
+        target = next((l for l in llm_locs.get("locations", []) if l.get("name") == scene_name), None)
+
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Scene '{scene_name}' not found.")
+
+    for key, value in update_dict.items():
+        target[key] = value
+
+    _save_json(book_id, "llm_locations.json", llm_locs)
+
+    return {"status": "updated", "scene": scene_name, "updated_fields": list(update_dict.keys())}
 
 
 @router.get("/api/book/{book_id}/preprocess/scenes/{scene_name}/history")

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { MapPin, RefreshCw } from "lucide-react";
-import { getLocations, regenerateSceneSheet, getSceneSheetHistory } from "@/lib/api";
+import { getLocations, regenerateSceneSheet, getSceneSheetHistory, updateScene } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
@@ -22,6 +22,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
   const [editing, setEditing] = useState<Record<string, any>>({});
   const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
+  const [sceneCacheBust, setSceneCacheBust] = useState(Date.now());
 
   useEffect(() => {
     getLocations(bookId)
@@ -70,6 +71,13 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
     const sceneName = selected.name;
     setGenerating(sceneName);
     try {
+      // Persist edited fields before regenerating.
+      const { _name, _description, ...visualDetails } = editing;
+      const updates: Record<string, unknown> = { visual_details: visualDetails };
+      if (_name !== undefined) updates.name = _name;
+      if (_description !== undefined) updates.description = _description;
+      await updateScene(bookId, sceneName, updates);
+
       await regenerateSceneSheet(bookId, sceneName);
       // Poll until sheet appears instead of blindly waiting 30s
       await new Promise<void>((resolve) => {
@@ -80,6 +88,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
               clearInterval(poll);
               const data = await getLocations(bookId);
               setSceneSheets(data.scene_sheets || {});
+              setSceneCacheBust(Date.now());
               setGenerating(null);
               resolve();
             }
@@ -215,7 +224,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene }:
               <div className="flex-1 flex items-center justify-center min-h-0">
                 {(activeSheetUrl || sceneSheets[selected.name]) ? (
                   <img
-                    src={`${API_BASE}${activeSheetUrl || sceneSheets[selected.name]}`}
+                    src={`${API_BASE}${activeSheetUrl || sceneSheets[selected.name]}?t=${sheetHistory.find(i => i.version === "current")?.timestamp || sceneCacheBust}`}
                     alt={selected.name}
                     className="max-h-[calc(100vh-180px)] max-w-full rounded-xl shadow-md object-contain"
                   />

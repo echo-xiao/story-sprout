@@ -33,13 +33,13 @@ Upload a classic novel (.txt/.pdf/.epub) → StorySprout extracts characters, se
 - **Character consistency**: each character gets a reference sheet + a canonical "visual identity" stored in **MongoDB as the single source of truth**; every page reads the same definition and feeds the reference image to the model. A CLIP check scores each page against the sheet.
 - **MongoDB MCP integration (partner track)**: the pipeline talks to MongoDB through MongoDB's **official MCP server** (Model Context Protocol, over stdio) for both reads (preprocess data) and writes (the character consistency hub) — not a direct driver.
 - **Gemini 3 on Vertex AI (Agent Platform)**: every model call runs on **Gemini 3.5 Flash** (text) and **Gemini 3.1 Flash Image** (illustrations) through **Vertex AI / Agent Platform**; the product is served on **Cloud Run** with a GCS-backed asset store.
-- **Google Agent Builder — ADK + Agent Engine**: the planning pipeline is packaged as a **Google Agent Development Kit (ADK) `SequentialAgent`** (Analyzer → Writer → Art Director) that uses the **MongoDB MCP server as a tool**, and is **deployed on Vertex AI Agent Engine** (Agent Builder's managed runtime). The web app's "AI Agent" tab calls this deployed agent live.
+- **Google Agent Builder — ADK**: the four-agent pipeline above is orchestrated by a **Google Agent Development Kit (ADK) `SequentialAgent`**, running in-process on Cloud Run so the Artist stage generates real illustrations. The **MongoDB MCP server** is wired in as a tool for character / consistency data.
 
 ### Challenges we ran into
 Cross-page character consistency was the core challenge — naive per-page generation makes a character's face drift every page. We solved it by centralizing each character's canonical visual identity in MongoDB and feeding reference sheets into every generation.
 
 ### Accomplishments that we're proud of
-A real, working end-to-end pipeline that keeps characters consistent across an entire book; a genuine (read + write) MongoDB MCP integration; an agent built with **Google's ADK and deployed on Vertex AI Agent Engine**; and text embedded *inside* the illustrations rather than overlaid.
+A real, working end-to-end pipeline that keeps characters consistent across an entire book; a genuine (read + write) MongoDB MCP integration; the full book pipeline orchestrated by **Google's Agent Development Kit (ADK)**; and text embedded *inside* the illustrations rather than overlaid.
 
 ### What we learned
 How to architect a deterministic multi-agent pipeline, how MCP standardizes AI-to-data access, and how much of "AI picture books" is really a *consistency* problem, not an image-quality problem.
@@ -48,7 +48,7 @@ How to architect a deterministic multi-agent pipeline, how MCP standardizes AI-t
 Aggregation-driven scene analysis over MongoDB, cross-book character libraries, and narrated/animated output.
 
 ### Built With
-`Gemini 3.5 Flash` · `Gemini 3.1 Flash Image` · `Vertex AI (Agent Platform)` · `Google ADK (Agent Development Kit)` · `Vertex AI Agent Engine` · `Google Cloud Run` · `MongoDB` · `MongoDB MCP Server` · `CLIP` · `FastAPI` · `Next.js` · `Python`
+`Gemini 3.5 Flash` · `Gemini 3.1 Flash Image` · `Vertex AI (Agent Platform)` · `Google ADK (Agent Development Kit)` · `Google Cloud Run` · `MongoDB` · `MongoDB MCP Server` · `CLIP` · `FastAPI` · `Next.js` · `Python`
 
 ---
 

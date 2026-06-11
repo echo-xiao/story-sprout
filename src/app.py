@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse
 from src.config import GENERATED_DIR
 
 GCS_BUCKET = os.getenv("GCS_BUCKET", "picture-book-gen-assets")
-from src.routes import books, editor, generation, adk_agent
+from src.routes import books, editor, generation
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -73,7 +73,6 @@ async def serve_static(file_path: str):
 app.include_router(books.router)
 app.include_router(editor.router)
 app.include_router(generation.router)
-app.include_router(adk_agent.router)
 
 # ---------------------------------------------------------------------------
 # Mount frontend (SPA) -- must be last so API routes take priority

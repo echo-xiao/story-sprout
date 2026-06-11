@@ -33,6 +33,9 @@ export default function CharacterManagement({
   const [regenning, setRegenning] = useState(false);
   const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
+  // Bumped after each regeneration to force the browser to reload the new sheet
+  // (the current sheet keeps the same filename, so the URL alone won't change).
+  const [sheetCacheBust, setSheetCacheBust] = useState(0);
   const [checkingQuality, setCheckingQuality] = useState(false);
   const [qualityResult, setQualityResult] = useState<{
     overall_score: number;
@@ -145,6 +148,7 @@ export default function CharacterManagement({
         }, 5000);
         setTimeout(() => { clearInterval(poll); setRegenning(false); resolve(); }, 120000);
       });
+      setSheetCacheBust(Date.now());  // force big preview + Current thumbnail to reload
       // Auto quality check after generation completes
       setCheckingQuality(true);
       try {
@@ -275,8 +279,9 @@ export default function CharacterManagement({
               <div className="flex-1 flex items-center justify-center min-h-0">
                 {(sheets[selected.canonical_name] || activeSheetUrl) ? (
                   <img
-                    src={`${API_BASE}${activeSheetUrl || sheets[selected.canonical_name]}`}
+                    src={`${API_BASE}${activeSheetUrl || sheets[selected.canonical_name]}${activeSheetUrl || !sheetCacheBust ? "" : `?v=${sheetCacheBust}`}`}
                     alt={selected.canonical_name}
+                    decoding="async"
                     className="max-h-[calc(100vh-180px)] max-w-full rounded-xl shadow-md object-contain"
                   />
                 ) : regenning ? (
@@ -299,7 +304,9 @@ export default function CharacterManagement({
             {(() => {
               // Build versions list: current from sheets + historical from sheetHistory
               const currentUrl = sheets[selected.canonical_name];
-              const historical = sheetHistory.filter(img => img.version !== "current");
+              const historical = sheetHistory
+                .filter(img => img.version !== "current")
+                .sort((a, b) => b.timestamp - a.timestamp);  // newest first -> Current, v2, v1
               const allVersions = [
                 ...(currentUrl ? [{ url: currentUrl, version: "current", timestamp: Date.now() }] : []),
                 ...historical,
@@ -311,8 +318,10 @@ export default function CharacterManagement({
                   {allVersions.map((img, idx) => (
                     <div key={`${selected.canonical_name}-${img.version}-${idx}`}>
                       <img
-                        src={`${API_BASE}${img.url}`}
+                        src={`${API_BASE}${img.url}${img.version === "current" && sheetCacheBust ? `?v=${sheetCacheBust}` : ""}`}
                         alt={img.version === "current" ? "Current" : `v${allVersions.length - idx}`}
+                        loading="lazy"
+                        decoding="async"
                         onClick={() => setActiveSheetUrl(img.url)}
                         className={`w-full rounded-xl cursor-pointer border-2 transition-colors ${
                           (activeSheetUrl || currentUrl) === img.url

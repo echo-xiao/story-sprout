@@ -14,10 +14,10 @@ scikit-learn>=1.4.0
 scipy>=1.12.0
 numpy>=1.26.0
 
-# Layer 3: Gemini Agent
+# Layer 3: Gemini Agent — pipeline orchestrated with Google ADK (Agent Builder)
 google-genai>=1.0.0
-# >=1.95 for the vertexai.agent_engines client (the website calls the deployed ADK agent)
 google-cloud-aiplatform>=1.95.0
+google-adk>=2.0.0
 
 # Layer 4: Image Generation
 Pillow>=10.2.0

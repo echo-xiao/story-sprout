@@ -25,6 +25,12 @@ export default function CharacterSheetsPanel({
   onNavigateToCharacter,
   onNavigateToScene,
 }: CharacterSheetsPanelProps) {
+  // Cache-buster: sheet/scene filenames are stable, so append ?v= to force the
+  // browser to reload after a sheet is regenerated elsewhere.
+  const cacheBust = Date.now();
+  const withCacheBust = (url: string) =>
+    `${API_BASE}${url}${url.includes("?") ? "&" : "?"}v=${cacheBust}`;
+
   // Show exactly the characters listed in characters_in_scene (from Characters & Actions editor)
   const sceneChars = selectedSegment?.characters_in_scene || [];
   const filteredCharacters = sceneChars.map((name) => {
@@ -76,7 +82,7 @@ export default function CharacterSheetsPanel({
               >
                 {sheetUrl ? (
                   <img
-                    src={`${API_BASE}${sheetUrl}`}
+                    src={withCacheBust(sheetUrl)}
                     alt={char.canonical_name}
                     className="w-full rounded-xl mb-2"
                   />
@@ -111,7 +117,7 @@ export default function CharacterSheetsPanel({
               >
                 {sceneSheets[loc.name] ? (
                   <img
-                    src={`${API_BASE}${sceneSheets[loc.name]}`}
+                    src={withCacheBust(sceneSheets[loc.name])}
                     alt={loc.name}
                     className="w-full rounded-xl mb-2"
                   />

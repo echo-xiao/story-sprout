@@ -23,6 +23,7 @@ import {
   getLocations,
   getSpecialPages,
   regenerateSpecialPage,
+  getStalePages,
 } from "@/lib/api";
 import type { Segment, ChapterInfo, CharacterInfo } from "@/types";
 
@@ -89,7 +90,11 @@ export default function EditorPage() {
   const [sceneSheets, setSceneSheets] = useState<Record<string, string>>({});
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
+  const segmentsRef = useRef<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
+  const [staleSegIds, setStaleSegIds] = useState<Set<number>>(new Set());
+  const [staleReasons, setStaleReasons] = useState<Record<number, string>>({});
+  const [specialCacheBust, setSpecialCacheBust] = useState(0);
   const [specialPages, setSpecialPages] = useState<Array<{ type: string; label: string; url: string | null; chapter?: number; chapter_title?: string; chapter_summary?: string }>>([]);
   const [selectedSpecial, setSelectedSpecial] = useState<{ type: string; label: string; url: string | null; chapter?: number } | null>(null);
   const [regenSpecial, setRegenSpecial] = useState(false);
@@ -125,6 +130,30 @@ export default function EditorPage() {
   const [chatOpen, setChatOpen] = useState(false);
 
   const selectedSegId = selectedSegment?.id ?? -1;
+
+  // Keep a ref of the latest segments to avoid stale closures in async handlers
+  useEffect(() => {
+    segmentsRef.current = segments;
+  }, [segments]);
+
+  // Refresh the set of stale pages (deps regenerated after the page image) for a chapter
+  const refreshStale = async (chIdx: number | null) => {
+    if (chIdx === null) return;
+    try {
+      const data = await getStalePages(bookId, chIdx);
+      const ids = new Set<number>();
+      const reasons: Record<number, string> = {};
+      (data.stale || []).forEach((s) => {
+        ids.add(s.segment_id);
+        reasons[s.segment_id] = (s.reasons || []).map((r) => `${r.name} updated`).join(", ");
+      });
+      setStaleSegIds(ids);
+      setStaleReasons(reasons);
+    } catch {
+      setStaleSegIds(new Set());
+      setStaleReasons({});
+    }
+  };
 
   // Poll progress when generating
   useEffect(() => {
@@ -284,6 +313,7 @@ export default function EditorPage() {
       }
     }
     loadSegments();
+    refreshStale(selectedChapter);
     return () => { cancelled = true; };
   }, [bookId, selectedChapter]);
 
@@ -396,6 +426,8 @@ export default function EditorPage() {
               setSelectedSegment(prev => prev?.id === segId ? updated : prev);
             }
             setRegenerating(false);
+            // Page image regenerated — it's no longer stale
+            refreshStale(chIdx);
 
             // Auto quality check + retry loop (up to 3 rounds if score < 75%)
             const MAX_QUALITY_RETRIES = 3;
@@ -433,8 +465,8 @@ export default function EditorPage() {
                     setSelectedSegment(prev => prev?.id === segId ? applyUpdates(prev) : prev);
                     setSegments(prev => prev.map(s => s.id === segId ? applyUpdates(s) : s));
 
-                    // Save updated prompts
-                    const latestSeg = segments.find(s => s.id === segId);
+                    // Save updated prompts (read latest segments to avoid stale closure)
+                    const latestSeg = segmentsRef.current.find(s => s.id === segId);
                     if (latestSeg) {
                       const merged = { ...latestSeg, ...res.updates };
                       await updateSegment(bookId, segId, {
@@ -467,6 +499,7 @@ export default function EditorPage() {
                           setSelectedSegment(prev => prev?.id === segId ? freshSeg : prev);
                         }
                         setRegenerating(false);
+                        refreshStale(chIdx);
                         resolve();
                       }
                     } catch {}
@@ -634,6 +667,8 @@ export default function EditorPage() {
           clearInterval(poll);
           setSheets(data.sheets || {});
           setPortraits(data.portraits || {});
+          // Character sheet changed — pages depending on it are now stale
+          refreshStale(selectedChapter);
         }
       } catch {}
     }, 5000);
@@ -872,6 +907,8 @@ export default function EditorPage() {
               setSegments(prev => prev.map(renameInSegment));
               setSelectedSegment(prev => prev ? renameInSegment(prev) : prev);
             }
+            // A character may have been regenerated — refresh stale pages
+            refreshStale(selectedChapter);
           }}
           onSelectChar={setSelectedCharName}
         />
@@ -1020,9 +1057,12 @@ export default function EditorPage() {
                       }`}
                     >
                       <div className="flex items-center gap-1.5">
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${
-                          isGenerating ? "bg-amber-400 animate-pulse" : hasIllustration ? "bg-green-400" : "bg-gray-300"
-                        }`} />
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            isGenerating ? "bg-amber-400 animate-pulse" : staleSegIds.has(seg.id) ? "bg-red-500" : hasIllustration ? "bg-green-400" : "bg-gray-300"
+                          }`}
+                          title={staleSegIds.has(seg.id) ? `Stale — ${staleReasons[seg.id] || "a character/scene changed"}; regenerate` : undefined}
+                        />
                         <span className="font-mono text-[10px] text-gray-400">
                           {idx + 1}
                         </span>
@@ -1077,7 +1117,9 @@ export default function EditorPage() {
                 <h2 className="font-display text-lg font-bold text-gray-800 mb-4">{selectedSpecial.label}</h2>
                 {selectedSpecial.url ? (
                   <img
-                    src={`${API_BASE}${selectedSpecial.url}`}
+                    src={`${API_BASE}${selectedSpecial.url}${
+                      specialCacheBust ? `${selectedSpecial.url.includes("?") ? "&" : "?"}v=${specialCacheBust}` : ""
+                    }`}
                     alt={selectedSpecial.label}
                     className="max-h-[calc(100vh-200px)] max-w-full rounded-xl shadow-md object-contain"
                   />
@@ -1183,6 +1225,7 @@ export default function EditorPage() {
                               clearInterval(poll);
                               setSpecialPages(data.pages || []);
                               setSelectedSpecial(found);
+                              setSpecialCacheBust(Date.now());
                               setRegenSpecial(false);
                               resolve();
                             }

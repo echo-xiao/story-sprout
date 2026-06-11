@@ -24,13 +24,6 @@ GCP_LOCATION = os.getenv("GCP_LOCATION", "global")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
 
-# Vertex AI Agent Engine (Agent Builder's managed runtime) — the deployed ADK
-# book-planning agent that the website's "AI Agent" feature calls.
-AGENT_ENGINE_RESOURCE = os.getenv(
-    "AGENT_ENGINE_RESOURCE",
-    "projects/264948620024/locations/us-central1/reasoningEngines/6588562295436083200",
-)
-
 # DeepSeek (text analysis)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_MODEL = "deepseek-chat"
