@@ -65,6 +65,10 @@ export default function AgentActivityPanel({
   // Poll agent logs
   useEffect(() => {
     if (chapterIdx === null) return;
+    // Drop the previous chapter's logs immediately — otherwise its activity
+    // (agent statuses, negotiation count) flashes under the newly-selected
+    // chapter until the first request for the new one returns.
+    setLogs([]);
     let timer: NodeJS.Timeout;
     // clearTimeout alone is not enough: if cleanup runs while a getAgentLog
     // request is in flight, the awaited callback would re-arm setTimeout

@@ -155,13 +155,11 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
             completed = done;
             setSceneSheets(newSheets);
             setGenAllProgress(`${done}/${toGenerate.length} done`);
-            // Highlight current generating one
+            // Highlight the one currently generating (the spinner dot) — but do
+            // NOT switch selectedLoc/editing to it: that yanked the user off the
+            // scene they were viewing every 5s and discarded their unsaved edits.
             const current = toGenerate.find(loc => !newSheets[loc.name]);
-            if (current) {
-              setGenerating(current.name);
-              setSelectedLoc(current.name);
-              setEditing(current.visual_details || {});
-            }
+            if (current) setGenerating(current.name);
           }
           if (done >= toGenerate.length) {
             clearInterval(poll);

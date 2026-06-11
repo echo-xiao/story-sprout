@@ -208,6 +208,10 @@ export default function EditorPage() {
   // Poll progress when generating
   useEffect(() => {
     if (generatingChapter === null) return;
+    // In Gen-All mode the loop runs its OWN poll and transitions; a second poll
+    // here just doubles the requests and makes the progress bar flicker between
+    // the two responses. Let the loop own it.
+    if (genAllChapters) return;
     const interval = setInterval(async () => {
       try {
         const prog = await getChapterProgress(bookId, generatingChapter).catch(() => null);
@@ -234,7 +238,7 @@ export default function EditorPage() {
       } catch {}
     }, 5000);
     return () => clearInterval(interval);
-  }, [generatingChapter, bookId, selectedChapter]);
+  }, [generatingChapter, bookId, selectedChapter, genAllChapters]);
 
   // Auto-open the agent activity panel the moment a chapter generation starts,
   // so the user can watch the agent interactions live.
@@ -577,11 +581,19 @@ export default function EditorPage() {
   // Update selected segment field
   const updateField = (field: string, value: unknown) => {
     if (!selectedSegment) return;
-    dirtySegIds.current.add(selectedSegment.id);
-    setSelectedSegment({ ...selectedSegment, [field]: value });
-    setSegments((prev) =>
-      prev.map((s) => (s.id === selectedSegment.id ? { ...s, [field]: value } : s))
-    );
+    const segId = selectedSegment.id;
+    dirtySegIds.current.add(segId);
+    // The user is hand-editing the scene background → cancel any pending
+    // auto-regen, otherwise the debounce (armed when they changed a character)
+    // would fire 2s later and silently overwrite what they just typed.
+    if (field === "scene_background" && sceneRegenTimer.current) {
+      clearTimeout(sceneRegenTimer.current);
+      sceneRegenTimer.current = null;
+    }
+    // Functional updates: two field edits in the same tick must not clobber
+    // each other via a stale `selectedSegment` closure.
+    setSelectedSegment((prev) => (prev && prev.id === segId ? { ...prev, [field]: value } : prev));
+    setSegments((prev) => prev.map((s) => (s.id === segId ? { ...s, [field]: value } : s)));
   };
 
   // Debounce timer for auto-regenerating scene_background after character changes
@@ -620,47 +632,47 @@ export default function EditorPage() {
     }, 2000);
   }, [bookId]);
 
+  // Apply a pure transform to the selected segment in BOTH state copies using
+  // functional updates, so two edits in one tick can't clobber each other via a
+  // stale `selectedSegment` closure (quick add/remove of character rows).
+  const mutateSegment = (segId: number, transform: (seg: Segment) => Segment) => {
+    dirtySegIds.current.add(segId);
+    setSelectedSegment((prev) => (prev && prev.id === segId ? transform(prev) : prev));
+    setSegments((prev) => prev.map((s) => (s.id === segId ? transform(s) : s)));
+  };
+
   // Update character action — must update both fields in one setState call
   const updateAction = (idx: number, field: "name" | "action", value: string) => {
     if (!selectedSegment) return;
-    dirtySegIds.current.add(selectedSegment.id);
-    const actions = [...(selectedSegment.character_actions || [])];
-    actions[idx] = { ...actions[idx], [field]: value };
-    const updated = {
-      ...selectedSegment,
-      character_actions: actions,
-      characters_in_scene: actions.map((a) => a.name).filter(Boolean),
-    };
-    setSelectedSegment(updated);
-    setSegments((prev) => prev.map((s) => (s.id === selectedSegment.id ? updated : s)));
+    const segId = selectedSegment.id;
+    mutateSegment(segId, (seg) => {
+      const actions = [...(seg.character_actions || [])];
+      actions[idx] = { ...actions[idx], [field]: value };
+      return { ...seg, character_actions: actions, characters_in_scene: actions.map((a) => a.name).filter(Boolean) };
+    });
     // Auto-regenerate scene_background after character changes
     if (field === "name" && value.trim()) {
-      triggerSceneBackgroundRegen(selectedSegment.id);
+      triggerSceneBackgroundRegen(segId);
     }
   };
 
   const addCharacterAction = () => {
     if (!selectedSegment) return;
-    dirtySegIds.current.add(selectedSegment.id);
-    const actions = [...(selectedSegment.character_actions || []), { name: "", action: "" }];
-    const updated = { ...selectedSegment, character_actions: actions };
-    setSelectedSegment(updated);
-    setSegments((prev) => prev.map((s) => (s.id === selectedSegment.id ? updated : s)));
+    mutateSegment(selectedSegment.id, (seg) => ({
+      ...seg,
+      character_actions: [...(seg.character_actions || []), { name: "", action: "" }],
+    }));
   };
 
   const removeCharacterAction = (idx: number) => {
     if (!selectedSegment) return;
-    dirtySegIds.current.add(selectedSegment.id);
-    const actions = (selectedSegment.character_actions || []).filter((_, i) => i !== idx);
-    const updated = {
-      ...selectedSegment,
-      character_actions: actions,
-      characters_in_scene: actions.map((a) => a.name).filter(Boolean),
-    };
-    setSelectedSegment(updated);
-    setSegments((prev) => prev.map((s) => (s.id === selectedSegment.id ? updated : s)));
+    const segId = selectedSegment.id;
+    mutateSegment(segId, (seg) => {
+      const actions = (seg.character_actions || []).filter((_, i) => i !== idx);
+      return { ...seg, character_actions: actions, characters_in_scene: actions.map((a) => a.name).filter(Boolean) };
+    });
     // Auto-regenerate scene_background after removing character
-    triggerSceneBackgroundRegen(selectedSegment.id);
+    triggerSceneBackgroundRegen(segId);
   };
 
   // Handle quality check
@@ -1295,17 +1307,13 @@ export default function EditorPage() {
                         value=""
                         onChange={(e) => {
                           if (!e.target.value || !selectedSegment) return;
-                          dirtySegIds.current.add(selectedSegment.id);
                           const name = e.target.value;
-                          const actions = [...(selectedSegment.character_actions || []), { name, action: "" }];
-                          const updated = {
-                            ...selectedSegment,
-                            character_actions: actions,
-                            characters_in_scene: actions.map(a => a.name).filter(Boolean),
-                          };
-                          setSelectedSegment(updated);
-                          setSegments(prev => prev.map(s => s.id === selectedSegment.id ? updated : s));
-                          triggerSceneBackgroundRegen(selectedSegment.id);
+                          const segId = selectedSegment.id;
+                          mutateSegment(segId, (seg) => {
+                            const actions = [...(seg.character_actions || []), { name, action: "" }];
+                            return { ...seg, character_actions: actions, characters_in_scene: actions.map(a => a.name).filter(Boolean) };
+                          });
+                          triggerSceneBackgroundRegen(segId);
                         }}
                         className="text-xs text-coral font-semibold bg-transparent border border-peach/30 rounded-md px-1 py-0.5 outline-none cursor-pointer"
                       >
