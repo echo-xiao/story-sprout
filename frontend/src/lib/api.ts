@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { GenerationConfig, PictureBook } from "@/types";
+import type { GenerationConfig } from "@/types";
 
 const api = axios.create({
   baseURL: "/api",
@@ -35,11 +35,6 @@ export async function startGeneration(
 export async function getConfig() {
   const { data } = await api.get("/config");
   return data as { require_user_key: boolean };
-}
-
-export async function listBooks(): Promise<PictureBook[]> {
-  const { data } = await api.get("/books");
-  return data;
 }
 
 export async function listPreprocessedBooks() {

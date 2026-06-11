@@ -71,38 +71,41 @@ def is_available() -> bool:
 # ═══════════════════════════════════════════════════════════════
 
 def save_book(book_id: str, title: str, num_chapters: int, **extra) -> bool:
+    """Upsert the single book-level doc. Chapter data lives in the separate
+    book_chapters collection (one doc per chapter), so books stays one doc
+    per book — no $exists guards, no schema mixing."""
     db = _get_db()
     if db is None:
         return False
+    now = datetime.now(timezone.utc).isoformat()
     doc = {
         "book_id": book_id,
         "title": title,
         "num_chapters": num_chapters,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": now,
         **extra,
     }
-    # The pipeline writes per-chapter docs keyed {book_id, chapter} into the
-    # same collection; without the $exists guard this book-level upsert can
-    # match and silently mutate an arbitrary chapter doc.
     db.books.update_one(
-        {"book_id": book_id, "chapter": {"$exists": False}},
-        {"$set": doc}, upsert=True,
+        {"book_id": book_id},
+        {"$set": doc, "$setOnInsert": {"created_at": now}},
+        upsert=True,
     )
     return True
 
 
-def get_book(book_id: str) -> Optional[dict]:
+def save_book_chapter(book_id: str, chapter_idx: int, chapter_doc: dict) -> bool:
+    """Upsert one generated chapter (title, pages, ...) keyed (book_id, chapter)."""
     db = _get_db()
     if db is None:
-        return None
-    return db.books.find_one({"book_id": book_id}, {"_id": 0})
-
-
-def list_books() -> list[dict]:
-    db = _get_db()
-    if db is None:
-        return []
-    return list(db.books.find({}, {"_id": 0}).sort("updated_at", -1))
+        return False
+    db.book_chapters.update_one(
+        {"book_id": book_id, "chapter": chapter_idx},
+        {"$set": {"book_id": book_id, "chapter": chapter_idx,
+                  "updated_at": datetime.now(timezone.utc).isoformat(),
+                  **chapter_doc}},
+        upsert=True,
+    )
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════

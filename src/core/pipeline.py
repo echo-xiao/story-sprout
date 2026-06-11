@@ -30,38 +30,14 @@ def _get_db() -> motor.motor_asyncio.AsyncIOMotorDatabase:
     return _mongo_client[MONGODB_DB]
 
 
-async def list_books() -> list[dict[str, Any]]:
-    try:
-        db = _get_db()
-        cursor = db.books.find(
-            {},
-            {"_id": 0, "book_id": 1, "title": 1, "created_at": 1, "config": 1},
-        ).sort("created_at", -1)
-        books = await cursor.to_list(length=200)
-    except Exception as e:
-        logger.warning("list_books: MongoDB unavailable, returning empty list (%s)", e)
-        return []
-
-    # Dedupe: per-chapter writes and case-variant book_ids create duplicate cards.
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for b in books:
-        key = (b.get("book_id") or "").lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(b)
-    return deduped
-
-
 async def delete_book(book_id: str) -> bool:
     db = _get_db()
-    # Books are stored one-doc-per-chapter — delete_one left the other chapters
-    # behind, so the book "revived". Delete them all, and clear the consistency
-    # collections too (characters/segments) instead of orphaning them.
+    # One book-level doc in books + per-chapter docs in book_chapters; clear
+    # the consistency collections too (characters/segments) instead of
+    # orphaning them.
     res = await db.books.delete_many({"book_id": book_id})
     await db.statuses.delete_one({"book_id": book_id})
-    for coll in ("characters", "segments", "preprocess_files", "illustrations"):
+    for coll in ("book_chapters", "characters", "segments", "preprocess_files", "illustrations"):
         try:
             await db[coll].delete_many({"book_id": book_id})
         except Exception:

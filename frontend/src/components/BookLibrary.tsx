@@ -2,12 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { listPreprocessedBooks } from "@/lib/api";
-import type { PictureBook } from "@/types";
-
-interface Props {
-  // Optional — the library navigates via <a href>/window.location, not this callback.
-  onSelectBook?: (book: PictureBook) => void;
-}
 
 interface BookEntry {
   book_id: string;
@@ -18,7 +12,7 @@ interface BookEntry {
   total_pages: number;
 }
 
-export function BookLibrary({ onSelectBook }: Props) {
+export function BookLibrary() {
   const [books, setBooks] = useState<BookEntry[]>([]);
   const [loading, setLoading] = useState(true);
 

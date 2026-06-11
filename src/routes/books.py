@@ -15,10 +15,7 @@ from pydantic import BaseModel
 from src.config import GENERATED_DIR
 from src.core.models import GenerationConfig
 from src.routes.helpers import _require_user_key
-from src.core.pipeline import (
-    delete_book,
-    list_books,
-)
+from src.core.pipeline import delete_book
 
 logger = logging.getLogger(__name__)
 
@@ -262,11 +259,6 @@ async def start_generation_upload(
     background_tasks.add_task(_run_preprocess, book_id, dest, gemini_api_key=user_api_key)
 
     return {"book_id": book_id, "status": "preprocessing"}
-
-
-@router.get("/api/books")
-async def list_all_books() -> list[dict[str, Any]]:
-    return await list_books()
 
 
 @router.get("/api/book/{book_id}/preprocess/progress")

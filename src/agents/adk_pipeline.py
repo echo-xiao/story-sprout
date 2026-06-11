@@ -315,22 +315,19 @@ class IllustrateQAStage(_Stage):
     @staticmethod
     def _save_to_mongo(c: PipelineContext) -> None:
         try:
-            import pymongo
-            from src.config import MONGODB_URI, MONGODB_DB
-            client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-            db = client[MONGODB_DB]
-            db.books.update_one(
-                {"book_id": c.book_id, "chapter": c.chapter_idx},
-                {"$set": {
-                    "book_id": c.book_id, "title": c.title,
-                    "chapter": c.chapter_idx, "chapter_title": c.ch_title,
-                    "num_pages": len(c.chapter_data["pages"]),
-                    "pages": c.chapter_data["pages"],
-                }},
-                upsert=True,
-            )
-            client.close()
-            print("  MongoDB: saved")
+            # Chapter docs go to book_chapters — writing them into books used to
+            # mix two schemas in one collection and create duplicate cards.
+            from src.core.db import save_book_chapter
+            ok = save_book_chapter(c.book_id, c.chapter_idx, {
+                "title": c.title,
+                "chapter_title": c.ch_title,
+                "num_pages": len(c.chapter_data["pages"]),
+                "pages": c.chapter_data["pages"],
+            })
+            if ok:
+                print("  MongoDB: saved")
+            else:
+                print(f"  MongoDB: unavailable — chapter {c.chapter_idx} not saved")
         except Exception as e:
             # Don't swallow silently — a failed save means the book reader / library
             # will be missing this chapter, and you'd never know why.
