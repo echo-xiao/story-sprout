@@ -25,6 +25,29 @@ router = APIRouter()
 _active_generations: set[tuple[str, int]] = set()
 
 
+def _restore_from_history(current_stem: Path, history_stem: Path) -> None:
+    """Put back the file a regen moved to history when no new file appeared.
+
+    Every regen endpoint moves the current image to history BEFORE generating
+    (so the frontend's "new file appeared" poll works). If generation then
+    fails — including the silent path where all Gemini attempts fail without
+    raising — the asset would simply vanish and every dependent feature
+    (quality check, reference feeding) starts 404ing until a manual restore.
+    """
+    if any(Path(f"{current_stem}{ext}").exists() for ext in (".png", ".jpg")):
+        return  # a new file was generated — nothing to restore
+    import shutil
+    for ext in (".png", ".jpg"):
+        h = Path(f"{history_stem}{ext}")
+        if h.exists():
+            try:
+                shutil.copy2(h, Path(f"{current_stem}{ext}"))
+                logger.warning("Regen produced no file — restored %s from history", current_stem.name)
+            except OSError:
+                pass
+            return
+
+
 @router.get("/api/book/{book_id}/chapter/{ch_idx}/agent-log")
 async def get_agent_log(book_id: str, ch_idx: int) -> list[dict]:
     """Get agent activity log for a chapter generation session."""
@@ -725,6 +748,29 @@ async def regenerate_special_page(
         else:
             logger.error("Unknown special page type: %s", page_type)
 
+    # Move the existing image aside FIRST (like the other regens) so the frontend's
+    # "url appeared" completion check waits for the NEW image instead of instantly
+    # "completing" on the unchanged old one ("regenerated but nothing changed").
+    _base = {
+        "book_cover": "book_cover",
+        "chapter_cover": f"chapter_{chapter + 1:02d}_cover",
+        "chapter_ending": f"chapter_{chapter + 1:02d}_ending",
+        "back_cover": "back_cover",
+    }.get(page_type)
+    special_dir = GENERATED_DIR / book_id / "special"
+    hist = special_dir / "history"
+    import time as _t
+    _ts = int(_t.time())
+    if _base:
+        hist.mkdir(parents=True, exist_ok=True)
+        for _ext in (".png", ".jpg"):
+            _old = special_dir / f"{_base}{_ext}"
+            if _old.exists():
+                try:
+                    _old.rename(hist / f"{_base}_{_ts}{_ext}")
+                except OSError:
+                    pass
+
     async def _gen():
         from src.gemini_backend import set_user_api_key, reset_user_api_key
         # BYOK — set the user's key for this task and reset afterwards so it
@@ -738,29 +784,8 @@ async def regenerate_special_page(
             logger.exception("Special page regen failed for %s/%s", book_id, page_type)
         finally:
             reset_user_api_key(token)
-
-    # Move the existing image aside FIRST (like the other regens) so the frontend's
-    # "url appeared" completion check waits for the NEW image instead of instantly
-    # "completing" on the unchanged old one ("regenerated but nothing changed").
-    _base = {
-        "book_cover": "book_cover",
-        "chapter_cover": f"chapter_{chapter + 1:02d}_cover",
-        "chapter_ending": f"chapter_{chapter + 1:02d}_ending",
-        "back_cover": "back_cover",
-    }.get(page_type)
-    if _base:
-        special_dir = GENERATED_DIR / book_id / "special"
-        hist = special_dir / "history"
-        hist.mkdir(parents=True, exist_ok=True)
-        import time as _t
-        _ts = int(_t.time())
-        for _ext in (".png", ".jpg"):
-            _old = special_dir / f"{_base}{_ext}"
-            if _old.exists():
-                try:
-                    _old.rename(hist / f"{_base}_{_ts}{_ext}")
-                except OSError:
-                    pass
+            if _base:
+                _restore_from_history(special_dir / _base, hist / f"{_base}_{_ts}")
 
     background_tasks.add_task(_gen)
     return {"status": "generating", "page_type": page_type, "chapter": chapter}
@@ -860,6 +885,7 @@ async def regenerate_scene_sheet(
             logger.exception("Scene sheet regen failed for %s/%s", book_id, scene_name)
         finally:
             reset_user_api_key(token)
+            _restore_from_history(scenes_dir / f"{safe}_scene", history_dir / f"{safe}_scene_{ts}")
 
     background_tasks.add_task(_gen)
     return {"status": "generating", "scene": scene_name}
@@ -958,6 +984,7 @@ async def regenerate_character_sheet(
             logger.exception("Character sheet regen failed for %s/%s", book_id, char_name)
         finally:
             reset_user_api_key(token)
+            _restore_from_history(chars_dir / f"{safe}_sheet", history_dir / f"{safe}_sheet_{ts}")
 
     background_tasks.add_task(_regen)
     return {"status": "regenerating", "character": char_name}
