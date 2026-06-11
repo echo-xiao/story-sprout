@@ -75,8 +75,6 @@ python -m uvicorn src.app:app --port 8000          # backend
 cd frontend && npm run dev                          # frontend → http://localhost:3000
 ```
 
-> 📄 Submission materials (Devpost description + video script): see **[SUBMISSION.md](SUBMISSION.md)**
-
 ---
 
 ## License
