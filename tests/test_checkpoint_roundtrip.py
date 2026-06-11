@@ -71,12 +71,6 @@ def test_second_run_uses_checkpoint(env):
     assert restored["is_key_event"] is True
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG P0-4 (CODE_REVIEW_2026-06-11.md): the checkpoint dump in "
-    "_layer6_annotate omits simplified_text, so resumed preprocess runs lose "
-    "every simplified page text for already-annotated chapters.",
-)
 def test_checkpoint_preserves_simplified_text(env):
     env["run"]()
     restored = env["run"]()

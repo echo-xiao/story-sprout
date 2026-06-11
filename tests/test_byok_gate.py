@@ -33,15 +33,9 @@ def test_generation_endpoints_403_without_key(client, require_user_key, path):
     assert "Gemini API key" in resp.json()["detail"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG P0-1 (CODE_REVIEW_2026-06-11.md): _GEN_SUFFIXES has no entry "
-    "matching /api/generate/upload and the route has no _require_user_key "
-    "dependency — file upload bypasses the BYOK billing gate.",
-)
 def test_generate_upload_is_gated(client, require_user_key):
-    # No file attached on purpose: if the gate worked we'd get 403 from the
-    # middleware before request validation; today we get 422 instead.
+    # No file attached on purpose: the gate must 403 from the middleware
+    # before request validation gets a chance to 422.
     resp = client.post("/api/generate/upload")
     assert resp.status_code == 403
 

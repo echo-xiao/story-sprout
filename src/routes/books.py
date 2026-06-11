@@ -8,11 +8,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from src.config import GENERATED_DIR
 from src.core.models import GenerationConfig
+from src.routes.helpers import _require_user_key
 from src.core.pipeline import (
     delete_book,
     list_books,
@@ -193,6 +194,7 @@ async def get_app_config() -> dict[str, Any]:
 async def start_generation(
     request: GenerateRequest,
     background_tasks: BackgroundTasks,
+    header_key: str | None = Depends(_require_user_key),  # BYOK 403 gate (belt to the middleware's braces)
 ) -> dict[str, Any]:
     """Start preprocess from text. Returns book_id for editor redirect."""
     if not request.source_text.strip():
@@ -211,8 +213,12 @@ async def start_generation(
     sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', first_line)
     book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
 
-    # Save user info if provided
-    user_api_key = request.config.gemini_api_key
+    # Save user info if provided. The key may arrive in the body config or the
+    # x-gemini-key header (the middleware only reads the header) — accept both,
+    # but only when the BYOK gate is on; otherwise a saved free-tier key would
+    # hijack generation away from the working project backend.
+    from src.config import REQUIRE_USER_KEY
+    user_api_key = (request.config.gemini_api_key or header_key) if REQUIRE_USER_KEY else None
     if request.config.email:
         _save_user_info(book_id, request.config.email, user_api_key)
 
@@ -226,6 +232,7 @@ async def start_generation_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     config: str = Form(default="{}"),
+    header_key: str | None = Depends(_require_user_key),  # BYOK 403 gate (belt to the middleware's braces)
 ) -> dict[str, Any]:
     """Start preprocess from file upload. Returns book_id for editor redirect."""
     # PDF/EPUB support was removed — the extraction module only parses text.
@@ -243,9 +250,11 @@ async def start_generation_upload(
     sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', stem)
     book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
 
-    # Extract API key from config form field
+    # Extract API key from config form field, falling back to the header.
+    # Same BYOK gating as /api/generate above.
+    from src.config import REQUIRE_USER_KEY
     parsed_config = json.loads(config) if config else {}
-    user_api_key = parsed_config.get("gemini_api_key")
+    user_api_key = (parsed_config.get("gemini_api_key") or header_key) if REQUIRE_USER_KEY else None
     if parsed_config.get("email"):
         _save_user_info(book_id, parsed_config["email"], user_api_key)
 

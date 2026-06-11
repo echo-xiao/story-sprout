@@ -29,6 +29,57 @@ def _analysis_lock(book_id: str) -> asyncio.Lock:
     return _analysis_locks.setdefault(book_id, asyncio.Lock())
 
 
+def _find_segment(analysis: dict, seg_id: int) -> dict | None:
+    return next((s for s in analysis.get("segments", []) if s.get("id") == seg_id), None)
+
+
+def _load_segment_or_404(book_id: str, seg_id: int) -> dict:
+    """Read-only snapshot of a segment, e.g. for building an LLM prompt."""
+    analysis = _load_json(book_id, "analysis.json")
+    if not analysis:
+        raise HTTPException(status_code=404, detail="No analysis data.")
+    target = _find_segment(analysis, seg_id)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+    return target
+
+
+def _invalidate_page_quality(book_id: str, segments: list[dict], seg_id: int) -> None:
+    """Drop the cached text-image-match verdict after a text change (best-effort)."""
+    try:
+        target = next((s for s in segments if s.get("id") == seg_id), None)
+        ch_idx = (target or {}).get("chapter_idx", 0)
+        page_num = segment_page_num(segments, ch_idx, seg_id)
+        quality_file = (
+            GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
+            / "quality" / f"page_{page_num:03d}_quality.json"
+        )
+        if quality_file.exists():
+            quality_file.unlink()
+    except OSError as e:
+        logger.debug("Could not invalidate quality cache for segment %d: %s", seg_id, e)
+
+
+async def _merge_segment_fields(book_id: str, seg_id: int, fields: dict) -> None:
+    """Re-read analysis under the book lock, apply `fields` to one segment, save.
+
+    The LLM endpoints call this AFTER their (seconds-long) LLM call: writing the
+    whole-file snapshot taken before the call would clobber any concurrent
+    segment edits made while the LLM was running.
+    """
+    async with _analysis_lock(book_id):
+        analysis = _load_json(book_id, "analysis.json")
+        if not analysis:
+            raise HTTPException(status_code=404, detail="No analysis data.")
+        target = _find_segment(analysis, seg_id)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+        target.update(fields)
+        _save_json(book_id, "analysis.json", analysis)
+    if "simplified_text" in fields or "text" in fields:
+        _invalidate_page_quality(book_id, analysis.get("segments", []), seg_id)
+
+
 @router.get("/api/book/{book_id}/preprocess/chapters")
 async def get_chapters(book_id: str) -> dict[str, Any]:
     """Get chapter list with segment counts."""
@@ -601,17 +652,7 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
     # The page text changed — the cached text-image-match verdict is stale now,
     # so drop it (best-effort) rather than keep reporting the old result.
     if "simplified_text" in update_dict or "text" in update_dict:
-        try:
-            ch_idx = target.get("chapter_idx", 0)
-            page_num = segment_page_num(analysis.get("segments", []), ch_idx, seg_id)
-            quality_file = (
-                GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
-                / "quality" / f"page_{page_num:03d}_quality.json"
-            )
-            if quality_file.exists():
-                quality_file.unlink()
-        except OSError as e:
-            logger.debug("Could not invalidate quality cache for segment %d: %s", seg_id, e)
+        _invalidate_page_quality(book_id, analysis.get("segments", []), seg_id)
 
     # Sync to MongoDB (separate store — outside the file lock)
     try:
@@ -687,12 +728,7 @@ async def simplify_segment_text(
     user_key: str = Depends(_require_user_key),  # BYOK 403 gate; key routed by BYOKMiddleware
 ) -> dict[str, Any]:
     """Generate simplified text for a single segment."""
-    analysis = _load_json(book_id, "analysis.json")
-    if not analysis:
-        raise HTTPException(status_code=404, detail="No analysis data.")
-    target = next((s for s in analysis["segments"] if s.get("id") == seg_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+    target = _load_segment_or_404(book_id, seg_id)
 
     from src.generation.text_simplifier import simplify_text
     scene = {
@@ -705,10 +741,10 @@ async def simplify_segment_text(
     simplified = result[0].get("page_text", "") if result else ""
     scene_direction = result[0].get("scene_direction", "") if result else ""
 
-    # Save back
-    target["simplified_text"] = simplified
-    target["scene_direction"] = scene_direction
-    _save_json(book_id, "analysis.json", analysis)
+    await _merge_segment_fields(book_id, seg_id, {
+        "simplified_text": simplified,
+        "scene_direction": scene_direction,
+    })
 
     return {"simplified_text": simplified, "scene_direction": scene_direction}
 
@@ -719,12 +755,7 @@ async def generate_segment_background(
     user_key: str = Depends(_require_user_key),  # BYOK 403 gate; key routed by BYOKMiddleware
 ) -> dict[str, Any]:
     """Generate scene background description for a single segment."""
-    analysis = _load_json(book_id, "analysis.json")
-    if not analysis:
-        raise HTTPException(status_code=404, detail="No analysis data.")
-    target = next((s for s in analysis["segments"] if s.get("id") == seg_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+    target = _load_segment_or_404(book_id, seg_id)
 
     from src.llm_client import generate_json
 
@@ -751,8 +782,7 @@ Return JSON: {{"scene_background": "detailed visual description..."}}"""
     )
     background = result.get("scene_background", "")
 
-    target["scene_background"] = background
-    _save_json(book_id, "analysis.json", analysis)
+    await _merge_segment_fields(book_id, seg_id, {"scene_background": background})
 
     return {"scene_background": background}
 
@@ -763,12 +793,7 @@ async def summarize_segment(
     user_key: str = Depends(_require_user_key),  # BYOK 403 gate; key routed by BYOKMiddleware
 ) -> dict[str, Any]:
     """Generate summary and sentiment for a single segment."""
-    analysis = _load_json(book_id, "analysis.json")
-    if not analysis:
-        raise HTTPException(status_code=404, detail="No analysis data.")
-    target = next((s for s in analysis["segments"] if s.get("id") == seg_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+    target = _load_segment_or_404(book_id, seg_id)
 
     from src.llm_client import generate_json
     result = await run_in_threadpool(generate_json,
@@ -782,9 +807,10 @@ Return JSON: {{"scene_summary": "one sentence summary", "sentiment": "positive/n
     summary = result.get("scene_summary", "")
     sentiment = result.get("sentiment", "neutral")
 
-    target["scene_summary"] = summary
-    target["sentiment"] = sentiment
-    _save_json(book_id, "analysis.json", analysis)
+    await _merge_segment_fields(book_id, seg_id, {
+        "scene_summary": summary,
+        "sentiment": sentiment,
+    })
 
     return {"scene_summary": summary, "sentiment": sentiment}
 
@@ -800,12 +826,7 @@ async def chat_segment_prompt(
     user_key: str = Depends(_require_user_key),  # BYOK 403 gate; key routed by BYOKMiddleware
 ) -> dict[str, Any]:
     """AI assistant to help generate/refine illustration prompt fields via chat."""
-    analysis = _load_json(book_id, "analysis.json")
-    if not analysis:
-        raise HTTPException(status_code=404, detail="No analysis data.")
-    target = next((s for s in analysis["segments"] if s.get("id") == seg_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+    target = _load_segment_or_404(book_id, seg_id)
 
     # Build context from current segment
     context = (
@@ -849,16 +870,18 @@ Example response:
     reply = result.get("reply", "")
     updates = result.get("updates", {})
 
-    # Apply updates to analysis
-    if updates:
-        for field in ("simplified_text", "scene_background", "scene_summary", "sentiment"):
-            if field in updates:
-                target[field] = updates[field]
-        if "character_actions" in updates:
-            target["character_actions"] = updates["character_actions"]
-            target["characters_in_scene"] = [
-                a["name"] for a in updates["character_actions"] if a.get("name")
-            ]
-        _save_json(book_id, "analysis.json", analysis)
+    # Apply updates to analysis (re-read + merged under the book lock)
+    fields = {
+        field: updates[field]
+        for field in ("simplified_text", "scene_background", "scene_summary", "sentiment")
+        if field in updates
+    }
+    if "character_actions" in updates:
+        fields["character_actions"] = updates["character_actions"]
+        fields["characters_in_scene"] = [
+            a["name"] for a in updates["character_actions"] if a.get("name")
+        ]
+    if fields:
+        await _merge_segment_fields(book_id, seg_id, fields)
 
     return {"reply": reply, "updates": updates}

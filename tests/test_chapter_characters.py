@@ -70,13 +70,6 @@ def test_falls_back_to_text_matching_without_annotations():
     assert names == {"Nick Carraway"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG P0-2 (CODE_REVIEW_2026-06-11.md): minor-role characters are "
-    "returned for sheet generation; each costs ~2 image calls. Only main + "
-    "supporting should get reference sheets (parity with "
-    "preprocessing/pipeline.py:588).",
-)
 def test_minor_characters_excluded_from_sheet_profiles():
     segs = [
         make_segment(0, characters_in_scene=["Nick Carraway", "Owl Eyes"]),

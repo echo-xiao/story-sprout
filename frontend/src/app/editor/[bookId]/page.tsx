@@ -160,7 +160,12 @@ export default function EditorPage() {
   // stop instead of polling — and in Gen All's case launching new chapter
   // generations — for minutes after the user navigates away.
   const unmountedRef = useRef(false);
-  useEffect(() => () => { unmountedRef.current = true; }, []);
+  useEffect(() => () => {
+    unmountedRef.current = true;
+    // A pending scene-background debounce would otherwise still fire its
+    // updateSegment + paid LLM call after the user has left the page.
+    if (sceneRegenTimer.current) clearTimeout(sceneRegenTimer.current);
+  }, []);
 
   // Refresh the set of stale pages (deps regenerated after the page image) for a chapter
   const refreshStale = async (chIdx: number | null) => {
@@ -524,7 +529,19 @@ export default function EditorPage() {
             }
           } catch {}
         }, 5000);
-        setTimeout(() => { if (!done) { done = true; clearInterval(poll); resolve(); } }, 180000);
+        // The backend moves the old image to history before regenerating, so
+        // bailing out silently leaves a broken <img>. Match the backend's
+        // 600s request ceiling and tell the user if it's still running.
+        setTimeout(() => {
+          if (!done) {
+            done = true;
+            clearInterval(poll);
+            if (!unmountedRef.current) {
+              alert("Still generating in the background — reload the page in a minute to see the result.");
+            }
+            resolve();
+          }
+        }, 600000);
       });
       // Page regenerated — refresh stale flags. The history/quality effect
       // (keyed on `regenerating`) reloads the backend's QA result for display.
@@ -554,18 +571,22 @@ export default function EditorPage() {
   const triggerSceneBackgroundRegen = useCallback((segId: number) => {
     if (sceneRegenTimer.current) clearTimeout(sceneRegenTimer.current);
     sceneRegenTimer.current = setTimeout(async () => {
+      if (unmountedRef.current) return;
       try {
         setRegenningBg(true);
         // Read the LATEST segments via the ref — the closed-over `segments`
         // is from the render that scheduled this timer and is missing the edit
         // the user just typed, which would persist a stale character list.
         const seg = segmentsRef.current.find(s => s.id === segId);
-        if (seg) {
-          await updateSegment(bookId, segId, {
-            characters_in_scene: seg.characters_in_scene,
-            character_actions: seg.character_actions,
-          });
+        if (!seg) {
+          // Chapter switched before the debounce fired: the edit was never
+          // saved, so generating a background from it would use stale data.
+          return;
         }
+        await updateSegment(bookId, segId, {
+          characters_in_scene: seg.characters_in_scene,
+          character_actions: seg.character_actions,
+        });
         const res = await generateSceneBackground(bookId, segId);
         // Update local state with new background
         const newBg = res.scene_background;
@@ -654,8 +675,10 @@ export default function EditorPage() {
           setSheets(data.sheets || {});
           setPortraits(data.portraits || {});
           setSheetCacheBust(v => v + 1);  // sheet file reused its name — force reload
-          // Character sheet changed — pages depending on it are now stale
-          refreshStale(selectedChapter);
+          // Character sheet changed — pages depending on it are now stale.
+          // Via the ref: this poll runs up to 120s, the user may have
+          // switched chapters since it started.
+          refreshStale(selectedChapterRef.current);
         }
       } catch {}
     }, 5000);

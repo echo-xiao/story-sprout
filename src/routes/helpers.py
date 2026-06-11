@@ -19,11 +19,15 @@ def _require_user_key(x_gemini_key: str | None = Header(default=None)) -> str | 
 
     Enforced: generating/regenerating needs the caller's own Gemini key (403
     otherwise) so public users can't bill the project. Not enforced: the key is
-    optional — if present it's honored (user's billing), else generation falls
-    back to the project backend (Vertex). Returns the key, or None.
+    IGNORED and everything runs on the project backend (Vertex). Honoring an
+    optional key here used to silently route image generation to free-tier AI
+    Studio keys, which have ZERO quota for the image model — every regen 429'd
+    while the project backend would have worked fine.
     """
     from src.config import REQUIRE_USER_KEY
-    if REQUIRE_USER_KEY and not x_gemini_key:
+    if not REQUIRE_USER_KEY:
+        return None
+    if not x_gemini_key:
         raise HTTPException(
             status_code=403,
             detail="A Gemini API key is required to generate. Add yours on the Create page.",

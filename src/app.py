@@ -80,7 +80,7 @@ app.add_middleware(TimeoutMiddleware)
 # (Background-task generation also sets the key explicitly in its task closure /
 # subprocess env, since the request context is gone by the time those run.)
 _GEN_SUFFIXES = (
-    "/generate", "/regenerate", "/simplify", "/background",
+    "/generate", "/generate/upload", "/regenerate", "/simplify", "/background",
     "/summarize", "/chat", "/autofill", "/quality", "/consistency",
 )
 
@@ -98,7 +98,11 @@ class BYOKMiddleware(BaseHTTPMiddleware):
                 {"detail": "A Gemini API key is required to generate. Add yours on the Create page."},
                 status_code=403,
             )
-        token = set_user_api_key(key) if key else None
+        # Only route calls through the caller's key when the BYOK gate is on.
+        # With the gate off, a browser-saved free-tier key would otherwise
+        # hijack image generation (free tier has 0 quota for the image model)
+        # and every regen 429'd while the project backend worked fine.
+        token = set_user_api_key(key) if (key and REQUIRE_USER_KEY) else None
         try:
             return await call_next(request)
         finally:

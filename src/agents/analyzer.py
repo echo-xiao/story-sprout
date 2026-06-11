@@ -163,4 +163,14 @@ class AnalyzerAgent:
                 chapter_char_names.add(name)
 
         chapter_profiles = [p for p in profiles if p.get("name") in chapter_char_names]
+        # Reference sheets are only generated for recurring characters: one-off
+        # "minor" names (e.g. Gatsby's chapter-4 guest list) would each cost a
+        # portrait + sheet image call while appearing on a single page. They are
+        # rendered from their text description instead (same policy as the
+        # preprocess path, preprocessing/pipeline.py). Missing role defaults to
+        # "supporting" so books preprocessed before roles existed keep working.
+        chapter_profiles = [
+            p for p in chapter_profiles
+            if p.get("role", "supporting") in ("main", "supporting")
+        ]
         return chapter_char_names, chapter_profiles

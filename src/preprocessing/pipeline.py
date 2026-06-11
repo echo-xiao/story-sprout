@@ -714,6 +714,9 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
                         "sentiment": s.get("sentiment", "neutral"),
                         "is_key_event": s.get("is_key_event", False),
                         "event_description": s.get("event_description"),
+                        # Resumed runs restore segments from this dump — dropping a
+                        # field here silently loses it for every resumed book.
+                        "simplified_text": s.get("simplified_text", ""),
                     } for s in segs], indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )

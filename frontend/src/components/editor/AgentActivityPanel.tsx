@@ -65,15 +65,24 @@ export default function AgentActivityPanel({
   useEffect(() => {
     if (chapterIdx === null) return;
     let timer: NodeJS.Timeout;
+    // clearTimeout alone is not enough: if cleanup runs while a getAgentLog
+    // request is in flight, the awaited callback would re-arm setTimeout
+    // afterwards — an orphan polling chain that never stops.
+    let cancelled = false;
     async function poll() {
       try {
         const data = await getAgentLog(bookId, chapterIdx!);
+        if (cancelled) return;
         setLogs(data || []);
       } catch {}
+      if (cancelled) return;
       if (isGenerating) timer = setTimeout(poll, 3000);
     }
     poll();
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [bookId, chapterIdx, isGenerating]);
 
   // Auto-scroll the activity log to the newest entry as logs arrive

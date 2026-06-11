@@ -90,11 +90,7 @@ describe("AgentActivityPanel polling", () => {
     expect(mockGetAgentLog).toHaveBeenCalledTimes(1);
   });
 
-  // BUG FE-1 (CODE_REVIEW_2026-06-11.md): the effect cleanup only calls
-  // clearTimeout. If the getAgentLog request is still in flight when the
-  // component unmounts (or deps change), the awaited callback re-arms
-  // setTimeout afterwards — an orphan polling chain that never stops.
-  it.fails("stops an in-flight polling chain on unmount", async () => {
+  it("stops an in-flight polling chain on unmount", async () => {
     const first = deferred<never[]>();
     mockGetAgentLog.mockReturnValueOnce(first.promise as any);
     mockGetAgentLog.mockResolvedValue([]);
@@ -113,7 +109,7 @@ describe("AgentActivityPanel polling", () => {
     expect(mockGetAgentLog).toHaveBeenCalledTimes(1);
   });
 
-  it.fails("dep change while a request is in flight must not fork the chain", async () => {
+  it("dep change while a request is in flight must not fork the chain", async () => {
     const first = deferred<never[]>();
     mockGetAgentLog.mockReturnValueOnce(first.promise as any);
     mockGetAgentLog.mockResolvedValue([]);
