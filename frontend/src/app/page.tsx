@@ -8,8 +8,21 @@ import { BookLibrary } from "@/components/BookLibrary";
 type View = "home" | "generating" | "library";
 
 export default function Home() {
-  const [view, setView] = useState<View>("home");
+  // Initialize from the URL so a full navigation into "/?view=library" (e.g.
+  // the editor's Library link) lands on the Library tab, not always Create.
+  const [view, setViewState] = useState<View>(() => {
+    if (typeof window === "undefined") return "home";
+    return new URLSearchParams(window.location.search).get("view") === "library" ? "library" : "home";
+  });
   const [bookId, setBookId] = useState<string>("");
+
+  // Keep the URL in sync when switching tabs (generating is transient, no URL).
+  const setView = (v: View) => {
+    setViewState(v);
+    if (typeof window !== "undefined" && v !== "generating") {
+      window.history.replaceState(null, "", v === "library" ? "/?view=library" : "/");
+    }
+  };
 
   const handleStartGeneration = (id: string) => {
     setBookId(id);

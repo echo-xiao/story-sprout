@@ -106,6 +106,21 @@ def save_book_chapter(book_id: str, chapter_idx: int, chapter_doc: dict) -> bool
     return True
 
 
+def save_feedback(message: str, email: str | None = None, context: str | None = None) -> bool:
+    """Store one user feedback entry. Returns False if MongoDB is unavailable
+    (the route then falls back to a local file so nothing is lost)."""
+    db = _get_db()
+    if db is None:
+        return False
+    db.feedback.insert_one({
+        "message": message,
+        "email": email,
+        "context": context,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return True
+
+
 # ═══════════════════════════════════════════════════════════════
 # Characters collection
 # ═══════════════════════════════════════════════════════════════

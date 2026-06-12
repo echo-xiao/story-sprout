@@ -128,7 +128,7 @@ export default function BookViewerPage() {
       {/* Top bar */}
       <header className="bg-black/30 px-4 py-2 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
-          <a href="/" className="text-white/70 hover:text-white text-sm">&larr; Library</a>
+          <a href="/?view=library" className="text-white/70 hover:text-white text-sm">&larr; Library</a>
           <h1 className="text-white font-bold text-sm truncate max-w-xs">{title}</h1>
         </div>
         <div className="flex items-center gap-3">

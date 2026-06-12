@@ -824,7 +824,7 @@ export default function EditorPage() {
           <span className="px-3 py-1.5 text-xs font-semibold rounded-md bg-coral/10 text-coral">
             Editor
           </span>
-          <a href="/" className="px-3 py-1.5 text-xs font-semibold rounded-md text-gray-500 hover:bg-peach/50 transition-colors">
+          <a href="/?view=library" className="px-3 py-1.5 text-xs font-semibold rounded-md text-gray-500 hover:bg-peach/50 transition-colors">
             Library
           </a>
         </div>

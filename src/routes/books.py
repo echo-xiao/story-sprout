@@ -209,6 +209,37 @@ async def get_app_config() -> dict[str, Any]:
     return {"require_user_key": REQUIRE_USER_KEY}
 
 
+class FeedbackRequest(BaseModel):
+    message: str
+    email: str | None = None
+    context: str | None = None
+
+
+@router.post("/api/feedback")
+async def submit_feedback(req: FeedbackRequest) -> dict[str, str]:
+    """Collect a user feedback note. No Gemini cost, so no BYOK gate; bounded
+    in size to limit spam. Falls back to a local file if MongoDB is down."""
+    msg = (req.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Feedback message is required.")
+    if len(msg) > 5000:
+        raise HTTPException(status_code=400, detail="Feedback is too long (max 5000 chars).")
+    email = (req.email or "").strip()[:200] or None
+    context = (req.context or "").strip()[:300] or None
+
+    from src.core.db import save_feedback
+    if not save_feedback(msg, email, context):
+        # MongoDB unavailable — persist to a local file so nothing is lost.
+        import time as _time
+        fb_dir = GENERATED_DIR / "feedback"
+        fb_dir.mkdir(parents=True, exist_ok=True)
+        (fb_dir / f"{int(_time.time() * 1000)}.json").write_text(
+            json.dumps({"message": msg, "email": email, "context": context}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    return {"status": "received"}
+
+
 @router.post("/api/generate")
 async def start_generation(
     request: GenerateRequest,

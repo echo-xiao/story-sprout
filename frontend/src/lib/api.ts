@@ -32,6 +32,11 @@ export async function startGeneration(
   return data;
 }
 
+export async function submitFeedback(message: string, email?: string, context?: string) {
+  const { data } = await api.post("/feedback", { message, email, context });
+  return data as { status: string };
+}
+
 export async function getConfig() {
   const { data } = await api.get("/config");
   return data as { require_user_key: boolean };
