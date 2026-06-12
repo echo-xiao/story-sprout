@@ -31,7 +31,7 @@ steps:
       - '1'
       - '--no-cpu-throttling'
       - '--update-env-vars'
-      - 'GEMINI_BACKEND=vertex,APP_ENV=production'
+      - 'GEMINI_BACKEND=vertex,APP_ENV=production,REQUIRE_USER_KEY=true'
 
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/picture-book-gen:$COMMIT_SHA'

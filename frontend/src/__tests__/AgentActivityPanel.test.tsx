@@ -139,4 +139,33 @@ describe("AgentActivityPanel polling", () => {
     // chapter-0 chain adds an extra call.
     expect(mockGetAgentLog).toHaveBeenCalledTimes(3);
   });
+
+  it("clears the previous chapter's logs when the chapter changes", async () => {
+    mockGetAgentLog.mockResolvedValueOnce([
+      { ts: 1, agent: "artist", action: "illustrate", detail: "CH0_ONLY_MARKER", result: "", status: "done" },
+    ]);
+    const { rerender, queryByText } = renderPanel({ chapterIdx: 0 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0); // let chapter-0 log render
+    });
+    expect(queryByText(/CH0_ONLY_MARKER/)).not.toBeNull();
+
+    // Switch chapter; the new chapter's request is still pending. The panel must
+    // drop the old logs immediately rather than show chapter 0's activity under
+    // chapter 1.
+    const pending = deferred<never[]>();
+    mockGetAgentLog.mockReturnValueOnce(pending.promise as any);
+    await act(async () => {
+      rerender(
+        <AgentActivityPanel
+          bookId="test-book"
+          chapterIdx={1}
+          isGenerating={true}
+          currentAgent="artist"
+          onClose={() => {}}
+        />
+      );
+    });
+    expect(queryByText(/CH0_ONLY_MARKER/)).toBeNull();
+  });
 });

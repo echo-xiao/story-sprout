@@ -28,6 +28,7 @@ import {
   getPreprocessProgress,
 } from "@/lib/api";
 import type { Segment, ChapterInfo, CharacterInfo } from "@/types";
+import { setActionField, addAction, removeAction } from "@/lib/segment";
 
 import IllustrationPanel from "@/components/editor/IllustrationPanel";
 import QualityCheckPanel from "@/components/editor/QualityCheckPanel";
@@ -645,11 +646,7 @@ export default function EditorPage() {
   const updateAction = (idx: number, field: "name" | "action", value: string) => {
     if (!selectedSegment) return;
     const segId = selectedSegment.id;
-    mutateSegment(segId, (seg) => {
-      const actions = [...(seg.character_actions || [])];
-      actions[idx] = { ...actions[idx], [field]: value };
-      return { ...seg, character_actions: actions, characters_in_scene: actions.map((a) => a.name).filter(Boolean) };
-    });
+    mutateSegment(segId, (seg) => setActionField(seg, idx, field, value));
     // Auto-regenerate scene_background after character changes
     if (field === "name" && value.trim()) {
       triggerSceneBackgroundRegen(segId);
@@ -658,19 +655,13 @@ export default function EditorPage() {
 
   const addCharacterAction = () => {
     if (!selectedSegment) return;
-    mutateSegment(selectedSegment.id, (seg) => ({
-      ...seg,
-      character_actions: [...(seg.character_actions || []), { name: "", action: "" }],
-    }));
+    mutateSegment(selectedSegment.id, (seg) => addAction(seg));
   };
 
   const removeCharacterAction = (idx: number) => {
     if (!selectedSegment) return;
     const segId = selectedSegment.id;
-    mutateSegment(segId, (seg) => {
-      const actions = (seg.character_actions || []).filter((_, i) => i !== idx);
-      return { ...seg, character_actions: actions, characters_in_scene: actions.map((a) => a.name).filter(Boolean) };
-    });
+    mutateSegment(segId, (seg) => removeAction(seg, idx));
     // Auto-regenerate scene_background after removing character
     triggerSceneBackgroundRegen(segId);
   };
@@ -1309,10 +1300,7 @@ export default function EditorPage() {
                           if (!e.target.value || !selectedSegment) return;
                           const name = e.target.value;
                           const segId = selectedSegment.id;
-                          mutateSegment(segId, (seg) => {
-                            const actions = [...(seg.character_actions || []), { name, action: "" }];
-                            return { ...seg, character_actions: actions, characters_in_scene: actions.map(a => a.name).filter(Boolean) };
-                          });
+                          mutateSegment(segId, (seg) => addAction(seg, name));
                           triggerSceneBackgroundRegen(segId);
                         }}
                         className="text-xs text-coral font-semibold bg-transparent border border-peach/30 rounded-md px-1 py-0.5 outline-none cursor-pointer"
