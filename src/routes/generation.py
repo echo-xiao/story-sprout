@@ -11,7 +11,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from src.config import GENERATED_DIR
 from src.generation.character_sheet import _safe_filename
-from src.routes.helpers import _load_json, _require_user_key, _save_json, segment_page_num, write_json_atomic
+from src.routes.helpers import (
+    _active_regens, _load_json, _require_user_key, _save_json,
+    segment_page_num, write_json_atomic,
+)
 from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
@@ -124,6 +127,10 @@ async def regenerate_segment_illustration(
     user_key: str = Depends(_require_user_key),
 ) -> dict[str, Any]:
     """Regenerate illustration for a single segment."""
+    claim = (book_id, "segment", seg_id)
+    if claim in _active_regens:
+        raise HTTPException(status_code=409, detail="This page is already regenerating.")
+
     analysis = _load_json(book_id, "analysis.json")
     if not analysis:
         raise HTTPException(status_code=404, detail="No analysis data found.")
@@ -213,10 +220,25 @@ async def regenerate_segment_illustration(
             if result:
                 simplified_text = result[0].get("page_text", "")
                 scene_direction = result[0].get("scene_direction", "")
-                # Save back to analysis
+                # Save back under the editor's book lock, merging into a FRESH
+                # read — writing the whole pre-LLM `analysis` snapshot here
+                # clobbered any segment edit the user made during the call
+                # (the exact anti-pattern editor.py's LLM endpoints fixed).
+                from src.routes.editor import _analysis_lock
+                async with _analysis_lock(book_id):
+                    fresh = _load_json(book_id, "analysis.json") or {}
+                    fseg = next((s for s in fresh.get("segments", []) if s.get("id") == seg_id), None)
+                    if fseg is not None and not fseg.get("simplified_text"):
+                        fseg["simplified_text"] = simplified_text
+                        fseg["scene_direction"] = scene_direction
+                        _save_json(book_id, "analysis.json", fresh)
+                    elif fseg is not None:
+                        # The user typed their own text mid-flight — theirs wins,
+                        # and the illustration should embed it too.
+                        simplified_text = fseg.get("simplified_text", simplified_text)
+                        scene_direction = fseg.get("scene_direction", scene_direction)
                 target["simplified_text"] = simplified_text
                 target["scene_direction"] = scene_direction
-                _save_json(book_id, "analysis.json", analysis)
 
         # Step 3: Generate illustration
         ch_dir.mkdir(parents=True, exist_ok=True)
@@ -327,7 +349,9 @@ async def regenerate_segment_illustration(
                               {"status": "error", "segment_id": seg_id, "error": str(e)[:300]})
         finally:
             reset_user_api_key(token)
+            _active_regens.discard(claim)
 
+    _active_regens.add(claim)
     background_tasks.add_task(_regen_safe)
 
     return {"status": "regenerating", "segment_id": seg_id, "page_number": page_num}
@@ -480,7 +504,10 @@ async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
 
 
 @router.post("/api/book/{book_id}/segment/{seg_id}/quality")
-async def check_segment_quality(book_id: str, seg_id: int) -> dict[str, Any]:
+async def check_segment_quality(
+    book_id: str, seg_id: int,
+    _user_key: str | None = Depends(_require_user_key),  # belt to the middleware's suffix match
+) -> dict[str, Any]:
     """Run quality check on a single segment's illustration."""
     from src.generation.gemini_consistency_check import check_page_quality
 
@@ -559,7 +586,10 @@ async def get_chapter_consistency(book_id: str, ch_idx: int) -> dict[str, Any]:
 
 
 @router.post("/api/book/{book_id}/chapter/{ch_idx}/consistency")
-async def check_chapter_consistency(book_id: str, ch_idx: int) -> dict[str, Any]:
+async def check_chapter_consistency(
+    book_id: str, ch_idx: int,
+    _user_key: str | None = Depends(_require_user_key),  # belt to the middleware's suffix match
+) -> dict[str, Any]:
     """Run full quality check on a chapter's illustrations.
 
     Checks 5 dimensions per page + style coherence across pages:
@@ -687,6 +717,10 @@ async def regenerate_special_page(
     user_key: str = Depends(_require_user_key),
 ) -> dict[str, Any]:
     """Regenerate a special page (book_cover, chapter_cover, chapter_ending, back_cover)."""
+    claim = (book_id, "special", f"{page_type}:{chapter}")
+    if claim in _active_regens:
+        raise HTTPException(status_code=409, detail="This page is already regenerating.")
+
     from src.generation.special_pages import (
         generate_book_cover, generate_chapter_cover,
         generate_chapter_ending, generate_back_cover,
@@ -766,7 +800,9 @@ async def regenerate_special_page(
             reset_user_api_key(token)
             if _base:
                 _restore_from_history(special_dir / _base, hist / f"{_base}_{_ts}")
+            _active_regens.discard(claim)
 
+    _active_regens.add(claim)
     background_tasks.add_task(_gen)
     return {"status": "generating", "page_type": page_type, "chapter": chapter}
 
@@ -777,6 +813,10 @@ async def regenerate_scene_sheet(
     user_key: str = Depends(_require_user_key),
 ) -> dict[str, Any]:
     """Generate/regenerate a scene reference image for a location."""
+    claim = (book_id, "scene", scene_name)
+    if claim in _active_regens:
+        raise HTTPException(status_code=409, detail="This scene is already regenerating.")
+
     import re as _re
     import time as _time
 
@@ -869,7 +909,9 @@ async def regenerate_scene_sheet(
         finally:
             reset_user_api_key(token)
             _restore_from_history(scenes_dir / f"{safe}_scene", history_dir / f"{safe}_scene_{ts}")
+            _active_regens.discard(claim)
 
+    _active_regens.add(claim)
     background_tasks.add_task(_gen)
     return {"status": "generating", "scene": scene_name}
 
@@ -926,6 +968,9 @@ async def regenerate_character_sheet(
     user_key: str = Depends(_require_user_key),
 ) -> dict[str, Any]:
     """Regenerate character sheet for a specific character."""
+    claim = (book_id, "character", char_name)
+    if claim in _active_regens:
+        raise HTTPException(status_code=409, detail="This character sheet is already regenerating.")
 
     # Move existing sheet to history
     chars_dir = GENERATED_DIR / book_id / "characters"
@@ -987,14 +1032,17 @@ async def regenerate_character_sheet(
         finally:
             reset_user_api_key(token)
             _restore_from_history(chars_dir / f"{safe}_sheet", history_dir / f"{safe}_sheet_{ts}")
+            _active_regens.discard(claim)
 
+    _active_regens.add(claim)
     background_tasks.add_task(_regen)
     return {"status": "regenerating", "character": char_name}
 
 
 @router.post("/api/book/{book_id}/characters/{char_name}/quality")
 async def check_character_sheet_quality_endpoint(
-    book_id: str, char_name: str
+    book_id: str, char_name: str,
+    _user_key: str | None = Depends(_require_user_key),  # belt to the middleware's suffix match
 ) -> dict[str, Any]:
     """Run quality check on a character's reference sheet."""
     result = await run_in_threadpool(_run_character_sheet_quality, book_id, char_name)

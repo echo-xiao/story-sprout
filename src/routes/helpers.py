@@ -13,6 +13,14 @@ from src.config import GENERATED_DIR
 
 logger = logging.getLogger(__name__)
 
+# Assets with a regeneration in flight, keyed (book_id, kind, ident) — e.g.
+# ("b", "segment", 3) or ("b", "character", "Jay Gatsby"). The regen endpoints
+# claim before spawning their background task and release in its finally;
+# without this, two clicks ran two Gemini generations racing on the same
+# files, and restore-version could interleave with a running regen.
+# In-memory is fine: the service runs as a single instance.
+_active_regens: set[tuple[str, str, Any]] = set()
+
 
 def _require_user_key(x_gemini_key: str | None = Header(default=None)) -> str | None:
     """BYOK gate (only enforced when REQUIRE_USER_KEY=true).

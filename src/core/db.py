@@ -271,11 +271,18 @@ def list_preprocess_books() -> list[dict]:
         {"$sort": {"book_id": 1}},
     ]
     results = []
-    for doc in db.preprocess_files.aggregate(pipeline):
-        meta = doc.get("data", {})
-        results.append({
-            "book_id": doc["book_id"],
-            "title": meta.get("title", doc["book_id"]),
-            "num_chapters": meta.get("num_chapters", 0),
-        })
+    # A connection that drops AFTER the initial ping isn't caught by _get_db's
+    # backoff — without this guard the aggregate raised straight through and
+    # the library endpoint 500'd instead of falling back to the disk scan.
+    try:
+        for doc in db.preprocess_files.aggregate(pipeline):
+            meta = doc.get("data", {})
+            results.append({
+                "book_id": doc["book_id"],
+                "title": meta.get("title", doc["book_id"]),
+                "num_chapters": meta.get("num_chapters", 0),
+            })
+    except Exception as e:
+        logger.warning("list_preprocess_books failed (%s); falling back to disk", e)
+        return []
     return results

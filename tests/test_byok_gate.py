@@ -33,6 +33,26 @@ def test_generation_endpoints_403_without_key(client, require_user_key, path):
     assert "Gemini API key" in resp.json()["detail"]
 
 
+DEPENDS_GATED_POSTS = [
+    # These four used to rely ONLY on the middleware's suffix match — a path
+    # rename would have silently un-gated them. They now also carry a
+    # Depends(_require_user_key) belt; prove it holds with the middleware
+    # suffix list emptied.
+    "/api/book/test-book/segment/0/quality",
+    "/api/book/test-book/characters/someone/quality",
+    "/api/book/test-book/chapter/0/consistency",
+    "/api/book/test-book/preprocess/characters/someone/autofill",
+]
+
+
+@pytest.mark.parametrize("path", DEPENDS_GATED_POSTS)
+def test_depends_belt_holds_without_middleware(client, require_user_key, monkeypatch, path):
+    monkeypatch.setattr("src.app._GEN_SUFFIXES", ())
+    resp = client.post(path)
+    assert resp.status_code == 403, f"{path} lost its Depends gate: {resp.status_code}"
+    assert "Gemini API key" in resp.json()["detail"]
+
+
 def test_non_generation_post_is_not_gated(client, require_user_key):
     """Control: a non-generation path must NOT be blocked by the gate.
     regen-status only has a GET route, so the router answers 405 — the point

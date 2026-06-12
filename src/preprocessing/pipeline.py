@@ -609,11 +609,28 @@ def _generate_character_sheets(book_id, preprocess_dir, characters, skip_sheets)
         print(f"    {s['character_name']}: {s.get('sheet_path', 'FAILED')}")
 
     _save(preprocess_dir, "character_sheets", sheets)
+    # NOTE: the MCP consistency-hub sync happens in main() AFTER save_preprocess.
+    # Doing it here was a no-op: on a first run the characters collection is
+    # still empty (update-many matches nothing), and save_preprocess's
+    # delete+insert wiped the fields on re-runs anyway.
 
-    # Consistency data hub: persist each sheet's visual identity + reference
-    # image path into the characters collection via the MongoDB MCP server,
-    # making MongoDB the single source of truth for cross-page consistency.
+
+def _sync_sheet_hub_to_mongo(book_id, preprocess_dir):
+    """Consistency data hub: persist each sheet's visual identity + reference
+    image path into the characters collection via the MongoDB MCP server,
+    making MongoDB the single source of truth for cross-page consistency.
+
+    Must run AFTER save_preprocess: that call rebuilds the characters
+    collection with delete+insert (which would wipe these fields), and on a
+    first run there are no docs to match before it. Reads character_sheets.json
+    so it also works when this run skipped sheet generation (--skip-sheets)
+    but a previous run left valid sheets behind.
+    """
+    sheets_file = preprocess_dir / "character_sheets.json"
+    if not sheets_file.exists():
+        return
     try:
+        sheets = json.loads(sheets_file.read_text(encoding="utf-8"))
         from src.core.mcp_client import update_characters_via_mcp
         items = [
             (s["character_name"], {
@@ -675,6 +692,15 @@ def _layer5_segment_text(book_id, preprocess_dir, cleaned_chapters, cleaned_full
     return all_segments, ch_seg_groups
 
 
+def _annotation_fingerprint(segs) -> list[str]:
+    """Per-segment text hashes — the identity a chapter checkpoint is valid for."""
+    import hashlib
+    return [
+        hashlib.md5((s.get("text") or "").encode("utf-8")).hexdigest()[:12]
+        for s in segs
+    ]
+
+
 def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_seg_groups, skip_sheets):
     """Layer 6: LLM annotation per segment."""
     print("\n[Layer 6/6] LLM annotation (characters, sentiment, events)...")
@@ -693,31 +719,50 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
         ch_title = chapters[ch_idx].get("title", f"Ch {ch_idx}") if ch_idx < len(chapters) else "?"
         checkpoint_file = checkpoint_dir / f"ch{ch_idx:03d}.json"
 
-        # Check if this chapter was already annotated
+        # A checkpoint is only replayable onto the SAME segmentation. Re-runs
+        # re-extract characters/aliases (LLM, non-deterministic) → cleaned text
+        # changes → TextTiling boundaries shift — blindly replaying by index
+        # pasted annotations onto different text and left extra segments
+        # unannotated. Fingerprint = per-segment text hashes.
+        fingerprint = _annotation_fingerprint(segs)
+        replayed = False
         if checkpoint_file.exists():
             cached = json.loads(checkpoint_file.read_text(encoding="utf-8"))
-            # Restore annotations into segments
-            for i, seg in enumerate(segs):
-                if i < len(cached):
-                    seg.update(cached[i])
-            skipped += 1
-        else:
+            if isinstance(cached, dict):
+                annotations = cached.get("annotations", [])
+                replayable = cached.get("fingerprint") == fingerprint
+            else:
+                # Legacy list checkpoint (pre-fingerprint): length match is the
+                # best validation available.
+                annotations = cached
+                replayable = len(cached) == len(segs)
+            if replayable:
+                for seg, ann in zip(segs, annotations):
+                    seg.update(ann)
+                skipped += 1
+                replayed = True
+            else:
+                tqdm.write(f"  Chapter {ch_idx}: segmentation changed — discarding stale checkpoint")
+        if not replayed:
             try:
                 segs = _llm_annotate_chapter(title, ch_title, segs, characters)
                 # Save checkpoint
                 checkpoint_file.write_text(
-                    json.dumps([{
-                        "characters_in_scene": s.get("characters_in_scene", []),
-                        "character_actions": s.get("character_actions", []),
-                        "scene_background": s.get("scene_background", ""),
-                        "scene_summary": s.get("scene_summary", ""),
-                        "sentiment": s.get("sentiment", "neutral"),
-                        "is_key_event": s.get("is_key_event", False),
-                        "event_description": s.get("event_description"),
-                        # Resumed runs restore segments from this dump — dropping a
-                        # field here silently loses it for every resumed book.
-                        "simplified_text": s.get("simplified_text", ""),
-                    } for s in segs], indent=2, ensure_ascii=False),
+                    json.dumps({
+                        "fingerprint": fingerprint,
+                        "annotations": [{
+                            "characters_in_scene": s.get("characters_in_scene", []),
+                            "character_actions": s.get("character_actions", []),
+                            "scene_background": s.get("scene_background", ""),
+                            "scene_summary": s.get("scene_summary", ""),
+                            "sentiment": s.get("sentiment", "neutral"),
+                            "is_key_event": s.get("is_key_event", False),
+                            "event_description": s.get("event_description"),
+                            # Resumed runs restore segments from this dump — dropping a
+                            # field here silently loses it for every resumed book.
+                            "simplified_text": s.get("simplified_text", ""),
+                        } for s in segs],
+                    }, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
             except Exception as e:
@@ -862,13 +907,20 @@ def main():
     final_segments, final_characters, all_events = _layer6_annotate(
         book_id, preprocess_dir, chapters, characters, title, ch_seg_groups, args.skip_sheets)
 
-    # Save to MongoDB
-    from src.core.db import save_preprocess, is_available as mongo_available
-    if mongo_available():
-        save_preprocess(book_id, title, characters, final_segments, alias_map, gender_map)
-        print(f"\n  MongoDB: saved ({len(characters)} characters, {len(final_segments)} segments)")
-    else:
-        print("\n  MongoDB: not available (data saved to files only)")
+    # Save to MongoDB. All files are already written at this point, so a Mongo
+    # failure must NOT fail the run — a non-zero exit makes the web flow write
+    # error.json and show a fully-successful preprocess as failed.
+    try:
+        from src.core.db import save_preprocess, is_available as mongo_available
+        if mongo_available():
+            save_preprocess(book_id, title, characters, final_segments, alias_map, gender_map)
+            print(f"\n  MongoDB: saved ({len(characters)} characters, {len(final_segments)} segments)")
+            # Sheet consistency hub — must follow save_preprocess (see helper).
+            _sync_sheet_hub_to_mongo(book_id, preprocess_dir)
+        else:
+            print("\n  MongoDB: not available (data saved to files only)")
+    except Exception as e:
+        print(f"\n  MongoDB: save failed ({e}); data saved to files only", file=sys.stderr)
 
     # Summary
     print(f"\n{'='*50}")

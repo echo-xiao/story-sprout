@@ -146,6 +146,13 @@ export default function EditorPage() {
 
   const selectedSegId = selectedSegment?.id ?? -1;
 
+  // Latest selection for async handlers — a quality result landing after the
+  // user switched segments must not display under the new segment.
+  const selectedSegIdRef = useRef(selectedSegId);
+  useEffect(() => {
+    selectedSegIdRef.current = selectedSegId;
+  }, [selectedSegId]);
+
   // Keep a ref of the latest segments to avoid stale closures in async handlers
   useEffect(() => {
     segmentsRef.current = segments;
@@ -574,7 +581,9 @@ export default function EditorPage() {
       if (selectedChapterRef.current === chIdx) refreshStale(chIdx);
     } catch (e: any) {
       console.error("Regenerate failed:", e);
-      alert(`Regenerate failed: ${e?.message || e}`);
+      // Surface the backend's detail (e.g. "already regenerating" 409) over
+      // axios's generic status-code message.
+      alert(`Regenerate failed: ${e?.response?.data?.detail || e?.message || e}`);
     } finally {
       setRegenerating(false);
     }
@@ -670,10 +679,12 @@ export default function EditorPage() {
   // Handle quality check
   const handleRunQualityCheck = async () => {
     if (!selectedSegment) return;
+    const segId = selectedSegment.id;
     setCheckingQuality(true);
     try {
-      const result = await checkSegmentQuality(bookId, selectedSegment.id);
-      setQualityResult(result);
+      const result = await checkSegmentQuality(bookId, segId);
+      // Only show it if the user is still on this segment.
+      if (selectedSegIdRef.current === segId) setQualityResult(result);
     } catch (e) {
       console.error("Quality check failed:", e);
     } finally {

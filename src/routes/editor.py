@@ -297,7 +297,10 @@ async def update_character(book_id: str, char_name: str, update: CharacterUpdate
 
 
 @router.post("/api/book/{book_id}/preprocess/characters/{char_name}/autofill")
-async def autofill_character_details(book_id: str, char_name: str) -> dict[str, Any]:
+async def autofill_character_details(
+    book_id: str, char_name: str,
+    _user_key: str | None = Depends(_require_user_key),  # belt to the middleware's suffix match
+) -> dict[str, Any]:
     """Use LLM to generate visual details for a character based on description and book context."""
     llm_chars = _load_json(book_id, "llm_characters.json")
     if not llm_chars:
@@ -549,10 +552,15 @@ async def get_scene_sheet_history(book_id: str, scene_name: str) -> dict[str, An
     history_dir = scenes_dir / "history"
     if history_dir.exists():
         for f in sorted(history_dir.glob(f"{safe}_scene_*.*"), reverse=True):
+            version = f.stem.split("_")[-1]
+            if not version.isdigit():
+                # e.g. *_selfcorrect_prev.png backups — not restorable versions,
+                # and float(version) would 500 the whole endpoint.
+                continue
             images.append({
                 "url": f"/static/{book_id}/scenes/history/{f.name}",
-                "version": f.stem.split("_")[-1],
-                "timestamp": float(f.stem.split("_")[-1]),
+                "version": version,
+                "timestamp": float(version),
             })
 
     return {"images": images}
@@ -581,10 +589,16 @@ async def get_character_sheet_history(book_id: str, char_name: str) -> dict[str,
     history_dir = chars_dir / "history"
     if history_dir.exists():
         for f in sorted(history_dir.glob(f"{safe}_sheet_*.*"), reverse=True):
+            version = f.stem.split("_")[-1]
+            if not version.isdigit():
+                # The sheet self-correction writes *_selfcorrect_prev backups
+                # into this directory; float("prev") permanently 500'd this
+                # endpoint for any character that ever self-corrected.
+                continue
             images.append({
                 "url": f"/static/{book_id}/characters/history/{f.name}",
-                "version": f.stem.split("_")[-1],
-                "timestamp": float(f.stem.split("_")[-1]),
+                "version": version,
+                "timestamp": float(version),
             })
 
     return {"images": images}
@@ -733,6 +747,12 @@ async def restore_segment_version(book_id: str, seg_id: int, version: str) -> di
 
     if not version.isdigit():
         raise HTTPException(status_code=400, detail="Invalid version.")
+
+    from src.routes.helpers import _active_regens
+    if (book_id, "segment", seg_id) in _active_regens:
+        # A regen is mid-flight for this page; interleaving the two file
+        # shuffles leaves both a .png and a .jpg current image behind.
+        raise HTTPException(status_code=409, detail="This page is regenerating — try again when it finishes.")
 
     analysis = _load_json(book_id, "analysis.json")
     if not analysis:

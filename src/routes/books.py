@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Books with a preprocess subprocess in flight. Two kickoffs for the same
+# book_id (double-click, or two users submitting the same title) used to spawn
+# two subprocesses trampling the same preprocess/ directory. Single-instance
+# scope, same as generation.py's _active_generations.
+_active_preprocesses: set[str] = set()
+
 
 class FetchUrlRequest(BaseModel):
     url: str
@@ -199,6 +205,8 @@ async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None =
             }))
         except OSError:
             pass
+    finally:
+        _active_preprocesses.discard(book_id)
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +280,12 @@ async def start_generation(
     sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', first_line)
     book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
 
+    if book_id in _active_preprocesses:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{book_id}' is already preprocessing \u2014 wait for it to finish.",
+        )
+
     # The key travels in the x-gemini-key header only (the BYOK middleware and
     # gate read nothing else, so a body-only key could never reach this point).
     # Honor it only when the gate is on; otherwise a saved free-tier key would
@@ -281,6 +295,9 @@ async def start_generation(
     if request.config.email:
         _save_user_info(book_id, request.config.email, user_api_key)
 
+    # No await between the membership check above and this claim, so two
+    # concurrent kickoffs can't both pass; _run_preprocess releases in finally.
+    _active_preprocesses.add(book_id)
     background_tasks.add_task(_run_preprocess, book_id, dest, gemini_api_key=user_api_key)
 
     return {"book_id": book_id, "status": "preprocessing"}

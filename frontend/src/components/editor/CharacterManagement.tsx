@@ -71,6 +71,15 @@ export default function CharacterManagement({
     if (selectedChar) onSelectChar?.(selectedChar);
   }, [selectedChar]);
 
+  // Latest selection for async handlers: autofill/quality responses landing
+  // after the user switched characters must NOT be applied to the now-selected
+  // one (autofill merged char A's appearance into char B's form, and Save then
+  // persisted it onto B).
+  const selectedCharRef = useRef<string | null>(selectedChar);
+  useEffect(() => {
+    selectedCharRef.current = selectedChar;
+  }, [selectedChar]);
+
   const selectChar = (char: CharacterInfo) => {
     if (selectedChar !== char.canonical_name) {
       if (editingIsDirty() && !window.confirm("You have unsaved character edits. Discard them?")) {
@@ -156,7 +165,8 @@ export default function CharacterManagement({
     setCheckingQuality(true);
     try {
       const result = await checkCharacterSheetQuality(bookId, charName);
-      setQualityResult(result);
+      // Only show it if the user is still on this character.
+      if (selectedCharRef.current === charName) setQualityResult(result);
     } catch {} finally {
       setCheckingQuality(false);
     }
@@ -215,9 +225,16 @@ export default function CharacterManagement({
 
   const handleAutoFill = async () => {
     if (!selectedChar) return;
+    const charName = selectedChar;
     setAutoFilling(true);
     try {
-      const result = await autofillCharacterDetails(bookId, selectedChar);
+      const result = await autofillCharacterDetails(bookId, charName);
+      if (selectedCharRef.current !== charName) {
+        // User switched characters while the LLM ran — the backend saved the
+        // autofill on the right character; merging it into the form now would
+        // write charName's appearance onto the newly-selected one.
+        return;
+      }
       setEditing(prev => ({
         ...prev,
         appearance: result.appearance || prev.appearance,
@@ -368,10 +385,12 @@ export default function CharacterManagement({
                   <button
                     onClick={async () => {
                       if (!selectedChar) return;
+                      const charName = selectedChar;
                       setCheckingQuality(true);
                       try {
-                        const result = await checkCharacterSheetQuality(bookId, selectedChar);
-                        setQualityResult(result);
+                        const result = await checkCharacterSheetQuality(bookId, charName);
+                        // Don't show char A's score under char B after a switch.
+                        if (selectedCharRef.current === charName) setQualityResult(result);
                       } catch (e) {
                         console.error("Quality check failed:", e);
                       } finally {
