@@ -21,6 +21,26 @@ logger = logging.getLogger(__name__)
 # In-memory is fine: the service runs as a single instance.
 _active_regens: set[tuple[str, str, Any]] = set()
 
+# Chapters currently generating (book_id, ch_idx). Prevents a second subprocess
+# from being spawned for a chapter that's already running (which would double-hit
+# Gemini and race on progress.json / agent_log.json). Lives here (not in
+# generation.py) so editor.py can consult it without a circular import — rename /
+# restore endpoints must refuse to touch assets a chapter run is using.
+_active_generations: set[tuple[str, int]] = set()
+
+
+def book_generation_active(book_id: str, ch_idx: int | None = None) -> bool:
+    """True when a chapter-generation subprocess is running for this book
+    (or for one specific chapter when ch_idx is given)."""
+    if ch_idx is not None:
+        return (book_id, ch_idx) in _active_generations
+    return any(claim[0] == book_id for claim in _active_generations)
+
+
+def book_regen_active(book_id: str) -> bool:
+    """True when any per-asset regeneration is in flight for this book."""
+    return any(claim[0] == book_id for claim in _active_regens)
+
 
 def _require_user_key(x_gemini_key: str | None = Header(default=None)) -> str | None:
     """BYOK gate (only enforced when REQUIRE_USER_KEY=true).
@@ -162,19 +182,29 @@ def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
     a regen that switched image extensions (.png → .jpg) left a dead absolute
     path — a silently blank page in the next PDF — and edited or restored
     text never reached it at all.
+
+    UPSERTS: pages that have no entry yet (segment was <10 words at pipeline
+    time, or the chapter was never pipeline-generated at all) are inserted,
+    bootstrapping the file if needed — previously such pages showed in the
+    editor but were silently absent from every PDF.
     """
     import re as _re
 
     path = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "chapter_data.json"
-    if not path.exists():
-        return  # chapter never generated — nothing to keep in step
     lock = _get_lock(f"{book_id}/ch{ch_idx:02d}/chapter_data.json")
     with lock:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-        pages = data.get("pages", [])
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                logger.warning("chapter_data.json unreadable for %s ch%d — page %d update dropped",
+                               book_id, ch_idx, page_num)
+                return
+        else:
+            # Chapter built page-by-page via segment regen before any full
+            # pipeline run — bootstrap so the PDF can include it.
+            data = {"chapter_idx": ch_idx, "pages": []}
+        pages = data.setdefault("pages", [])
         for p in pages:  # legacy entries lack page_number — derive from filename
             if "page_number" not in p:
                 m = _re.search(r"page_(\d+)", p.get("image_path", "") or "")
@@ -182,13 +212,29 @@ def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
                     p["page_number"] = int(m.group(1))
         entry = next((p for p in pages if p.get("page_number") == page_num), None)
         if entry is None:
-            return
+            entry = {"page_number": page_num, "image_path": "", "text": ""}
+            pages.append(entry)
+            pages.sort(key=lambda p: p.get("page_number") or 0)
         if image_path:
             entry["image_path"] = image_path
         if text is not None:
             entry["text"] = text
-        path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False),
-                        encoding="utf-8")
+        write_json_atomic(path, data)
+
+
+def invalidate_chapter_consistency(book_id: str, ch_idx: int) -> None:
+    """Drop the chapter-level consistency.json cache.
+
+    It aggregates per-page scores computed against specific images and text;
+    any page image swap (regen, restore-version) or text edit makes it stale.
+    GET /chapter/{ch}/consistency serves the file verbatim, so leaving it
+    reports verdicts about content that no longer exists.
+    """
+    p = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "consistency.json"
+    try:
+        p.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _save_json(book_id: str, filename: str, data: Any) -> None:

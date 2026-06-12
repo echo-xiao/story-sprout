@@ -279,7 +279,12 @@ class IllustrateQAStage(_Stage):
                     # of range and silently skip the update. Fall back to positional
                     # index only for legacy chapter_data without page_number.
                     match = next((j for j, p in enumerate(pages) if p.get("page_number") == pn), None)
-                    if match is None and 1 <= pn <= len(pages):
+                    # Positional fallback ONLY when the candidate row genuinely
+                    # lacks page_number (legacy data the backfill couldn't fix).
+                    # Unconditionally, pages[pn-1] lands on the WRONG row when
+                    # numbering is non-contiguous (short segments are skipped)
+                    # and silently destroys another page's entry.
+                    if match is None and 1 <= pn <= len(pages) and "page_number" not in pages[pn - 1]:
                         match = pn - 1
                     new_entry = {
                         "text": scene.get("page_text", scene.get("text", "")),
@@ -287,10 +292,16 @@ class IllustrateQAStage(_Stage):
                         "page_number": pn,
                     }
                     if match is not None:
-                        new_entry["image_path"] = ill.get("image_path", pages[match].get("image_path", ""))
+                        # `or`, not .get(key, default): a failed generation returns
+                        # the key PRESENT with image_path="" — .get's default never
+                        # fires and the page's existing image would be blanked.
+                        new_entry["image_path"] = ill.get("image_path") or pages[match].get("image_path", "")
                         pages[match] = new_entry
                     else:
                         pages.append(new_entry)
+                # Appended pages must not render out of order in the PDF
+                # (export draws in list order).
+                pages.sort(key=lambda p: p.get("page_number") or 0)
             except (json.JSONDecodeError, OSError):
                 chapter_data = None
         if chapter_data is None:
@@ -302,8 +313,10 @@ class IllustrateQAStage(_Stage):
                     "image_path": ill.get("image_path", ""),
                     "page_number": scene.get("page_number", idx + 1),
                 })
-        chapter_data_path.write_text(
-            json.dumps(chapter_data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+        # Atomic: the FastAPI parent reads this file (progress shortcut,
+        # update_chapter_data_page) while this subprocess writes it.
+        from src.routes.helpers import write_json_atomic
+        write_json_atomic(chapter_data_path, chapter_data)
         return chapter_data
 
     @staticmethod

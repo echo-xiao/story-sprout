@@ -85,16 +85,14 @@ def build_combined_pdf(book_id: str, data: dict, chapter_indices: list[int] | No
     all_chapters.sort(key=lambda c: c.get("chapter_idx", 0))
 
     combined_pages = []
-    chapter_nums = []
     for ch in all_chapters:
         ch_num = ch.get("chapter_idx", 0) + 1
-        chapter_nums.append(ch_num)
         for p in ch.get("pages", []):
             p["_chapter_num"] = ch_num
             combined_pages.append(p)
 
     pdf_path = str(GENERATED_DIR / book_id / "book.pdf")
-    export_pdf(combined_pages, title, pdf_path, special_dir=special_dir, chapter_nums=chapter_nums)
+    export_pdf(combined_pages, title, pdf_path, special_dir=special_dir)
 
     print("\n=== Combined PDF ===")
     print(f"  Chapters: {[c.get('chapter_title', '?') for c in all_chapters]}")

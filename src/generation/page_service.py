@@ -69,8 +69,17 @@ def qa_and_self_correct(
         bad = Path(image_path)
         history_dir.mkdir(parents=True, exist_ok=True)
         backup = history_dir / f"{bad.stem}_selfcorrect_prev{bad.suffix}"
+        # MOVE (not copy): the generator's on-disk checkpoint skips existing
+        # page files, so the live image must be out of the way for the retry.
         shutil.move(str(bad), str(backup))
-        new_path = regenerate_fn(feedback) or ""
+        try:
+            new_path = regenerate_fn(feedback) or ""
+        except Exception as e:
+            # A crashed retry must not leave the page image-less — the live
+            # file was moved away above. Restore, record, and report normally
+            # (callers treat self-correct as best-effort and only log).
+            new_path = ""
+            result["self_correct_error"] = str(e)[:200]
         if not new_path:
             shutil.copy2(str(backup), str(bad))
             result["self_correct_attempted"] = True

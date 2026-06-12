@@ -14,7 +14,8 @@ import asyncio
 from src.config import GENERATED_DIR
 from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
-    _load_json, _require_user_key, _save_json, segment_page_num, update_chapter_data_page,
+    _active_regens, _load_json, _require_user_key, _save_json, book_generation_active,
+    invalidate_chapter_consistency, segment_page_num, update_chapter_data_page,
 )
 from starlette.concurrency import run_in_threadpool
 
@@ -80,6 +81,17 @@ async def _merge_segment_fields(book_id: str, seg_id: int, fields: dict) -> None
         _save_json(book_id, "analysis.json", analysis)
     if "simplified_text" in fields or "text" in fields:
         _invalidate_page_quality(book_id, analysis.get("segments", []), seg_id)
+        ch_idx = target.get("chapter_idx", 0)
+        # Keep chapter_data.json (the PDF's text source) in step — the manual
+        # edit endpoint does this, but the LLM paths (simplify / chat) route
+        # through here and used to leave the PDF printing the old text.
+        if "simplified_text" in fields:
+            update_chapter_data_page(
+                book_id, ch_idx,
+                segment_page_num(analysis.get("segments", []), ch_idx, seg_id),
+                text=fields["simplified_text"],
+            )
+        invalidate_chapter_consistency(book_id, ch_idx)
 
 
 @router.get("/api/book/{book_id}/preprocess/chapters")
@@ -239,6 +251,17 @@ async def update_character(book_id: str, char_name: str, update: CharacterUpdate
     # Reject a rename that collides with another existing character, rather than
     # silently merging the two (which would corrupt segment references).
     if renamed:
+        # A rename races every flow that resolves this character by name: a
+        # sheet regen has the current sheet parked in history under the OLD
+        # name (the cascade renames it away → the regen's restore no-ops →
+        # the character ends up with NO sheet at all), and a chapter run
+        # probes sheets by the old name mid-generation.
+        if (book_id, "character", char_name) in _active_regens:
+            raise HTTPException(status_code=409,
+                                detail="This character's sheet is regenerating — rename after it finishes.")
+        if book_generation_active(book_id):
+            raise HTTPException(status_code=409,
+                                detail="A chapter is generating for this book — rename after it finishes.")
         existing = {c.get("canonical_name") for c in (llm_chars or {}).get("characters", [])}
         if not existing:
             try:
@@ -469,6 +492,14 @@ async def update_scene(book_id: str, scene_name: str, update: SceneUpdate) -> di
 
     # Reject a rename that collides with another existing location.
     if new_name != scene_name:
+        # Same race as character rename: a scene regen holds the current sheet
+        # in history under the old name; renaming mid-flight strands it.
+        if (book_id, "scene", scene_name) in _active_regens:
+            raise HTTPException(status_code=409,
+                                detail="This scene's sheet is regenerating — rename after it finishes.")
+        if book_generation_active(book_id):
+            raise HTTPException(status_code=409,
+                                detail="A chapter is generating for this book — rename after it finishes.")
         others = {loc.get("name") for loc in (llm_locs or {}).get("locations", []) if loc is not target}
         if new_name in others:
             raise HTTPException(status_code=409, detail=f"A location named '{new_name}' already exists.")
@@ -680,6 +711,7 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
             book_id, ch_idx, segment_page_num(segments, ch_idx, seg_id),
             text=update_dict["simplified_text"],
         )
+        invalidate_chapter_consistency(book_id, ch_idx)
 
     # Sync to MongoDB (separate store — outside the file lock)
     try:
@@ -760,11 +792,15 @@ async def restore_segment_version(book_id: str, seg_id: int, version: str) -> di
     if not version.isdigit():
         raise HTTPException(status_code=400, detail="Invalid version.")
 
-    from src.routes.helpers import _active_regens
     if (book_id, "segment", seg_id) in _active_regens:
         # A regen is mid-flight for this page; interleaving the two file
         # shuffles leaves both a .png and a .jpg current image behind.
         raise HTTPException(status_code=409, detail="This page is regenerating — try again when it finishes.")
+    if book_generation_active(book_id):
+        # The chapter subprocess writes this same page file and rebuilds
+        # chapter_data.json at the end, which would override the restore.
+        raise HTTPException(status_code=409,
+                            detail="A chapter is generating for this book — restore after it finishes.")
 
     analysis = _load_json(book_id, "analysis.json")
     if not analysis:
@@ -829,6 +865,8 @@ async def restore_segment_version(book_id: str, seg_id: int, version: str) -> di
     if hist_quality.exists():
         quality_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(hist_quality, quality_file)
+    # The page image changed — the chapter summary cache describes the old one.
+    invalidate_chapter_consistency(book_id, ch_idx)
 
     return {
         "status": "restored",

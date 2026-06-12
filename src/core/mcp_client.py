@@ -127,7 +127,7 @@ async def _update_characters_async(book_id: str, items: list) -> int:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 for canonical_name, updates in items:
-                    await session.call_tool(
+                    result = await session.call_tool(
                         "update-many",
                         {
                             "database": MONGODB_DB,
@@ -136,6 +136,18 @@ async def _update_characters_async(book_id: str, items: list) -> int:
                             "update": {"$set": updates},
                         },
                     )
+                    # The MCP SDK reports tool failures IN-BAND (result.isError),
+                    # not as exceptions — counting every call as a success made
+                    # the sync claim writes that never happened.
+                    if getattr(result, "isError", False):
+                        err_text = "".join(
+                            getattr(c, "text", "") for c in (result.content or [])
+                        )
+                        logger.warning(
+                            "MCP update-many failed for %s/%s: %s",
+                            book_id, canonical_name, err_text[:300] or "unknown tool error",
+                        )
+                        continue
                     count["n"] += 1
     except Exception as e:
         if count["n"] == 0:

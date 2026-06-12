@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -18,7 +21,7 @@ from pydantic import BaseModel
 
 from src.config import GENERATED_DIR
 from src.core.models import GenerationConfig
-from src.routes.helpers import _require_user_key
+from src.routes.helpers import _require_user_key, write_json_atomic
 from src.core.pipeline import delete_book
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,83 @@ router = APIRouter()
 # two subprocesses trampling the same preprocess/ directory. Single-instance
 # scope, same as generation.py's _active_generations.
 _active_preprocesses: set[str] = set()
+
+
+# ---------------------------------------------------------------------------
+# run_status.json lifecycle helpers
+#
+# Preprocess status used to be inferred purely from file existence, which broke
+# in two ways: a re-POST saw the previous run's analysis.json and reported
+# instant "complete" while the new subprocess was still running, and a server
+# death mid-run left the book "processing" forever. run_status.json is the
+# authoritative per-run record: written atomically (tmp + os.replace) so the
+# polling endpoint never sees a torn file.
+# ---------------------------------------------------------------------------
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _run_status_path(book_id: str) -> Path:
+    return GENERATED_DIR / book_id / "preprocess" / "run_status.json"
+
+
+def _write_run_status(book_id: str, payload: dict[str, Any]) -> None:
+    try:
+        write_json_atomic(_run_status_path(book_id), payload)
+    except OSError:
+        logger.warning("Could not write run_status.json for %s", book_id)
+
+
+def _read_json_guarded(path: Path) -> Any:
+    """Read+parse JSON; None on any failure (missing/torn/corrupt file)."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+
+
+def _pid_alive(pid: Any) -> bool:
+    """True iff `pid` is an existing process (signal 0 probe)."""
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+
+
+def _preprocess_running(book_id: str) -> bool:
+    """True when a preprocess run is in flight for this book — either claimed
+    in-memory or recorded by a run_status.json whose pid is alive (covers
+    subprocesses orphaned by a server restart)."""
+    if book_id in _active_preprocesses:
+        return True
+    rs = _read_json_guarded(_run_status_path(book_id))
+    if isinstance(rs, dict) and rs.get("status") == "running":
+        pid = rs.get("pid")
+        if pid is not None and _pid_alive(pid):
+            return True
+    return False
+
+
+def _compute_book_id(source_text: str) -> str:
+    """Slug of the first line (human readable) + a content-hash suffix.
+
+    The slug alone collided: different books whose first line matched (e.g.
+    raw Gutenberg headers all start identically) silently overwrote each
+    other. The md5 suffix makes the id a function of the FULL text — the same
+    text re-uploaded maps to the same id (idempotent retry), different text
+    always gets a distinct id.
+    """
+    first_line = source_text.strip().split("\n")[0].strip()[:100]
+    sanitized = re.sub(r'[^\w\s一-鿿-]', '', first_line)
+    slug = re.sub(r'\s+', '_', sanitized.strip()).lower()[:52] or "untitled"
+    digest = hashlib.md5(source_text.encode("utf-8")).hexdigest()[:6]
+    return f"{slug}-{digest}"
 
 
 class FetchUrlRequest(BaseModel):
@@ -178,7 +258,6 @@ def _save_user_info(book_id: str, email: str, api_key: str | None = None) -> Non
 async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None = None) -> None:
     """Run preprocess_book.py with error tracking (non-blocking)."""
     import asyncio
-    import os
     import sys
     env = os.environ.copy()
     if gemini_api_key:
@@ -188,7 +267,8 @@ async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None =
         env["GEMINI_API_KEY"] = gemini_api_key
         env["GEMINI_BACKEND"] = "api_key"
     # Clear any stale error.json from a previous attempt, else the frontend shows
-    # this fresh run as already-failed.
+    # this fresh run as already-failed. (The POST handler clears it too, before
+    # this task is even scheduled; kept here for direct callers.)
     preprocess_dir = GENERATED_DIR / book_id / "preprocess"
     preprocess_dir.mkdir(parents=True, exist_ok=True)
     err_file = preprocess_dir / "error.json"
@@ -197,6 +277,16 @@ async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None =
             err_file.unlink()
         except OSError:
             pass
+    started_at = _utc_now_iso()
+    _write_run_status(book_id, {"status": "running", "pid": None, "started_at": started_at})
+    timeout_s = int(os.getenv("PREPROCESS_TIMEOUT_SECONDS", "1800"))
+
+    def _mark_failed(message: str) -> None:
+        _write_run_status(book_id, {
+            "status": "failed", "pid": None, "started_at": started_at,
+            "finished_at": _utc_now_iso(), "error": message,
+        })
+
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "scripts/preprocess_book.py", "--input", str(dest), "--book-id", book_id, "--skip-sheets",
@@ -205,14 +295,18 @@ async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None =
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        # Record the real pid so a restarted server can still detect this run
+        # (409 on duplicate POST) and the progress poll can detect its death.
+        _write_run_status(book_id, {"status": "running", "pid": proc.pid, "started_at": started_at})
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
             logger.error("Preprocess timed out for %s", book_id)
             # Write an error so the frontend stops showing "processing" forever.
-            err_file.write_text(json.dumps({"error": "Preprocess timed out after 600s.", "returncode": -1}))
+            err_file.write_text(json.dumps({"error": f"Preprocess timed out after {timeout_s}s.", "returncode": -1}))
+            _mark_failed(f"Preprocess timed out after {timeout_s}s.")
             return
 
         if proc.returncode != 0:
@@ -224,6 +318,12 @@ async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None =
                 "error": stderr_text[-1000:] or "Unknown error",
                 "returncode": proc.returncode,
             }))
+            _mark_failed(stderr_text[-1000:] or "Unknown error")
+        else:
+            _write_run_status(book_id, {
+                "status": "complete", "pid": proc.pid, "started_at": started_at,
+                "finished_at": _utc_now_iso(),
+            })
     except Exception as e:
         logger.exception("Preprocess crashed for %s", book_id)
         # Without a marker the progress endpoint reports "processing" forever
@@ -235,6 +335,7 @@ async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None =
             }))
         except OSError:
             pass
+        _mark_failed(f"Preprocess crashed: {str(e)[:500]}")
     finally:
         _active_preprocesses.discard(book_id)
 
@@ -297,20 +398,21 @@ async def start_generation(
     if not request.source_text.strip():
         raise HTTPException(status_code=400, detail="source_text cannot be empty.")
 
-    import re as _re
-
     # Save text to file
     upload_dir = GENERATED_DIR / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     dest = upload_dir / f"text_{uuid.uuid4().hex[:8]}.txt"
     dest.write_text(request.source_text, encoding="utf-8")
 
-    # Quick book_id from first line (no heavy parsing)
-    first_line = request.source_text.strip().split("\n")[0].strip()[:100]
-    sanitized = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', first_line)
-    book_id = _re.sub(r'\s+', '_', sanitized.strip()).lower()[:60] or "untitled"
+    # Quick book_id: first-line slug + content hash (no heavy parsing). See
+    # _compute_book_id \u2014 the hash suffix keeps different books with identical
+    # first lines from overwriting each other.
+    book_id = _compute_book_id(request.source_text)
 
-    if book_id in _active_preprocesses:
+    # Duplicate-run guard: in-memory claim first, then run_status.json \u2014 the
+    # latter catches a subprocess orphaned by a server restart (the in-memory
+    # set is empty after a restart but the orphan is still writing files).
+    if _preprocess_running(book_id):
         raise HTTPException(
             status_code=409,
             detail=f"'{book_id}' is already preprocessing \u2014 wait for it to finish.",
@@ -328,23 +430,66 @@ async def start_generation(
     # No await between the membership check above and this claim, so two
     # concurrent kickoffs can't both pass; _run_preprocess releases in finally.
     _active_preprocesses.add(book_id)
+    # Stale per-run state from a previous attempt must not poison this run's
+    # progress reporting: clear error.json and stamp run_status BEFORE the task
+    # is scheduled, so the very first progress poll already sees "running"
+    # (content artifacts like analysis.json are user-editable and stay put \u2014
+    # run_status alone now prevents the false instant-complete on re-POST).
+    preprocess_dir = GENERATED_DIR / book_id / "preprocess"
+    preprocess_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (preprocess_dir / "error.json").unlink(missing_ok=True)
+    except OSError:
+        pass
+    _write_run_status(book_id, {"status": "running", "pid": None, "started_at": _utc_now_iso()})
     background_tasks.add_task(_run_preprocess, book_id, dest, gemini_api_key=user_api_key)
 
     return {"book_id": book_id, "status": "preprocessing"}
 
 
+def _error_response(message: str) -> dict[str, Any]:
+    return {"status": "error", "progress": 0, "step": "Preprocess failed",
+            "error": message, "steps_done": []}
+
+
 @router.get("/api/book/{book_id}/preprocess/progress")
 async def get_preprocess_progress(book_id: str) -> dict[str, Any]:
-    """Check preprocess progress by examining which files exist."""
+    """Check preprocess progress: run_status.json is authoritative when present
+    (legacy books without one keep the file-existence behavior)."""
+    import asyncio
+
     preprocess_dir = GENERATED_DIR / book_id / "preprocess"
     if not preprocess_dir.exists():
         return {"status": "not_started", "progress": 0, "step": "Waiting to start...", "steps_done": []}
 
-    # Check for error marker
+    # run_status.json first — it disambiguates "old artifacts on disk" from
+    # "this run". A torn/corrupt read means a writer is mid-replace → treat as
+    # still running rather than 500ing or trusting stale files.
+    rs_path = preprocess_dir / "run_status.json"
+    run_status: dict[str, Any] | None = None
+    if rs_path.exists():
+        run_status = _read_json_guarded(rs_path)
+        if not isinstance(run_status, dict):
+            run_status = {"status": "running", "pid": None}
+
+    if run_status is not None and run_status.get("status") == "running":
+        pid = run_status.get("pid")
+        if pid is not None and not _pid_alive(pid):
+            # Tiny race: the subprocess just exited and the parent hasn't
+            # stamped the final status yet — re-read once before declaring death.
+            await asyncio.sleep(0.2)
+            run_status = _read_json_guarded(rs_path) or run_status
+            if run_status.get("status") == "running":
+                return _error_response("preprocess process died — re-submit the book")
+
+    if run_status is not None and run_status.get("status") == "failed":
+        return _error_response(run_status.get("error") or "Unknown error")
+
+    # Legacy error marker (books without run_status.json, or direct CLI runs).
     error_file = preprocess_dir / "error.json"
-    if error_file.exists():
-        error_data = json.loads(error_file.read_text())
-        return {"status": "error", "progress": 0, "step": "Preprocess failed", "error": error_data.get("error", "Unknown error"), "steps_done": []}
+    if run_status is None and error_file.exists():
+        error_data = _read_json_guarded(error_file) or {}
+        return _error_response(error_data.get("error", "Unknown error"))
 
     steps_done = []
     # Check each layer
@@ -363,12 +508,13 @@ async def get_preprocess_progress(book_id: str) -> dict[str, Any]:
     total_chapters = 0
     annotated_chapters = 0
     # Get total chapters from chapters.json (available early) or chapter_segments.json
-    if (preprocess_dir / "chapters.json").exists():
-        chs = json.loads((preprocess_dir / "chapters.json").read_text())
+    chs = _read_json_guarded(preprocess_dir / "chapters.json")
+    if isinstance(chs, list):
         total_chapters = len(chs)
-    elif (preprocess_dir / "chapter_segments.json").exists():
-        cs = json.loads((preprocess_dir / "chapter_segments.json").read_text())
-        total_chapters = len(cs)
+    else:
+        cs = _read_json_guarded(preprocess_dir / "chapter_segments.json")
+        if isinstance(cs, (list, dict)):
+            total_chapters = len(cs)
     if annotations_dir.exists():
         annotated_chapters = len(list(annotations_dir.glob("ch*.json")))
     if (preprocess_dir / "analysis.json").exists():
@@ -400,8 +546,20 @@ async def get_preprocess_progress(book_id: str) -> dict[str, Any]:
     else:
         info = step_info.get(current, {"step": "Processing...", "agent": "analyzer"})
 
+    status = "complete" if progress >= 100 else "processing"
+    if run_status is not None and run_status.get("status") == "running":
+        # A live run is NEVER "complete", even if a previous run's analysis.json
+        # is still on disk (re-POST used to instantly report complete from it).
+        if status == "complete":
+            steps_done = [s for s in steps_done if s != "annotate_complete"]
+        status = "processing"
+        progress = min(progress, 99)
+    elif run_status is not None and run_status.get("status") == "complete":
+        status = "complete"
+        progress = 100
+
     return {
-        "status": "complete" if progress >= 100 else "processing",
+        "status": status,
         "progress": round(progress),
         "step": info["step"],
         "agent": info["agent"],
@@ -411,74 +569,114 @@ async def get_preprocess_progress(book_id: str) -> dict[str, Any]:
     }
 
 
+def _page_counts(book_id: str) -> tuple[int, int]:
+    """(generated_chapters, total_pages) from disk. A chapter only counts as
+    generated when it actually contains at least one page image — a bare chXX
+    dir (e.g. from a crashed run) used to count."""
+    chapters_dir = GENERATED_DIR / book_id / "chapters"
+    generated_chapters = 0
+    total_pages = 0
+    if chapters_dir.exists():
+        for ch_dir in chapters_dir.iterdir():
+            if ch_dir.is_dir() and ch_dir.name.startswith("ch"):
+                pages_dir = ch_dir / "pages"
+                n_pages = len(list(pages_dir.glob("page_*.*"))) if pages_dir.exists() else 0
+                if n_pages > 0:
+                    generated_chapters += 1
+                    total_pages += n_pages
+    return generated_chapters, total_pages
+
+
+def _book_status(book_id: str, generated_chapters: int) -> str:
+    """Derive a coarse lifecycle status from run_status/error/analysis."""
+    pre = GENERATED_DIR / book_id / "preprocess"
+    rs = _read_json_guarded(pre / "run_status.json")
+    rs_status = rs.get("status") if isinstance(rs, dict) else None
+    if rs_status == "running":
+        pid = rs.get("pid")
+        if pid is None or _pid_alive(pid):
+            return "processing"
+        return "failed"  # run_status says running but the process is gone
+    if rs_status == "failed" or (pre / "error.json").exists():
+        return "failed"
+    if (pre / "analysis.json").exists():
+        return "generated" if generated_chapters > 0 else "ready"
+    # Legacy book mid-flight (no run_status, no analysis yet)
+    return "processing"
+
+
 @router.get("/api/books/preprocessed")
 async def list_preprocessed_books() -> list[dict[str, Any]]:
-    """List all books that have preprocess data (from MongoDB, fallback to disk)."""
+    """List all books that have preprocess data.
+
+    UNION of MongoDB and the disk scan, deduped by book_id (Mongo record wins
+    when both exist). The old "disk only when Mongo returned ZERO books"
+    fallback made any book whose Mongo doc was never created (outage at save
+    time) permanently invisible while other books existed in Mongo.
+    """
     from src.core.db import list_preprocess_books
     from src.routes.helpers import _load_json
 
-    # Try MongoDB first
-    mongo_books = list_preprocess_books()
-    if mongo_books:
-        books = []
-        for b in mongo_books:
+    books_by_id: dict[str, dict[str, Any]] = {}
+
+    try:
+        mongo_books = list_preprocess_books()
+    except Exception as e:
+        logger.warning("Mongo library listing failed (%s); serving disk scan only", e)
+        mongo_books = []
+    for b in mongo_books:
+        # Per-book guard: one bad record must not kill the whole listing.
+        try:
             book_id = b["book_id"]
             llm_chars = _load_json(book_id, "llm_characters.json")
             num_characters = len(llm_chars.get("characters", [])) if llm_chars else 0
-            chapters_dir = GENERATED_DIR / book_id / "chapters"
-            generated_chapters = 0
-            total_pages = 0
-            if chapters_dir.exists():
-                for ch_dir in chapters_dir.iterdir():
-                    if ch_dir.is_dir() and ch_dir.name.startswith("ch"):
-                        generated_chapters += 1
-                        pages_dir = ch_dir / "pages"
-                        if pages_dir.exists():
-                            total_pages += len(list(pages_dir.glob("page_*.*")))
-            books.append({
+            generated_chapters, total_pages = _page_counts(book_id)
+            books_by_id[book_id] = {
                 "book_id": book_id,
                 "title": b.get("title", book_id),
                 "num_chapters": b.get("num_chapters", 0),
                 "num_characters": num_characters,
                 "generated_chapters": generated_chapters,
                 "total_pages": total_pages,
-            })
-        return books
+                "status": _book_status(book_id, generated_chapters),
+            }
+        except Exception as e:
+            logger.warning("Skipping bad Mongo library record %r: %s", b, e)
 
-    # Fallback to disk scan
-    books = []
-    if not GENERATED_DIR.exists():
-        return books
-    for d in sorted(GENERATED_DIR.iterdir()):
-        if not d.is_dir():
-            continue
-        meta_path = d / "preprocess" / "meta.json"
-        if meta_path.exists():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            chapters_dir = d / "chapters"
-            generated_chapters = 0
-            total_pages = 0
-            if chapters_dir.exists():
-                for ch_dir in chapters_dir.iterdir():
-                    if ch_dir.is_dir() and ch_dir.name.startswith("ch"):
-                        generated_chapters += 1
-                        pages_dir = ch_dir / "pages"
-                        if pages_dir.exists():
-                            total_pages += len(list(pages_dir.glob("page_*.*")))
-            chars_path = d / "preprocess" / "llm_characters.json"
-            num_characters = 0
-            if chars_path.exists():
-                chars_data = json.loads(chars_path.read_text(encoding="utf-8"))
-                num_characters = len(chars_data.get("characters", []))
-            books.append({
-                "book_id": d.name,
-                "title": meta.get("title", d.name),
-                "num_chapters": meta.get("num_chapters", 0),
-                "num_characters": num_characters,
-                "generated_chapters": generated_chapters,
-                "total_pages": total_pages,
-            })
-    return books
+    # Disk scan — adds books Mongo doesn't know about (doc never created, or
+    # Mongo down). Per-book guard so one corrupt meta.json doesn't kill it.
+    if GENERATED_DIR.exists():
+        for d in sorted(GENERATED_DIR.iterdir()):
+            try:
+                if not d.is_dir() or d.name in books_by_id:
+                    continue
+                pre = d / "preprocess"
+                meta_path = pre / "meta.json"
+                # Books still preprocessing (or failed before Layer 1) have no
+                # meta.json yet but DO have run-state — list them too, with
+                # status carrying the truth.
+                if not meta_path.exists() and not (pre / "run_status.json").exists() \
+                        and not (pre / "error.json").exists():
+                    continue
+                meta = _read_json_guarded(meta_path)
+                if not isinstance(meta, dict):
+                    meta = {}
+                generated_chapters, total_pages = _page_counts(d.name)
+                chars_data = _read_json_guarded(pre / "llm_characters.json")
+                num_characters = len(chars_data.get("characters", [])) if isinstance(chars_data, dict) else 0
+                books_by_id[d.name] = {
+                    "book_id": d.name,
+                    "title": meta.get("title", d.name),
+                    "num_chapters": meta.get("num_chapters", 0),
+                    "num_characters": num_characters,
+                    "generated_chapters": generated_chapters,
+                    "total_pages": total_pages,
+                    "status": _book_status(d.name, generated_chapters),
+                }
+            except Exception as e:
+                logger.warning("Skipping unreadable book dir %s: %s", d, e)
+
+    return list(books_by_id.values())
 
 
 @router.delete("/api/book/{book_id}")
@@ -489,11 +687,24 @@ async def delete_book_endpoint(
     # rmtree below — a book_id like ".." would delete the whole data dir.
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", book_id) or ".." in book_id:
         raise HTTPException(status_code=400, detail="Invalid book id.")
-    deleted = await delete_book(book_id)
+    # Deleting under a live preprocess subprocess would race its writes (it
+    # would happily recreate half the tree after the rmtree).
+    if _preprocess_running(book_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{book_id}' is currently preprocessing — wait for it to finish before deleting.",
+        )
+    book_dir = GENERATED_DIR / book_id
+    try:
+        deleted = await delete_book(book_id)
+    except Exception as e:
+        # Mongo outage must not block deletion — the disk removal below is the
+        # part the user actually sees; orphaned docs get cleaned on a retry.
+        logger.warning("Mongo delete failed for %s (%s); proceeding with disk removal", book_id, e)
+        deleted = book_dir.exists()
     if not deleted:
         raise HTTPException(status_code=404, detail="Book not found.")
 
-    book_dir = GENERATED_DIR / book_id
     if book_dir.exists():
         import shutil
         shutil.rmtree(book_dir, ignore_errors=True)

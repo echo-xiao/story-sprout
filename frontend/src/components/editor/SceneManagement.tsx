@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { MapPin, RefreshCw } from "lucide-react";
-import { getLocations, regenerateSceneSheet, getSceneSheetHistory, updateScene } from "@/lib/api";
+import { getLocations, regenerateSceneSheet, getSceneSheetHistory, updateScene, getRegenActive } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
@@ -116,27 +116,46 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
         setLocations(fresh.locations || []);
         setSceneSheets(fresh.scene_sheets || {});
         setSelectedLoc(newName);
+        // Tell the parent too, so the URL ?scene= param follows the rename.
+        onSelectScene?.(newName);
       }
 
       await regenerateSceneSheet(bookId, newName);
       // Poll until sheet appears instead of blindly waiting 30s
       await new Promise<void>((resolve) => {
+        // Track the timeout handle so EVERY poll exit cancels it — a leftover
+        // timer would call setGenerating(null) in the middle of a LATER run.
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const stop = (poll: ReturnType<typeof setInterval>) => {
+          clearInterval(poll);
+          if (timeout) clearTimeout(timeout);
+        };
         const poll = setInterval(async () => {
-          if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
+          if (unmountedRef.current) { stop(poll); resolve(); return; }
           try {
             const hist = await getSceneSheetHistory(bookId, newName);
             if (hist.images?.some(img => img.version === "current")) {
-              clearInterval(poll);
+              stop(poll);
               const data = await getLocations(bookId);
               setLocations(data.locations || []);
               setSceneSheets(data.scene_sheets || {});
               setSceneCacheBust(Date.now());
               setGenerating(null);
               resolve();
+              return;
+            }
+            // No new sheet yet — if the backend dropped its regen claim, the
+            // run failed (it restores the old image, so the file watch can't tell).
+            const st = await getRegenActive(bookId, "scene", newName).catch(() => null);
+            if (st && st.active === false) {
+              stop(poll);
+              setGenerating(null);
+              alert("Regeneration failed — check your API key/quota and try again.");
+              resolve();
             }
           } catch {}
         }, 5000);
-        setTimeout(() => { clearInterval(poll); setGenerating(null); resolve(); }, 120000);
+        timeout = setTimeout(() => { clearInterval(poll); setGenerating(null); resolve(); }, 120000);
       });
       onSceneRegen?.();  // notify parent → refresh stale pages + parent's scene copy
     } catch (e: any) {
@@ -184,6 +203,19 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
           }
           if (done >= toGenerate.length) {
             clearInterval(poll);
+            resolve();
+            return;
+          }
+          // Some sheets still missing — if the backend no longer claims ANY of
+          // them, those runs failed (failure restores the old image, so the
+          // file watch alone can't tell). Unknown (errored) checks keep polling.
+          const pending = toGenerate.filter(loc => !newSheets[loc.name]);
+          const states = await Promise.all(
+            pending.map(loc => getRegenActive(bookId, "scene", loc.name).catch(() => null))
+          );
+          if (states.length > 0 && states.every(st => st !== null && st.active === false)) {
+            clearInterval(poll);
+            alert("Regeneration failed — check your API key/quota and try again.");
             resolve();
           }
         } catch {}

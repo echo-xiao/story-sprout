@@ -12,7 +12,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from src.config import GENERATED_DIR
 from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
-    _active_regens, _load_json, _require_user_key, _save_json,
+    _active_generations, _active_regens, _load_json, _require_user_key, _save_json,
+    book_generation_active, book_regen_active, invalidate_chapter_consistency,
     segment_page_num, update_chapter_data_page, write_json_atomic,
 )
 from starlette.concurrency import run_in_threadpool
@@ -21,14 +22,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Chapters currently generating (book_id, ch_idx). Prevents a second subprocess
-# from being spawned for a chapter that's already running (which would double-hit
-# Gemini and race on progress.json / agent_log.json). Single-instance scope —
-# matches the Cloud Run min-instances=1 deployment.
-_active_generations: set[tuple[str, int]] = set()
 
-
-def _restore_from_history(current_stem: Path, history_stem: Path) -> None:
+def _restore_from_history(current_stem: Path, history_stem: Path,
+                          quality_pair: tuple[Path, Path] | None = None) -> None:
     """Put back the file a regen moved to history when no new file appeared.
 
     Every regen endpoint moves the current image to history BEFORE generating
@@ -36,6 +32,11 @@ def _restore_from_history(current_stem: Path, history_stem: Path) -> None:
     fails — including the silent path where all Gemini attempts fail without
     raising — the asset would simply vanish and every dependent feature
     (quality check, reference feeding) starts 404ing until a manual restore.
+
+    quality_pair=(current_quality_path, history_quality_path): when the regen
+    also archived the page's quality JSON, restore it alongside the image —
+    otherwise the restored image shows as never-QA'd and the next chapter run
+    burns a redundant vision call re-checking it.
     """
     if any(Path(f"{current_stem}{ext}").exists() for ext in (".png", ".jpg")):
         return  # a new file was generated — nothing to restore
@@ -48,7 +49,29 @@ def _restore_from_history(current_stem: Path, history_stem: Path) -> None:
                 logger.warning("Regen produced no file — restored %s from history", current_stem.name)
             except OSError:
                 pass
+            if quality_pair is not None:
+                cur_q, hist_q = quality_pair
+                if hist_q.exists() and not cur_q.exists():
+                    try:
+                        cur_q.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(hist_q, cur_q)
+                    except OSError:
+                        pass
             return
+
+
+@router.get("/api/book/{book_id}/regen-active")
+async def get_regen_active(book_id: str, kind: str, key: str) -> dict[str, bool]:
+    """Whether a regeneration claim is currently held for one asset.
+
+    Sheet/scene/special regens have no marker file — on failure they restore
+    the old image, so to a file-existence poll failure looks identical to
+    success. The frontend polls this: claim gone + no new file = failed.
+    kind: "segment" | "character" | "scene" | "special"; key: seg id /
+    character name / scene name / "type:chapter".
+    """
+    ident: Any = int(key) if kind == "segment" and key.lstrip("-").isdigit() else key
+    return {"active": (book_id, kind, ident) in _active_regens}
 
 
 @router.get("/api/book/{book_id}/chapter/{ch_idx}/agent-log")
@@ -130,6 +153,12 @@ async def regenerate_segment_illustration(
     claim = (book_id, "segment", seg_id)
     if claim in _active_regens:
         raise HTTPException(status_code=409, detail="This page is already regenerating.")
+    if book_generation_active(book_id):
+        # The chapter subprocess writes page_NNN.* and chapter_data.json itself;
+        # a concurrent single-page regen would move the same file to history
+        # mid-run and the two writers would race.
+        raise HTTPException(status_code=409,
+                            detail="A chapter is currently generating for this book — wait for it to finish.")
 
     analysis = _load_json(book_id, "analysis.json")
     if not analysis:
@@ -263,7 +292,9 @@ async def regenerate_segment_illustration(
         # its image while the marker below still reports "complete".
         if not any((ch_dir / f"page_{page_num:03d}{ext}").exists() for ext in (".png", ".jpg")):
             _restore_from_history(ch_dir / f"page_{page_num:03d}",
-                                  history_dir / f"page_{page_num:03d}_{ts}")
+                                  history_dir / f"page_{page_num:03d}_{ts}",
+                                  quality_pair=(ch_base / "quality" / f"page_{page_num:03d}_quality.json",
+                                                history_dir / f"page_{page_num:03d}_{ts}_quality.json"))
             write_json_atomic(ch_base / f"regen_{seg_id}.json",
                               {"status": "error", "segment_id": seg_id,
                                "error": "Image generation failed (all attempts)."})
@@ -312,7 +343,8 @@ async def regenerate_segment_illustration(
             for ext in (".png", ".jpg"):
                 img = ch_dir / f"page_{page_num:03d}{ext}"
                 if img.exists():
-                    save_illustration(book_id, seg_id, str(page_prompt), str(img))
+                    save_illustration(book_id, seg_id,
+                                      json.dumps(page_prompt, ensure_ascii=False), str(img))
                     break
         except Exception as e:
             logger.warning("MongoDB sync failed for segment %d: %s", seg_id, e)
@@ -330,12 +362,7 @@ async def regenerate_segment_illustration(
 
         # The page image changed — the chapter-level consistency.json (served
         # verbatim by GET /chapter/{ch}/consistency) is stale now; drop it.
-        try:
-            consistency_path = ch_base / "consistency.json"
-            if consistency_path.exists():
-                consistency_path.unlink()
-        except OSError:
-            pass
+        invalidate_chapter_consistency(book_id, ch_idx)
 
         # Write completion marker (atomically — the frontend polls this file)
         import time as _t
@@ -363,7 +390,9 @@ async def regenerate_segment_illustration(
             # here clobbered a freshly generated image when the exception came
             # from a later step (e.g. the marker write).
             _restore_from_history(ch_dir / f"page_{page_num:03d}",
-                                  history_dir / f"page_{page_num:03d}_{ts}")
+                                  history_dir / f"page_{page_num:03d}_{ts}",
+                                  quality_pair=(ch_base / "quality" / f"page_{page_num:03d}_quality.json",
+                                                history_dir / f"page_{page_num:03d}_{ts}_quality.json"))
             write_json_atomic(ch_base / f"regen_{seg_id}.json",
                               {"status": "error", "segment_id": seg_id, "error": str(e)[:300]})
         finally:
@@ -417,6 +446,7 @@ async def _apply_deferred_text_sync(book_id: str, ch_idx: int) -> None:
         payload = []
 
     from src.routes.editor import _analysis_lock
+    user_won: list[tuple[int, str]] = []  # (segment_id, user_text) — sync to chapter_data below
     async with _analysis_lock(book_id):
         analysis = _load_json(book_id, "analysis.json")
         if analysis:
@@ -425,8 +455,16 @@ async def _apply_deferred_text_sync(book_id: str, ch_idx: int) -> None:
             for item in payload:
                 seg = by_id.get(item.get("segment_id"))
                 text = item.get("simplified_text", "")
-                if seg is None or not text or seg.get("simplified_text"):
-                    continue  # unknown segment, no text, or user/kept text — skip
+                if seg is None or not text:
+                    continue  # unknown segment or no text — skip
+                if seg.get("simplified_text"):
+                    # User typed text during the run — theirs wins. But the
+                    # subprocess already wrote ITS text into chapter_data.json
+                    # (the PDF source); record the user text to write back, or
+                    # the editor and the printed book diverge permanently.
+                    if seg.get("simplified_text") != text:
+                        user_won.append((seg.get("id"), seg.get("simplified_text")))
+                    continue
                 seg["simplified_text"] = text
                 if item.get("scene_direction"):
                     seg["scene_direction"] = item["scene_direction"]
@@ -434,6 +472,11 @@ async def _apply_deferred_text_sync(book_id: str, ch_idx: int) -> None:
             if changed:
                 _save_json(book_id, "analysis.json", analysis)
                 logger.info("Applied deferred text sync for %s ch%02d: %d pages", book_id, ch_idx, changed)
+            segments = analysis.get("segments", [])
+            for seg_id, user_text in user_won:
+                update_chapter_data_page(book_id, ch_idx,
+                                         segment_page_num(segments, ch_idx, seg_id),
+                                         text=user_text)
     payload_path.unlink(missing_ok=True)
 
 
@@ -451,6 +494,11 @@ async def generate_chapter_endpoint(
     key = (book_id, ch_idx)
     if key in _active_generations:
         return {"status": "already_generating", "book_id": book_id, "chapter": ch_idx}
+    if book_regen_active(book_id):
+        # A per-asset regen is moving files to history / writing chapter_data
+        # right now; the subprocess would race it on the same files.
+        raise HTTPException(status_code=409,
+                            detail="A page/sheet regeneration is still running for this book — retry in a moment.")
 
     # Initialize progress file BEFORE claiming the key: if this raises (e.g.
     # disk full), the key must not stay claimed — only _gen's finally releases

@@ -6,15 +6,13 @@ const api = axios.create({
   timeout: 300000,
 });
 
-// BYOK: attach the visitor's own Gemini key (+ email) to every request from
+// BYOK: attach the visitor's own Gemini key to every request from
 // localStorage. Generation endpoints require it server-side (403 otherwise) and
 // bill it to the user's quota; read-only endpoints simply ignore it.
 api.interceptors.request.use((config) => {
   if (typeof window !== "undefined") {
     const key = localStorage.getItem("pbg_api_key");
-    const email = localStorage.getItem("pbg_email");
     if (key) config.headers["X-Gemini-Key"] = key;
-    if (email) config.headers["X-User-Email"] = email;
   }
   return config;
 });
@@ -138,6 +136,15 @@ export async function restoreSegmentVersion(bookId: string, segId: number, versi
 export async function regenerateSegment(bookId: string, segId: number) {
   const { data } = await api.post(`/book/${bookId}/segment/${segId}/regenerate`);
   return data;
+}
+
+// Whether the backend still holds an active regen claim for kind/key (kind:
+// "character" | "scene" | "special"; key: char name / scene name /
+// `${type}:${chapter}`). Used by polls to detect silent failures — on failure
+// the backend restores the old image, so the file watch alone can't tell.
+export async function getRegenActive(bookId: string, kind: string, key: string) {
+  const { data } = await api.get(`/book/${bookId}/regen-active`, { params: { kind, key } });
+  return data as { active: boolean };
 }
 
 export async function getRegenStatus(bookId: string, segId: number) {

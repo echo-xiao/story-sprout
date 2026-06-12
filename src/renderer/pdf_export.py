@@ -58,13 +58,13 @@ def export_pdf(
     output_path: str,
     cover_image: str = "",
     special_dir: str = "",
-    chapter_num: int | None = None,
-    chapter_nums: list[int] | None = None,
 ) -> str:
     """Export the picture book as a PDF.
 
     Pages with images use the image as full-page (text is already embedded
-    by Gemini in the illustration). No additional text overlay.
+    by Gemini in the illustration). No additional text overlay. Chapter
+    cover/ending insertion is driven entirely by each page's `_chapter_num`
+    tag (set by build_combined_pdf).
 
     Args:
         pages: List of page dicts with 'image_path' and 'text'.
@@ -72,18 +72,12 @@ def export_pdf(
         output_path: Where to save the PDF.
         cover_image: Override book cover image path.
         special_dir: Directory containing special page images.
-        chapter_num: Single chapter number (legacy, for backward compat).
-        chapter_nums: List of chapter numbers to include special pages for.
     """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     if not special_dir:
         special_dir = str(output.parent / "special")
-
-    # Normalize chapter_nums
-    if chapter_nums is None and chapter_num is not None:
-        chapter_nums = [chapter_num]
 
     width, height = PAGE_SIZE
     font = _register_fonts()

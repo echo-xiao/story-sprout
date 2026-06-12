@@ -49,15 +49,19 @@ def test_restore_version_refused_while_regen_in_flight(client, monkeypatch, tmp_
     assert resp.status_code == 409
 
 
-def test_second_preprocess_kickoff_is_refused(client):
+def test_second_preprocess_kickoff_is_refused(client, monkeypatch, tmp_path):
     from src.routes import books
-    books._active_preprocesses.add("somebook")
+    monkeypatch.setattr("src.routes.books.GENERATED_DIR", tmp_path)
+    source = "somebook\nhello world"
+    # book_id is now slug + content hash (collision fix) — claim the real id.
+    book_id = books._compute_book_id(source)
+    books._active_preprocesses.add(book_id)
     try:
-        resp = client.post("/api/generate", json={"source_text": "somebook\nhello world"})
+        resp = client.post("/api/generate", json={"source_text": source})
         assert resp.status_code == 409
         assert "already preprocessing" in resp.json()["detail"]
     finally:
-        books._active_preprocesses.discard("somebook")
+        books._active_preprocesses.discard(book_id)
 
 
 def test_preprocess_claim_released_even_on_crash(monkeypatch, tmp_path):

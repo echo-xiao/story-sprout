@@ -26,6 +26,7 @@ vi.mock("@/lib/api", () => ({
   getCharacterSheetHistory: vi.fn(),
   autofillCharacterDetails: vi.fn(),
   checkCharacterSheetQuality: vi.fn(),
+  getRegenActive: vi.fn(),
 }));
 
 const mockAutofill = vi.mocked(autofillCharacterDetails);

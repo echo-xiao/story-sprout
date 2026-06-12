@@ -33,14 +33,21 @@ export function UploadForm({ onStartGeneration }: Props) {
 
     // Persist for convenience (only what was provided)
     if (email.trim()) localStorage.setItem("pbg_email", email.trim());
-    if (apiKey.trim()) localStorage.setItem("pbg_api_key", apiKey.trim());
+    if (apiKey.trim()) {
+      localStorage.setItem("pbg_api_key", apiKey.trim());
+    } else {
+      // The user cleared the field — stop sending the previously-stored key
+      // (the request interceptor reads it from localStorage forever otherwise).
+      localStorage.removeItem("pbg_api_key");
+    }
 
     setLoading(true);
 
     try {
+      // The Gemini key reaches the backend via the X-Gemini-Key header (added
+      // by the api interceptor from localStorage) — the body field was ignored.
       const finalConfig = {
         email: email.trim(),
-        gemini_api_key: apiKey.trim(),
       };
 
       // Fetch text from URL via backend

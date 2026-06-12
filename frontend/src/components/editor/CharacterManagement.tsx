@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Users, RefreshCw, Shield } from "lucide-react";
-import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails, checkCharacterSheetQuality } from "@/lib/api";
+import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails, checkCharacterSheetQuality, getRegenActive } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
 import type { CharacterInfo } from "@/types";
 
@@ -133,11 +133,15 @@ export default function CharacterManagement({
   // render body — calling setState (selectChar) during render warns under
   // StrictMode and can loop.
   useEffect(() => {
+    // When a navigation target exists, let the navigateToChar effect own the
+    // selection — on mount both effects see render-1 state and this one runs
+    // LAST, so it used to override deep links back to the first character.
+    if (navigateToChar) return;
     if (selected && Object.keys(editing).length === 0) {
       selectChar(selected);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected]);
+  }, [selected, navigateToChar]);
 
   // Regenerate a character's sheet BY NAME (not the possibly-stale selectedChar),
   // poll until it lands, bust the preview cache, then auto quality-check.
@@ -145,6 +149,7 @@ export default function CharacterManagement({
   const regenAndCheck = async (charName: string) => {
     setRegenning(true);
     setQualityResult(null);
+    let failed = false;
     try {
       await regenerateCharacterSheet(bookId, charName);
       // Poll until new sheet appears instead of blindly waiting 30s
@@ -156,6 +161,16 @@ export default function CharacterManagement({
             if (hist.images?.some(img => img.version === "current")) {
               clearInterval(poll);
               resolve();
+              return;
+            }
+            // No new sheet yet — if the backend dropped its regen claim, the
+            // run failed (it restores the old image, so the file watch can't tell).
+            const st = await getRegenActive(bookId, "character", charName).catch(() => null);
+            if (st && st.active === false) {
+              failed = true;
+              clearInterval(poll);
+              alert("Regeneration failed — check your API key/quota and try again.");
+              resolve();
             }
           } catch {}
         }, 5000);
@@ -166,6 +181,7 @@ export default function CharacterManagement({
     } finally {
       setRegenning(false);
     }
+    if (failed) return; // nothing new to quality-check
     // Auto quality check after generation completes
     setCheckingQuality(true);
     try {
@@ -192,6 +208,7 @@ export default function CharacterManagement({
     }
     setGenAllRunning(true);
     try {
+      let failed = false;
       for (let i = 0; i < toGenerate.length; i++) {
         const char = toGenerate[i];
         setGenAllProgress(`${i + 1}/${toGenerate.length}`);
@@ -207,12 +224,25 @@ export default function CharacterManagement({
                 if (hist.images?.some(img => img.version === "current")) {
                   clearInterval(poll);
                   resolve();
+                  return;
+                }
+                // No sheet yet — if the backend dropped its regen claim, the
+                // run failed (it restores the old image, so the file watch
+                // can't tell). Stop the whole run: the next ones (same
+                // key/quota) would fail the same way.
+                const st = await getRegenActive(bookId, "character", char.canonical_name).catch(() => null);
+                if (st && st.active === false) {
+                  failed = true;
+                  clearInterval(poll);
+                  alert("Regeneration failed — check your API key/quota and try again.");
+                  resolve();
                 }
               } catch {}
             }, 10000);
             setTimeout(() => { clearInterval(poll); resolve(); }, 240000);
           });
         } catch {}
+        if (failed) break;
       }
       // Final refresh
       const finalData = await getCharacters(bookId);

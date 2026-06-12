@@ -25,6 +25,10 @@ def env(monkeypatch, tmp_path):
         calls["annotate"] += 1
         for s in segs:
             s["scene_summary"] = f"summary of: {s['text'][:20]}"
+            # Real _llm_annotate_chapter marks segments it annotated; the
+            # caller only checkpoints fully-annotated chapters (and strips
+            # the marker). Mirror that contract here.
+            s["_annotated"] = True
         return segs
 
     monkeypatch.setattr(pipeline, "_llm_annotate_chapter", fake_annotate)

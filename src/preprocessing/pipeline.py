@@ -16,7 +16,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -374,7 +376,10 @@ Return JSON: {{"annotations": [...]}}"""
         try:
             key = int(key)
         except (TypeError, ValueError):
-            key = idx + 1
+            # Unparseable scene_number: fall back to list position, but never
+            # OVERWRITE a genuine annotation already claimed at that key.
+            annotations.setdefault(idx + 1, a)
+            continue
         annotations[key] = a
 
     # A parseable-but-misnumbered response (empty list, 0-based numbering,
@@ -395,6 +400,11 @@ Return JSON: {{"annotations": [...]}}"""
             # No annotation for this segment — leave its fields untouched
             # rather than overwriting them with empty defaults.
             continue
+        # Mark which segments actually received an annotation so the caller
+        # can refuse to checkpoint a PARTIALLY annotated chapter (a checkpoint
+        # with empty defaults would otherwise replay forever). Stripped by the
+        # caller before anything is dumped to checkpoint/analysis.
+        seg["_annotated"] = True
         llm_chars = ann.get("characters_in_scene")
         if llm_chars is not None:
             # characters_in_scene is now [{name, action}, ...]
@@ -419,12 +429,20 @@ Return JSON: {{"annotations": [...]}}"""
 # Main
 # ═══════════════════════════════════════════════════════════════
 
+def _write_text_atomic(path: Path, text: str) -> None:
+    """tmp file + os.replace — the web parent polls these files cross-process,
+    so a plain write could be seen half-written (torn JSON)."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _save(preprocess_dir, name, data, subdir=None):
     """Save data as JSON to the preprocess directory and MongoDB."""
     target = preprocess_dir / subdir if subdir else preprocess_dir
     target.mkdir(parents=True, exist_ok=True)
     path = target / f"{name}.json"
-    path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    _write_text_atomic(path, json.dumps(data, indent=2, default=str, ensure_ascii=False))
     print(f"  → {path.relative_to(GENERATED_DIR)}")
 
     # Also save to MongoDB (extract book_id from preprocess_dir path)
@@ -533,10 +551,86 @@ def _layer1_extract_text(input_path, book_id, preprocess_dir):
     return title, book_id, full_text, chapters, preprocess_dir
 
 
+# ---------------------------------------------------------------------------
+# Layer 2/3 checkpointing
+#
+# Only Layer 6 used to be checkpointed. Layers 2-3 (LLM character/location
+# identification) re-ran on every attempt; being non-deterministic, their
+# output shifted aliases → cleaned text → segmentation → every Layer-6
+# fingerprint mismatched, so resuming after a timeout re-billed EVERYTHING.
+# A sidecar (checkpoints.json) records a fingerprint of each layer's inputs;
+# when it matches and the output file exists, the saved file is reused and
+# the LLM calls are skipped. The llm_characters.json / llm_locations.json
+# schemas are unchanged (other code reads them).
+# ---------------------------------------------------------------------------
+
+def _layer_input_fingerprint(title: str, chapters: list[dict]) -> str:
+    """md5 over the title + chapter texts — the identity a Layer-2/3 result is valid for."""
+    h = hashlib.md5()
+    h.update((title or "").encode("utf-8"))
+    for ch in chapters:
+        h.update(b"\x00")
+        h.update((ch.get("text") or "").encode("utf-8"))
+    return h.hexdigest()
+
+
+def _load_checkpoints(preprocess_dir: Path) -> dict:
+    try:
+        data = json.loads((preprocess_dir / "checkpoints.json").read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_checkpoint(preprocess_dir: Path, key: str, fingerprint: str) -> None:
+    ckpts = _load_checkpoints(preprocess_dir)
+    ckpts[key] = fingerprint
+    preprocess_dir.mkdir(parents=True, exist_ok=True)
+    _write_text_atomic(preprocess_dir / "checkpoints.json",
+                       json.dumps(ckpts, indent=2, ensure_ascii=False))
+
+
 def _layer2_identify_characters(book_id, preprocess_dir, chapters, title):
     """Layer 2: LLM character identification + location identification."""
     # Characters
     print("\n[Layer 2/6] LLM character identification (Gemini)...")
+    fingerprint = _layer_input_fingerprint(title, chapters)
+    ckpts = _load_checkpoints(preprocess_dir)
+
+    cached_characters = None
+    if ckpts.get("layer2_fp") == fingerprint:
+        try:
+            data = json.loads((preprocess_dir / "llm_characters.json").read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("characters"), list):
+                cached_characters = data["characters"]
+        except (OSError, ValueError):
+            cached_characters = None
+    if cached_characters is not None:
+        print(f"  Reusing checkpointed llm_characters.json ({len(cached_characters)} characters) — inputs unchanged")
+        characters = cached_characters
+    else:
+        characters = _identify_and_fill_characters(title, chapters)
+        _save(preprocess_dir, "llm_characters", {"characters": characters})
+        _record_checkpoint(preprocess_dir, "layer2_fp", fingerprint)
+
+    # Locations
+    print("  Identifying key locations...")
+    if ckpts.get("layer3_fp") == fingerprint and (preprocess_dir / "llm_locations.json").exists():
+        print("  Reusing checkpointed llm_locations.json — inputs unchanged")
+    else:
+        t1 = time.time()
+        locations = _llm_identify_locations(title, chapters)
+        print(f"  {len(locations)} locations in {time.time() - t1:.1f}s:")
+        for loc in locations:
+            print(f"    {loc.get('name', '?')} ({loc.get('importance', '?')})")
+        _save(preprocess_dir, "llm_locations", {"locations": locations})
+        _record_checkpoint(preprocess_dir, "layer3_fp", fingerprint)
+
+    return characters
+
+
+def _identify_and_fill_characters(title, chapters):
+    """LLM character identification + visual-detail autofill (Layer 2 body)."""
     t0 = time.time()
     characters = _llm_identify_characters(title, chapters)
     print(f"  {len(characters)} characters in {time.time() - t0:.1f}s:")
@@ -574,17 +668,6 @@ Return JSON:
                 print(f"    Filled: {c['canonical_name']}")
             except Exception as e:
                 print(f"    Failed for {c['canonical_name']}: {e}")
-
-    _save(preprocess_dir, "llm_characters", {"characters": characters})
-
-    # Locations
-    print("  Identifying key locations...")
-    t1 = time.time()
-    locations = _llm_identify_locations(title, chapters)
-    print(f"  {len(locations)} locations in {time.time() - t1:.1f}s:")
-    for loc in locations:
-        print(f"    {loc.get('name', '?')} ({loc.get('importance', '?')})")
-    _save(preprocess_dir, "llm_locations", {"locations": locations})
 
     return characters
 
@@ -720,13 +803,18 @@ def _layer5_segment_text(book_id, preprocess_dir, cleaned_chapters, cleaned_full
     return all_segments, ch_seg_groups
 
 
-def _annotation_fingerprint(segs) -> list[str]:
-    """Per-segment text hashes — the identity a chapter checkpoint is valid for."""
-    import hashlib
-    return [
+def _annotation_fingerprint(segs, characters=None) -> list[str]:
+    """Per-segment text hashes + a roster hash — the identity a chapter
+    checkpoint is valid for. Annotations reference canonical character names,
+    so a roster change (rename / different dedup outcome on a re-run) must
+    invalidate the replay too, not just a text change."""
+    hashes = [
         hashlib.md5((s.get("text") or "").encode("utf-8")).hexdigest()[:12]
         for s in segs
     ]
+    roster = "|".join(sorted(c.get("canonical_name", "") for c in (characters or [])))
+    hashes.append("roster:" + hashlib.md5(roster.encode("utf-8")).hexdigest()[:12])
+    return hashes
 
 
 def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_seg_groups, skip_sheets):
@@ -742,6 +830,7 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
 
     sorted_ch_keys = sorted(ch_seg_groups.keys())
     skipped = 0
+    failed_chapters: list[int] = []
     for ch_idx in tqdm(sorted_ch_keys, desc="  Annotating chapters", unit="ch"):
         segs = ch_seg_groups[ch_idx]
         ch_title = chapters[ch_idx].get("title", f"Ch {ch_idx}") if ch_idx < len(chapters) else "?"
@@ -751,19 +840,25 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
         # re-extract characters/aliases (LLM, non-deterministic) → cleaned text
         # changes → TextTiling boundaries shift — blindly replaying by index
         # pasted annotations onto different text and left extra segments
-        # unannotated. Fingerprint = per-segment text hashes.
-        fingerprint = _annotation_fingerprint(segs)
+        # unannotated. Fingerprint = per-segment text hashes + character roster.
+        fingerprint = _annotation_fingerprint(segs, characters)
         replayed = False
         if checkpoint_file.exists():
-            cached = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+            try:
+                cached = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                cached = None  # torn/corrupt checkpoint → re-annotate
             if isinstance(cached, dict):
                 annotations = cached.get("annotations", [])
                 replayable = cached.get("fingerprint") == fingerprint
-            else:
+            elif isinstance(cached, list):
                 # Legacy list checkpoint (pre-fingerprint): length match is the
                 # best validation available.
                 annotations = cached
                 replayable = len(cached) == len(segs)
+            else:
+                annotations = []
+                replayable = False
             if replayable:
                 for seg, ann in zip(segs, annotations):
                     seg.update(ann)
@@ -774,9 +869,16 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
         if not replayed:
             try:
                 segs = _llm_annotate_chapter(title, ch_title, segs, characters)
-                # Save checkpoint
-                checkpoint_file.write_text(
-                    json.dumps({
+                # Only checkpoint a FULLY annotated chapter. A partial match
+                # (e.g. 3 of 10 scene_numbers lined up) used to write a
+                # checkpoint whose unmatched segments carried empty defaults —
+                # permanently, since later runs replay it under a valid
+                # fingerprint instead of re-annotating.
+                all_annotated = all(s.get("_annotated") for s in segs)
+                for s in segs:
+                    s.pop("_annotated", None)
+                if all_annotated:
+                    _write_text_atomic(checkpoint_file, json.dumps({
                         "fingerprint": fingerprint,
                         "annotations": [{
                             "characters_in_scene": s.get("characters_in_scene", []),
@@ -790,11 +892,20 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
                             # field here silently loses it for every resumed book.
                             "simplified_text": s.get("simplified_text", ""),
                         } for s in segs],
-                    }, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
+                    }, indent=2, ensure_ascii=False))
+                else:
+                    n_done = sum(1 for s in segs if s.get("scene_summary"))
+                    tqdm.write(
+                        f"  WARNING: Chapter {ch_idx} only partially annotated "
+                        f"(~{n_done}/{len(segs)} segments) — checkpoint NOT written, "
+                        f"will re-annotate on the next run"
+                    )
             except Exception as e:
                 tqdm.write(f"  WARNING: Chapter {ch_idx} annotation failed: {e}")
+                failed_chapters.append(ch_idx)
+            finally:
+                for s in segs:
+                    s.pop("_annotated", None)
 
         # Assign stable IDs and collect events
         seg_ids = []
@@ -820,6 +931,20 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
 
     if skipped:
         print(f"  Skipped {skipped} chapters (already annotated)")
+
+    if failed_chapters:
+        print("\n" + "!" * 64)
+        print(f"  WARNING: annotation FAILED for {len(failed_chapters)}/{len(sorted_ch_keys)} "
+              f"chapters: {failed_chapters}")
+        print("  Their segments carry no annotations; re-run preprocess to retry.")
+        print("!" * 64)
+        if len(failed_chapters) == len(sorted_ch_keys):
+            # Nothing was annotated — a "successful" exit here would let the
+            # parent mark the run complete over unusable data. Exit nonzero so
+            # the web flow writes error.json / run_status "failed".
+            print("ERROR: LLM annotation failed for ALL chapters — aborting preprocess.",
+                  file=sys.stderr)
+            sys.exit(3)
 
     # Generate chapter-level summaries from segment scene_summaries
     print("\n  Generating chapter summaries...")
@@ -888,6 +1013,9 @@ Return JSON: {{"summary": "..."}}""")
         "characters": final_characters,
         "key_events": all_events,
         "character_profiles": character_profiles,
+        # Additive: chapters whose LLM annotation raised this run (their
+        # segments carry no annotations). Empty on a clean run.
+        "annotation_failed_chapters": failed_chapters,
     }
     _save(preprocess_dir, "analysis", analysis)
     _save(preprocess_dir, "chapter_segments", chapter_segments_map)

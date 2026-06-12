@@ -15,8 +15,12 @@ _CHAPTER_PATTERNS = [
     re.compile(r"^(\d+\)\s+\S.*)"),  # "1) Title"
 ]
 
-# Standalone Roman numerals as chapter markers (I, II, III, ..., IX)
-_ROMAN_NUMERAL_PATTERN = re.compile(r"^(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV)$")
+# Standalone Roman numerals as chapter markers, valid for 1-39 (I..XXXIX).
+# The old alternation capped at XV (plus bare XX/XXX), so chapters XVI+ were
+# not detected and silently merged into the previous chapter. The lookahead
+# rejects the empty string; tens then units composition rejects invalid forms
+# like IIII, VX or XXXX.
+_ROMAN_NUMERAL_PATTERN = re.compile(r"^(?=[IVX])(X{0,3})(IX|IV|V?I{0,3})$")
 
 # Blank-line threshold: N+ consecutive blank lines suggest a section break
 _BLANK_LINE_BREAK = re.compile(r"\n{4,}")

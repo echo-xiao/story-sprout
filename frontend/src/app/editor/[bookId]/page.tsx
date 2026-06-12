@@ -19,6 +19,7 @@ import {
   generateSummary,
   getSegmentHistory,
   checkSegmentQuality,
+  getRegenActive,
   getRegenStatus,
   getLocations,
   getSpecialPages,
@@ -80,6 +81,9 @@ export default function EditorPage() {
 
   const [activeTab, setActiveTab] = useState<"pages" | "characters" | "scenes">(initialTab);
   const [navigateToChar, setNavigateToChar] = useState<string | null>(null);
+  // Scene to land on when jumping to the Scenes tab from the Pages tab (the
+  // panel remounts on tab switch and reads it via initialScene at mount).
+  const [sceneNav, setSceneNav] = useState<string | null>(null);
   const [chapters, setChapters] = useState<Record<string, ChapterInfo>>({});
   const [meta, setMeta] = useState<{ title?: string }>({});
   const [characters, setCharacters] = useState<CharacterInfo[]>([]);
@@ -202,11 +206,26 @@ export default function EditorPage() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
+  // Merge server segments into local state while PRESERVING dirty (unsaved)
+  // local copies — async completion handlers (chapter gen, regen, restore,
+  // rename) otherwise clobber edits the user typed while they ran.
+  const applyServerSegments = (server: Segment[]) => {
+    setSegments(prev => server.map(s => dirtySegIds.current.has(s.id) ? (prev.find(p => p.id === s.id) ?? s) : s));
+    setSelectedSegment(prev => {
+      if (!prev) return prev;
+      if (dirtySegIds.current.has(prev.id)) return prev; // keep local dirty copy
+      return server.find(s => s.id === prev.id) || prev;
+    });
+  };
+
   // Refresh the set of stale pages (deps regenerated after the page image) for a chapter
   const refreshStale = async (chIdx: number | null) => {
     if (chIdx === null) return;
     try {
       const data = await getStalePages(bookId, chIdx);
+      // The user may have switched chapters during the await — don't overwrite
+      // the now-selected chapter's stale flags with another chapter's.
+      if (selectedChapterRef.current !== chIdx) return;
       const ids = new Set<number>();
       const reasons: Record<number, string> = {};
       (data.stale || []).forEach((s) => {
@@ -216,6 +235,7 @@ export default function EditorPage() {
       setStaleSegIds(ids);
       setStaleReasons(reasons);
     } catch {
+      if (selectedChapterRef.current !== chIdx) return;
       setStaleSegIds(new Set());
       setStaleReasons({});
     }
@@ -245,10 +265,15 @@ export default function EditorPage() {
           setChapterProgress(null);
           if (selectedChapter === generatingChapter) {
             const data = await getChapterSegments(bookId, generatingChapter);
-            setSegments(data.segments || []);
-            // Remap the open segment to its fresh copy (new illustration_url etc.)
-            setSelectedSegment(prev => prev ? (data.segments || []).find((s: Segment) => s.id === prev.id) || prev : prev);
+            // Re-check after the await — the user may have switched chapters
+            // meanwhile, and these would overwrite the new chapter's segments.
+            if (selectedChapterRef.current === generatingChapter) {
+              applyServerSegments(data.segments || []);
+            }
           }
+          // Chapter generation also creates covers server-side — refresh the
+          // special pages list (fetched only once on mount otherwise).
+          getSpecialPages(bookId).then(d => setSpecialPages(d.pages || [])).catch(() => {});
           refreshStale(generatingChapter);  // pages regenerated → clear stale red dots
         }
       } catch {}
@@ -297,9 +322,10 @@ export default function EditorPage() {
                 if (prog.status === "complete" && selectedChapterRef.current === chIdx) {
                   getChapterSegments(bookId, chIdx)
                     .then(data => {
-                      setSegments(data.segments || []);
-                      // Remap the open segment to its fresh copy (new illustration_url etc.)
-                      setSelectedSegment(prev => prev ? (data.segments || []).find((s: Segment) => s.id === prev.id) || prev : prev);
+                      // Re-check after the fetch — the user may have switched
+                      // chapters while it was in flight.
+                      if (selectedChapterRef.current !== chIdx) return;
+                      applyServerSegments(data.segments || []);
                     })
                     .catch(() => {});
                 }
@@ -329,6 +355,10 @@ export default function EditorPage() {
       const charData = await getCharacters(bookId);
       setSheets(charData.sheets || {});
     } catch {}
+
+    // Chapter generation also creates covers server-side — refresh the
+    // special pages list (fetched only once on mount otherwise).
+    getSpecialPages(bookId).then(d => setSpecialPages(d.pages || [])).catch(() => {});
 
     // Pages were regenerated — refresh stale indicators
     refreshStale(selectedChapterRef.current);
@@ -440,6 +470,10 @@ export default function EditorPage() {
   const [selectedSceneName, setSelectedSceneName] = useState<string | null>(initialScene);
 
   useEffect(() => {
+    // Don't rewrite the URL while the initial-load screen is still up — it
+    // would replaceState away the ?ch=&seg=&char= deep-link params before the
+    // data they're restored from has loaded.
+    if (loading) return;
     const params = new URLSearchParams();
     params.set("tab", activeTab);
     if (activeTab === "pages") {
@@ -451,13 +485,18 @@ export default function EditorPage() {
       params.set("scene", selectedSceneName);
     }
     window.history.replaceState(null, "", `/editor/${bookId}?${params.toString()}`);
-  }, [bookId, activeTab, selectedChapter, selectedSegment?.id, selectedCharName, selectedSceneName]);
+  }, [bookId, loading, activeTab, selectedChapter, selectedSegment?.id, selectedCharName, selectedSceneName]);
 
   // Auto-generate simplified text if empty — only when editing is enabled, so a
   // view-only / no-key visitor doesn't silently trigger paid LLM calls.
+  // In-flight segment ids: switching A→B→A must not fire a second (paid) call
+  // for A while the first is still running.
+  const simplifyInFlight = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (selectedSegId < 0 || !selectedSegment || selectedSegment.simplified_text || !canEdit) return;
     const segId = selectedSegId;
+    if (simplifyInFlight.current.has(segId)) return;
+    simplifyInFlight.current.add(segId);
     generateSimplifiedText(bookId, segId)
       .then((res) => {
         if (res.simplified_text) {
@@ -467,21 +506,34 @@ export default function EditorPage() {
           setSegments(prev => prev.map(s => s.id === segId && !s.simplified_text ? { ...s, simplified_text: res.simplified_text } : s));
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { simplifyInFlight.current.delete(segId); });
   }, [selectedSegId, canEdit]);
 
   // Load history when segment changes
   useEffect(() => {
     if (selectedSegId < 0) return;
-    getSegmentHistory(bookId, selectedSegId)
+    // Clear synchronously so the new segment doesn't render under the OLD
+    // segment's quality score / carousel for one round-trip.
+    setQualityResult(null);
+    setHistoryImages([]);
+    const segId = selectedSegId;
+    getSegmentHistory(bookId, segId)
       .then((data) => {
+        // Out-of-order guard: ignore a response that lands after the user
+        // switched segments (mirrors handleRunQualityCheck).
+        if (selectedSegIdRef.current !== segId) return;
         const images = data.images || [];
         setHistoryImages(images);
         // Auto-load quality for current version
         const current = images.find((img: any) => img.version === "current");
         setQualityResult(current?.quality || null);
       })
-      .catch(() => { setHistoryImages([]); setQualityResult(null); });
+      .catch(() => {
+        if (selectedSegIdRef.current !== segId) return;
+        setHistoryImages([]);
+        setQualityResult(null);
+      });
   }, [bookId, selectedSegId, regenerating]);
 
   // Save segment changes
@@ -540,6 +592,9 @@ export default function EditorPage() {
         scene_summary: selectedSegment.scene_summary,
         sentiment: selectedSegment.sentiment,
       });
+      // The PUT above just persisted this segment — it's no longer dirty
+      // (otherwise a false "unsaved changes" confirm appears later).
+      dirtySegIds.current.delete(segId);
       // Trigger regeneration. The BACKEND runs the QA check + bounded
       // self-correction (shared page service, same policy as the pipeline);
       // the frontend only triggers and waits — no client-side retry loop.
@@ -561,9 +616,11 @@ export default function EditorPage() {
                 // selected at click time — otherwise we'd overwrite the
                 // currently-selected chapter's segments with another chapter's.
                 const data = await getChapterSegments(bookId, chIdx);
-                const updated = data.segments?.find((s: Segment) => s.id === segId);
-                setSegments(data.segments || []);
-                if (updated) setSelectedSegment(prev => prev?.id === segId ? updated : prev);
+                // Re-check after the await: the user may have switched
+                // chapters while the fetch was in flight.
+                if (selectedChapterRef.current === chIdx) {
+                  applyServerSegments(data.segments || []);
+                }
               }
               resolve();
             }
@@ -721,6 +778,14 @@ export default function EditorPage() {
           // Via the ref: this poll runs up to 120s, the user may have
           // switched chapters since it started.
           refreshStale(selectedChapterRef.current);
+          return;
+        }
+        // No new sheet yet — if the backend dropped its regen claim, the run
+        // failed (it restores the old image, so the file watch can't tell).
+        const st = await getRegenActive(bookId, "character", canonicalName).catch(() => null);
+        if (st && st.active === false) {
+          clearInterval(poll);
+          alert("Regeneration failed — check your API key/quota and try again.");
         }
       } catch {}
     }, 5000);
@@ -737,24 +802,44 @@ export default function EditorPage() {
     try {
       await regenerateSpecialPage(bookId, spType, spChapter);
       await new Promise<void>((resolve) => {
+        // Track the timeout handle so EVERY poll exit cancels it — a leftover
+        // timer would clear regenSpecial in the middle of a LATER run.
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const stop = (poll: ReturnType<typeof setInterval>) => {
+          clearInterval(poll);
+          if (timeout) clearTimeout(timeout);
+        };
         const poll = setInterval(async () => {
-          if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
+          if (unmountedRef.current) { stop(poll); resolve(); return; }
           try {
             const data = await getSpecialPages(bookId);
             const found = data.pages.find(p => p.type === spType && (p.chapter ?? 0) === spChapter);
             if (found?.url) {
-              clearInterval(poll);
+              stop(poll);
               setSpecialPages(data.pages || []);
               setSelectedSpecial(found);
               setSpecialCacheBust(Date.now());
               setRegenSpecial(false);
               resolve();
+              return;
+            }
+            // No new file yet — if the backend dropped its regen claim, the
+            // run failed (it restores the old image, so the file watch can't tell).
+            const st = await getRegenActive(bookId, "special", `${spType}:${spChapter}`).catch(() => null);
+            if (st && st.active === false) {
+              stop(poll);
+              setRegenSpecial(false);
+              alert("Regeneration failed — check your API key/quota and try again.");
+              resolve();
             }
           } catch {}
         }, 5000);
-        setTimeout(() => { clearInterval(poll); setRegenSpecial(false); resolve(); }, 120000);
+        timeout = setTimeout(() => { clearInterval(poll); setRegenSpecial(false); resolve(); }, 120000);
       });
-    } catch { setRegenSpecial(false); }
+    } catch (e: any) {
+      setRegenSpecial(false);
+      alert(`Regenerate failed: ${e?.response?.data?.detail || e?.message || "Regenerate failed"}`);
+    }
   };
 
   // Restore a historical version from the carousel. This persists on the
@@ -771,9 +856,11 @@ export default function EditorPage() {
       await restoreSegmentVersion(bookId, segId, img.version);
       if (chIdx !== null && selectedChapterRef.current === chIdx) {
         const data = await getChapterSegments(bookId, chIdx);
-        setSegments(data.segments || []);
-        const updated = data.segments?.find((s: Segment) => s.id === segId);
-        if (updated) setSelectedSegment(prev => (prev?.id === segId ? updated : prev));
+        // Re-check after the await: the user may have switched chapters
+        // while the fetch was in flight.
+        if (selectedChapterRef.current === chIdx) {
+          applyServerSegments(data.segments || []);
+        }
       }
     } catch (e: any) {
       alert(`Restore failed: ${e?.response?.data?.detail || e?.message || e}`);
@@ -961,9 +1048,12 @@ export default function EditorPage() {
                 setSheets(d.sheets || {});
               }).catch(() => {});
               if (selectedChapter !== null) {
-                getChapterSegments(bookId, selectedChapter).then(d => {
-                  setSegments(d.segments || []);
-                  setSelectedSegment(prev => prev ? (d.segments || []).find((s: Segment) => s.id === prev.id) || prev : prev);
+                const chIdx = selectedChapter;
+                getChapterSegments(bookId, chIdx).then(d => {
+                  // Re-check after the fetch — the user may have switched
+                  // chapters while it was in flight.
+                  if (selectedChapterRef.current !== chIdx) return;
+                  applyServerSegments(d.segments || []);
                 }).catch(() => {});
               }
               setSheetCacheBust(v => v + 1);
@@ -980,8 +1070,15 @@ export default function EditorPage() {
         <SceneManagement
           bookId={bookId}
           canGenerate={canEdit}
-          initialScene={initialScene}
-          onSelectScene={setSelectedSceneName}
+          initialScene={sceneNav || initialScene}
+          onSelectScene={(name) => {
+            setSelectedSceneName(name);
+            // One-shot navigation target consumed — clearing is safe because
+            // SceneManagement only reads initialScene in its mount effect
+            // (keyed on bookId), which won't re-run when the prop reverts to
+            // `initialScene` (no `navigateToChar || initialChar` yank-back).
+            setSceneNav(null);
+          }}
           onSceneRegen={() => {
             refreshStale(selectedChapter);
             // SceneManagement keeps its own copy of locations/sceneSheets; sync the
@@ -1349,15 +1446,20 @@ export default function EditorPage() {
                     <h3 className="font-display font-bold text-gray-700 text-xs">Summary & Sentiment</h3>
                     <button
                       onClick={async () => {
+                        const segId = selectedSegment.id;
                         try {
-                          const res = await generateSummary(bookId, selectedSegment.id);
-                          const updated = {
-                            ...selectedSegment,
-                            scene_summary: res.scene_summary,
-                            sentiment: res.sentiment,
-                          };
-                          setSelectedSegment(updated);
-                          setSegments((prev) => prev.map((s) => (s.id === selectedSegment.id ? updated : s)));
+                          const res = await generateSummary(bookId, segId);
+                          // Merge into the LATEST state (not the click-time snapshot),
+                          // and only touch the open segment if the user hasn't
+                          // switched away while the LLM call was in flight.
+                          setSegments((prev) => prev.map((s) =>
+                            s.id === segId ? { ...s, scene_summary: res.scene_summary, sentiment: res.sentiment } : s));
+                          if (selectedSegIdRef.current === segId) {
+                            setSelectedSegment((prev) =>
+                              prev && prev.id === segId
+                                ? { ...prev, scene_summary: res.scene_summary, sentiment: res.sentiment }
+                                : prev);
+                          }
                         } catch (e) { console.error(e); }
                       }}
                       className="text-[10px] bg-sky/50 hover:bg-sky text-gray-700 px-2 py-0.5 rounded font-semibold"
@@ -1436,7 +1538,8 @@ export default function EditorPage() {
                     setNavigateToChar(charName);
                     setActiveTab("characters");
                   }}
-                  onNavigateToScene={() => {
+                  onNavigateToScene={(locName) => {
+                    setSceneNav(locName);
                     setActiveTab("scenes");
                   }}
                 />

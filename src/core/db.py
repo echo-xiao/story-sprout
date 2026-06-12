@@ -181,11 +181,13 @@ def update_segment(book_id: str, segment_id: int, updates: dict) -> bool:
     db = _get_db()
     if db is None:
         return False
-    db.segments.update_one(
+    result = db.segments.update_one(
         {"book_id": book_id, "id": segment_id},
         {"$set": updates},
     )
-    return True
+    # matched_count, not blind True — same contract as update_character: callers
+    # must be able to tell "updated" from "segment doesn't exist".
+    return result.matched_count > 0
 
 
 # ═══════════════════════════════════════════════════════════════
