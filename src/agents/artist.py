@@ -381,21 +381,36 @@ class ArtistAgent:
     def ensure_special_pages(
         self, data: dict, chapter_idx: int, segments: list[dict]
     ):
-        """Generate special pages if not already cached."""
+        """Generate special pages if not already cached.
+
+        Record-driven: title / summary / characters come from the SAME editable
+        record the editor and the web regen endpoint read (load_special_records),
+        so a whole-chapter cover matches what the editor draws. The chapter
+        summary is the LLM chapter summary built at preprocess — not a raw
+        truncation of the first segment's adult-novel prose.
+        """
         meta = data.get("meta", {})
         title = meta.get("title", "Untitled")
         from src.routes.helpers import load_character_profiles
+        from src.routes.editor import load_special_records
+        from src.generation.special_page_data import special_key
         profiles = load_character_profiles(self.book_id)
-        main = [p for p in profiles if p.get("role") in ("main", "supporting")][:5]
-        if not main:
-            main = profiles[:5]
+        records = load_special_records(self.book_id)
+
+        def _profiles_for(rec: dict) -> list[dict]:
+            names = rec.get("characters_in_scene") or []
+            chosen = [p for p in profiles if p.get("name") in names] if names else []
+            if not chosen:
+                chosen = [p for p in profiles if p.get("role") in ("main", "supporting")][:5] or profiles[:5]
+            return chosen
 
         # Book cover
         cover_exists = any(
             (self.special_dir / f"book_cover{ext}").exists() for ext in (".png", ".jpg")
         )
         if not cover_exists:
-            self.generate_book_cover(title, main)
+            book_rec = records.get("book_cover", {})
+            self.generate_book_cover(book_rec.get("title_text") or title, _profiles_for(book_rec))
 
         # Chapter cover
         ch_num = chapter_idx + 1
@@ -405,10 +420,11 @@ class ArtistAgent:
         )
         if not ch_cover_exists:
             from src.agents.analyzer import AnalyzerAgent
-            analyzer = AnalyzerAgent(self.book_id)
-            _, ch_title = analyzer.get_chapter_segments(data, chapter_idx)
-            summary = segments[0].get("text", "")[:200] if segments else ""
-            self.generate_chapter_cover(ch_title, ch_num, summary, main)
+            ch_rec = records.get(special_key("chapter_cover", chapter_idx), {})
+            _, ch_title = AnalyzerAgent(self.book_id).get_chapter_segments(data, chapter_idx)
+            summary = ch_rec.get("scene_summary", "")
+            self.generate_chapter_cover(ch_rec.get("title_text") or ch_title, ch_num,
+                                        summary, _profiles_for(ch_rec))
 
     def ensure_back_cover(self, data: dict):
         """Generate the book's closing page (back cover) if not already cached.
