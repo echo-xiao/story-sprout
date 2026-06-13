@@ -73,3 +73,28 @@ def test_no_overall_score_100_sentinel_remains():
     # The only runtime writer of a real overall is _recompute_overall.
     writers = re.findall(r'result\[["\']overall_score["\']\]\s*=', src)
     assert len(writers) == 1, f"overall_score written in {len(writers)} places, expected 1"
+
+
+def test_fatal_name_face_caps_page_overall():
+    """A name-face mismatch (that dim 0) on an otherwise-perfect page must NOT
+    average to 80 and skip self-correct — the fatal dim caps the overall."""
+    result = qc._normalize_page_quality({
+        "character_consistency": {"score": 100},
+        "spelling": {"score": 100},
+        "duplicate_characters": {"score": 100},
+        "name_face_mismatch": {"score": 0},
+        "character_count": {"score": 100},
+    })
+    assert result["overall_score"] == 0
+
+
+def test_high_fatal_dim_does_not_cap():
+    """A merely-imperfect fatal dim (>= 50) doesn't cap — overall is the mean."""
+    result = qc._normalize_page_quality({
+        "character_consistency": {"score": 80},
+        "spelling": {"score": 80},
+        "duplicate_characters": {"score": 80},
+        "name_face_mismatch": {"score": 80},
+        "character_count": {"score": 80},
+    })
+    assert result["overall_score"] == 80

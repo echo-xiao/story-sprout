@@ -268,7 +268,7 @@ Return JSON:
         result["character_name"] = character_name
         # Recompute overall from the dimensions — never trust the LLM headline
         # (it routinely passes a sheet whose appearance_match is 20).
-        _recompute_overall(result, _SHEET_QUALITY_DIMENSIONS)
+        _recompute_overall(result, _SHEET_QUALITY_DIMENSIONS, fatal=("appearance_match", "internal_consistency"))
 
         logger.info(
             "Character sheet quality for '%s': overall=%s, appearance=%s, consistency=%s, angles=%s, style=%s, text=%s",
@@ -338,13 +338,19 @@ _SHEET_QUALITY_DIMENSIONS = (
 )
 
 
-def _recompute_overall(result: dict, dimensions: tuple[str, ...]) -> None:
-    """Overwrite overall_score with the mean of the given dimension scores.
+def _recompute_overall(result: dict, dimensions: tuple[str, ...],
+                       fatal: tuple[str, ...] = ()) -> None:
+    """Overwrite overall_score with the mean of the dimension scores.
 
     The SINGLE place overall_score is computed for a real verdict — page AND
     sheet both pass through here, so neither trusts the LLM's headline score
     (which often disagrees with the dimensions, e.g. headline 85 while
     appearance_match is 20 → a broken sheet must NOT pass).
+
+    `fatal` dimensions can't be averaged away: a name-face mismatch (that dim
+    at 0) on an otherwise-perfect page would mean 80% and skip self-correct,
+    leaving a wrong-face page. When a fatal dimension genuinely fails (< 50),
+    it caps the overall down to its own score.
     """
     scores = []
     for dim in dimensions:
@@ -354,7 +360,10 @@ def _recompute_overall(result: dict, dimensions: tuple[str, ...]) -> None:
             result[dim] = block
         block["score"] = _coerce_score(block.get("score"))
         scores.append(block["score"])
-    result["overall_score"] = round(sum(scores) / len(scores)) if scores else 100
+    mean = round(sum(scores) / len(scores)) if scores else 100
+    caps = [result[d]["score"] for d in fatal
+            if isinstance(result.get(d), dict) and result[d].get("score", 100) < 50]
+    result["overall_score"] = min([mean] + caps)
 
 
 def _coerce_score(value) -> int:
@@ -379,7 +388,7 @@ def _normalize_page_quality(result: dict) -> dict:
     if not isinstance(result, dict):
         return _empty_page_quality()
 
-    _recompute_overall(result, _PAGE_QUALITY_DIMENSIONS)
+    _recompute_overall(result, _PAGE_QUALITY_DIMENSIONS, fatal=("name_face_mismatch", "duplicate_characters"))
 
     # Ensure the list fields the frontend reads always exist.
     result["character_consistency"].setdefault("characters", [])

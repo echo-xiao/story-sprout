@@ -106,11 +106,12 @@ def _rule_based_split(text: str) -> list[str]:
     if len(words) <= 50:
         return [text.strip()]
     target = 200
+    hard_cap = 500  # run-on text with no sentence punctuation must still break
     segments = []
     current: list[str] = []
     for word in words:
         current.append(word)
-        if len(current) >= target and word.endswith(('.', '!', '?')):
+        if (len(current) >= target and word.endswith(('.', '!', '?'))) or len(current) >= hard_cap:
             segments.append(' '.join(current))
             current = []
     if current:
@@ -149,7 +150,7 @@ def split_into_segments(
                   at least ``text`` and optionally ``title``.
 
     Returns:
-        List of segment dicts with keys: id, text, title, start_char, end_char.
+        List of segment dicts with keys: id, text, title (+ chapter info).
     """
     if not text or not text.strip():
         return []
@@ -200,16 +201,12 @@ def split_into_segments(
                     if segments:
                         segments[-1]["text"] += " " + sub_text
                     continue
-                sub_start = ch_text.find(sub_text[:50])
-                abs_start = ch_start + (sub_start if sub_start >= 0 else 0)
                 segments.append({
                     "id": seg_id,
                     "text": sub_text,
                     "title": ch_title if seg_id == 0 or sub_text == sub_segments[0] else None,
                     "chapter_idx": ch_idx,
                     "chapter_title": ch_title,
-                    "start_char": abs_start,
-                    "end_char": abs_start + len(sub_text),
                 })
                 seg_id += 1
 
@@ -240,36 +237,15 @@ def split_into_segments(
         # Fallback to rule-based
         raw_segments = _rule_based_split(text)
 
-    # Build result dicts with char offsets
+    # Build result dicts. (No char offsets: nothing slices the source by them,
+    # and the find()-based approximation could mislocate / return -1 — a hazard
+    # the moment someone trusted it. Segment text is carried verbatim.)
     result: list[dict] = []
-    search_start = 0
     for i, seg_text in enumerate(raw_segments):
-        # Find approximate position in original text
-        # Use first few words to locate
-        first_words = seg_text.split()[:5]
-        search_key = ' '.join(first_words) if first_words else seg_text[:30]
-        pos = text.find(search_key, search_start)
-        if pos == -1:
-            pos = search_start
-
-        # Find end by looking for last words
-        last_words = seg_text.split()[-5:]
-        end_key = ' '.join(last_words) if last_words else seg_text[-30:]
-        end_pos = text.find(end_key, pos)
-        if end_pos == -1:
-            end_char = pos + len(seg_text)
-        else:
-            end_char = end_pos + len(end_key)
-
-        title = _extract_title(seg_text)
-
         result.append({
             "id": i,
             "text": seg_text,
-            "title": title,
-            "start_char": pos,
-            "end_char": end_char,
+            "title": _extract_title(seg_text),
         })
-        search_start = max(search_start + 1, pos + 1)
 
     return result
