@@ -31,53 +31,18 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "picture_book_generator")
 
 
-# Image generation styles
-ILLUSTRATION_STYLES = {
-    "watercolor": "watercolor children's book illustration, soft pastel colors, rounded shapes, warm lighting, gentle and friendly style",
-    "risograph": (
-        "risograph print on rough textured paper, "
-        "visible paper grain and fiber texture throughout, "
-        "ink appears uneven and slightly blotchy like real screen printing, "
-        "misregistered color layers with visible offset between ink passes, "
-        "only 3 spot ink colors: mustard ochre, dark teal, and burnt sienna on cream paper, "
-        "hand-drawn imperfect lines, rough edges, organic shapes, "
-        "looks like a handmade zine printed on a Riso machine, "
-        "NOT clean digital art, NOT flat vector, NOT polished, "
-        "lo-fi, tactile, imperfect, charming, artisanal print quality"
-    ),
-    "flat": "flat vector children's book illustration, bold outlines, bright solid colors, minimal shading, modern geometric shapes",
-    "pencil": "soft colored pencil children's book illustration, gentle strokes, warm tones, textured paper background",
-    "gouache": (
-        "textured gouache painting children's book illustration, "
-        "thick opaque brushstrokes visible on rough paper texture, "
-        "hand-painted imperfect edges, paint slightly uneven and blotchy, "
-        "warm limited palette (ochre yellow, navy blue, cream white, burnt orange), "
-        "simple bold shapes with visible brush marks, "
-        "cozy handmade feel like painted with real gouache on textured paper, "
-        "NOT digital, NOT clean, NOT vector, NOT smooth gradients"
-    ),
-    "procreate_textured": (
-        "Procreate textured brush children's book illustration, "
-        "visible grainy brush texture like crayon or oil pastel on rough paper, "
-        "colors slightly uneven with paper grain showing through, "
-        "warm limited palette (mustard yellow, dark navy blue, burnt orange, cream), "
-        "hand-drawn imperfect shapes with rough textured edges, "
-        "cozy indie illustration style, tactile handmade quality, "
-        "like a linocut print or stamp with grain overlay, "
-        "simple bold compositions, NOT smooth, NOT polished, NOT vector"
-    ),
-    "color_monster": (
-        "children's picture book illustration inspired by The Color Monster by Anna Llenas, "
-        "mixed media collage style with textured paper cutouts, "
-        "bold saturated colors (each emotion/scene has a dominant color), "
-        "simple expressive characters with big eyes and exaggerated expressions, "
-        "white or very light background with lots of negative space, "
-        "visible paper texture and torn edges on color shapes, "
-        "playful hand-drawn elements mixed with collage, "
-        "warm and cozy feeling, NOT scary, NOT realistic"
-    ),
-}
-DEFAULT_STYLE = ILLUSTRATION_STYLES["color_monster"]
+# Illustration style — single style; the old 7-entry ILLUSTRATION_STYLES dict
+# had no picker anywhere (UI or API), so only this entry was ever used.
+DEFAULT_STYLE = (
+    "children's picture book illustration inspired by The Color Monster by Anna Llenas, "
+    "mixed media collage style with textured paper cutouts, "
+    "bold saturated colors (each emotion/scene has a dominant color), "
+    "simple expressive characters with big eyes and exaggerated expressions, "
+    "white or very light background with lots of negative space, "
+    "visible paper texture and torn edges on color shapes, "
+    "playful hand-drawn elements mixed with collage, "
+    "warm and cozy feeling, NOT scary, NOT realistic"
+)
 NEGATIVE_PROMPT = "scary, violent, dark, photorealistic, 3D render, adult content, blood, weapons"
 
 # Age presets
@@ -105,21 +70,3 @@ AGE_PRESETS = {
     },
 }
 
-# Picture book templates
-STORY_TEMPLATES = {
-    "classic": {
-        "structure": ["introduction", "problem", "attempt_1", "attempt_2", "climax", "resolution", "ending"],
-        "min_pages": 7,
-        "description": "Classic story arc with problem-solving",
-    },
-    "journey": {
-        "structure": ["departure", "encounter_1", "encounter_2", "encounter_3", "challenge", "transformation", "return"],
-        "min_pages": 7,
-        "description": "Journey/adventure structure",
-    },
-    "simple": {
-        "structure": ["setup", "event_1", "event_2", "event_3", "conclusion"],
-        "min_pages": 5,
-        "description": "Simple sequential events",
-    },
-}
