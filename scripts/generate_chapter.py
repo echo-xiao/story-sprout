@@ -123,7 +123,8 @@ def main():
 
     if args.cover_only:
         from src.agents.artist import ArtistAgent
-        profiles = data.get("analysis", {}).get("character_profiles", [])
+        from src.routes.helpers import load_character_profiles
+        profiles = load_character_profiles(args.book)
         main_chars = [p for p in profiles if p.get("role") in ("main", "supporting")][:5]
         if not main_chars:
             main_chars = profiles[:5]
@@ -142,7 +143,8 @@ def main():
             artist.ensure_back_cover(data)
         else:
             # Generate book cover + back cover only
-            profiles = data.get("analysis", {}).get("character_profiles", [])
+            from src.routes.helpers import load_character_profiles
+            profiles = load_character_profiles(args.book)
             main_chars = [p for p in profiles if p.get("role") in ("main", "supporting")][:5]
             if not main_chars:
                 main_chars = profiles[:5]

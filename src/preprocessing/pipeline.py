@@ -993,17 +993,6 @@ Return JSON: {{"summary": "..."}}""")
     print(f"  {total_chars} total character appearances")
     print(f"  {len(all_events)} key events")
 
-    # Build character profiles for downstream
-    character_profiles = []
-    for c in characters:
-        character_profiles.append({
-            "name": c["canonical_name"],
-            "role": c.get("role", "minor"),
-            "gender": c.get("gender", "unknown"),
-            "personality_traits": [],
-            "appearance_description": [c.get("appearance", ""), c.get("description", "")],
-        })
-
     # Count mentions
     final_characters = []
     for c in characters:
@@ -1017,12 +1006,13 @@ Return JSON: {{"summary": "..."}}""")
         })
     final_characters.sort(key=lambda x: x["mention_count"], reverse=True)
 
-    # Save final analysis
+    # Save final analysis. character_profiles is intentionally NOT stored:
+    # generation reads profiles from the characters collection (the hub) via
+    # load_character_profiles, so a stored copy could only go stale on edits.
     analysis = {
         "segments": final_segments,
         "characters": final_characters,
         "key_events": all_events,
-        "character_profiles": character_profiles,
         # Additive: chapters whose LLM annotation raised this run (their
         # segments carry no annotations). Empty on a clean run.
         "annotation_failed_chapters": failed_chapters,

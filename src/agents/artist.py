@@ -384,7 +384,8 @@ class ArtistAgent:
         """Generate special pages if not already cached."""
         meta = data.get("meta", {})
         title = meta.get("title", "Untitled")
-        profiles = data.get("analysis", {}).get("character_profiles", [])
+        from src.routes.helpers import load_character_profiles
+        profiles = load_character_profiles(self.book_id)
         main = [p for p in profiles if p.get("role") in ("main", "supporting")][:5]
         if not main:
             main = profiles[:5]

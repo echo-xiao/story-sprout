@@ -148,11 +148,12 @@ class AnalyzerAgent:
 
         Returns (character_name_set, matching_profiles).
         """
-        analysis = data.get("analysis", {})
-        characters = analysis.get("characters", [])
-        profiles = analysis.get("character_profiles", [])
+        # Single source: the consistency hub (not analysis.json's stale
+        # character_profiles copy), so an edited appearance is honoured here.
+        from src.routes.helpers import load_character_profiles
+        profiles = load_character_profiles(self.book_id)
 
-        char_names = [c["name"] for c in characters[:10]]
+        char_names = [p["name"] for p in profiles[:10]]
         chapter_char_names: set[str] = set()
 
         for seg in segments:

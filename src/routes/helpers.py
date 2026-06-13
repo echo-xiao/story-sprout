@@ -171,6 +171,30 @@ def load_characters(book_id: str) -> list[dict]:
     return data.get("characters", []) if isinstance(data, dict) else []
 
 
+def load_character_profiles(book_id: str) -> list[dict]:
+    """Generation-shaped character profiles — the SINGLE source of character
+    appearance for every generation path (web + the chapter subprocess).
+
+    Resolves through load_characters (the `characters` collection, file
+    fallback), so an editor edit is honoured everywhere. This replaces
+    analysis.json['character_profiles'], a copy written once at preprocess
+    that no edit ever updated — whole-chapter generation read it and drew
+    renamed/re-described characters with their stale look.
+    """
+    return [
+        {
+            "name": c.get("canonical_name", ""),
+            "role": c.get("role", "supporting"),
+            "gender": c.get("gender", "unknown"),
+            "aliases": c.get("aliases", []),
+            "personality_traits": [],
+            "appearance_description": [c.get("appearance", ""), c.get("description", "")],
+            "visual_details": c.get("visual_details", {}),
+        }
+        for c in load_characters(book_id)
+    ]
+
+
 def segment_page_num(segments: list[dict], ch_idx: int, seg_id: int) -> int:
     """Page number of a segment: 1-based position within its chapter's
     segments sorted by id. Falls back to 1 when the segment isn't found —

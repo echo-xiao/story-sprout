@@ -50,9 +50,12 @@ class PipelineContext:
         self.self_correct = self_correct
         self.defer_text_sync = defer_text_sync
 
-        analysis = data.get("analysis", {})
-        self.characters = analysis.get("characters", [])
-        self.profiles = analysis.get("character_profiles", [])
+        # Single source: the consistency hub. analysis.json's characters /
+        # character_profiles are preprocess-time copies that edits never
+        # touched — reading them drew renamed characters with stale looks.
+        from src.routes.helpers import load_character_profiles
+        self.profiles = load_character_profiles(book_id)
+        self.characters = self.profiles  # build_scenes only needs names
         self.title = data.get("meta", {}).get("title", "Untitled")
         self.chapter_dir = GENERATED_DIR / book_id / "chapters" / f"ch{chapter_idx:02d}"
 

@@ -1,23 +1,24 @@
 """get_chapter_characters (agents/analyzer.py) — feeds character-sheet
 generation in the chapter pipeline (adk_pipeline.ArtistSetupStage).
 
-Review finding P0-2: this collector ignores character roles, so one-off
-"minor" names (e.g. Gatsby's chapter-4 guest list — 105 of the book's 116
-extracted characters) each get a portrait + sheet generated. The role filter
-exists on the preprocess path (preprocessing/pipeline.py:588) but not here.
+Role filtering (P0-2): one-off "minor" names must NOT get a sheet generated.
 
-NOTE: if the fix lands in ArtistAgent.generate_character_sheets instead of
-here, move the xfail test accordingly.
+Character profiles now come from the consistency hub (load_character_profiles
+→ load_characters), the single source shared with the web paths — NOT the
+stale analysis.json copy. Tests seed the hub via monkeypatch.
 """
 
 from __future__ import annotations
 
+import pytest
 
+import src.routes.helpers as helpers
 from src.agents.analyzer import AnalyzerAgent
 from tests.conftest import make_segment
 
 
-def profiles():
+def _profiles():
+    # load_character_profiles shape (name/role), as the hub accessor returns.
     return [
         {"name": "Nick Carraway", "role": "main"},
         {"name": "Jay Gatsby", "role": "main"},
@@ -26,55 +27,52 @@ def profiles():
     ]
 
 
-def data():
-    return {
-        "analysis": {
-            "characters": [{"name": p["name"]} for p in profiles()],
-            "character_profiles": profiles(),
-        }
-    }
+@pytest.fixture()
+def hub(monkeypatch):
+    """Seed the consistency hub; tests may override the return value."""
+    box = {"profiles": _profiles()}
+    monkeypatch.setattr(helpers, "load_character_profiles", lambda bid: box["profiles"])
+    return box
 
 
-def test_collects_characters_from_scene_annotations():
+def test_collects_characters_from_scene_annotations(hub):
     segs = [
         make_segment(0, characters_in_scene=["Nick Carraway"]),
         make_segment(1, characters_in_scene=["Jay Gatsby"]),
     ]
-    names, chapter_profiles = AnalyzerAgent("b").get_chapter_characters(data(), segs)
+    names, chapter_profiles = AnalyzerAgent("b").get_chapter_characters({}, segs)
     assert names == {"Nick Carraway", "Jay Gatsby"}
     assert {p["name"] for p in chapter_profiles} == {"Nick Carraway", "Jay Gatsby"}
 
 
-def test_short_segments_are_ignored():
+def test_short_segments_are_ignored(hub):
     segs = [make_segment(0, words=3, characters_in_scene=["Jay Gatsby"])]
-    names, _ = AnalyzerAgent("b").get_chapter_characters(data(), segs)
+    names, _ = AnalyzerAgent("b").get_chapter_characters({}, segs)
     assert names == set()
 
 
-def test_caps_at_five_characters_per_segment():
+def test_caps_at_five_characters_per_segment(hub):
     many = [f"Guest {i}" for i in range(8)]
-    d = data()
-    d["analysis"]["character_profiles"] = [{"name": n, "role": "minor"} for n in many]
+    hub["profiles"] = [{"name": n, "role": "minor"} for n in many]
     segs = [make_segment(0, characters_in_scene=many)]
-    names, _ = AnalyzerAgent("b").get_chapter_characters(d, segs)
+    names, _ = AnalyzerAgent("b").get_chapter_characters({}, segs)
     assert len(names) == 5
 
 
-def test_falls_back_to_text_matching_without_annotations():
+def test_falls_back_to_text_matching_without_annotations(hub):
     seg = make_segment(0)
     seg["text"] = "That evening Nick Carraway walked along the shore thinking about the green light."
-    seg.pop("characters_in_scene")
     seg["characters_in_scene"] = None
-    names, _ = AnalyzerAgent("b").get_chapter_characters(data(), [seg])
+    names, _ = AnalyzerAgent("b").get_chapter_characters({}, [seg])
     assert names == {"Nick Carraway"}
 
 
-def test_minor_characters_excluded_from_sheet_profiles():
+def test_minor_characters_excluded_from_sheet_profiles(hub):
     segs = [
         make_segment(0, characters_in_scene=["Nick Carraway", "Owl Eyes"]),
         make_segment(1, characters_in_scene=["The Chester Beckers"]),
     ]
-    _, chapter_profiles = AnalyzerAgent("b").get_chapter_characters(data(), segs)
+    _, chapter_profiles = AnalyzerAgent("b").get_chapter_characters({}, segs)
     roles = {p["name"]: p.get("role") for p in chapter_profiles}
     assert "Nick Carraway" in roles
     assert all(r in ("main", "supporting") for r in roles.values()), roles
