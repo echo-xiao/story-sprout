@@ -63,7 +63,7 @@ def export_pdf(
 
     Pages with images use the image as full-page (text is already embedded
     by Gemini in the illustration). No additional text overlay. Chapter
-    cover/ending insertion is driven entirely by each page's `_chapter_num`
+    cover insertion is driven entirely by each page's `_chapter_num`
     tag (set by build_combined_pdf).
 
     Args:
@@ -99,15 +99,9 @@ def export_pdf(
     for page in pages:
         ch_num = page.get("_chapter_num")
 
-        # Insert chapter cover/ending when chapter changes
+        # Insert chapter cover when chapter changes (per-chapter ending pages
+        # were cut by design: one front cover, chapter covers, one back cover)
         if ch_num is not None and ch_num != current_chapter:
-            # End previous chapter
-            if current_chapter is not None:
-                ch_ending = _find_image(special, f"chapter_{current_chapter:02d}_ending")
-                if ch_ending:
-                    _draw_full_image_page(c, ch_ending, width, height)
-
-            # Start new chapter
             current_chapter = ch_num
             ch_cover = _find_image(special, f"chapter_{ch_num:02d}_cover")
             if ch_cover:
@@ -141,12 +135,6 @@ def export_pdf(
                     c.drawString(0.6 * inch, y, line)
                     y -= 18 * 1.6
                 c.showPage()
-
-    # End last chapter
-    if current_chapter is not None:
-        ch_ending = _find_image(special, f"chapter_{current_chapter:02d}_ending")
-        if ch_ending:
-            _draw_full_image_page(c, ch_ending, width, height)
 
     # 3. Back cover
     back_cover = _find_image(special, "back_cover")

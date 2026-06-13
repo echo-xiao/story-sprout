@@ -247,7 +247,7 @@ class IllustrateQAStage(_Stage):
             self._sync_text_to_analysis(c)
 
         if not c.page_filter:
-            c.artist.ensure_ending_pages(c.data, c.chapter_idx, c.segments)
+            c.artist.ensure_back_cover(c.data)
 
         self._save_to_mongo(c)
         print(f"  Chapter {c.chapter_idx} done: {len(c.chapter_data['pages'])} pages")

@@ -462,7 +462,6 @@ async def get_special_pages(book_id: str) -> dict[str, Any]:
     for ch_key in sorted(ch_segments.keys(), key=lambda x: int(x)):
         ch_num = int(ch_key)
         pages.append(_entry("chapter_cover", ch_num, f"Ch {ch_num + 1} Cover"))
-        pages.append(_entry("chapter_ending", ch_num, f"Ch {ch_num + 1} Ending"))
     pages.append(_entry("back_cover", None, "Back Cover"))
     return {"pages": pages}
 

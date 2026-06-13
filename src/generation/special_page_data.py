@@ -9,7 +9,7 @@ cheap and books processed before this feature existed can derive the same
 records on first read without re-running preprocess.
 
 Records live in preprocess/special_pages.json as {"pages": {key: record}}
-where key is "book_cover", "back_cover", "chapter_cover:0", "chapter_ending:0".
+where key is "book_cover", "back_cover", or "chapter_cover:0".
 """
 
 from __future__ import annotations
@@ -23,11 +23,13 @@ EDITABLE_FIELDS = (
 )
 
 
-SPECIAL_TYPES = ("book_cover", "chapter_cover", "chapter_ending", "back_cover")
+# Book structure: ONE front cover, ONE chapter cover per chapter, ONE closing
+# page (back cover). Per-chapter ending pages were cut by design.
+SPECIAL_TYPES = ("book_cover", "chapter_cover", "back_cover")
 
 
 def special_key(page_type: str, chapter: int | None = None) -> str:
-    if page_type in ("chapter_cover", "chapter_ending"):
+    if page_type == "chapter_cover":
         return f"{page_type}:{int(chapter or 0)}"
     return page_type
 
@@ -40,7 +42,6 @@ def special_file_base(page_type: str, chapter: int | None = None) -> str | None:
     return {
         "book_cover": "book_cover",
         "chapter_cover": f"chapter_{(chapter or 0) + 1:02d}_cover",
-        "chapter_ending": f"chapter_{(chapter or 0) + 1:02d}_ending",
         "back_cover": "back_cover",
     }.get(page_type)
 
@@ -107,7 +108,6 @@ def derive_special_pages(
             ((s.get("scene_summary") or "").strip() for s in ch_segs
              if (s.get("scene_summary") or "").strip()), "",
         )
-        last_seg = ch_segs[-1] if ch_segs else {}
         pages[special_key("chapter_cover", ch_idx)] = {
             "type": "chapter_cover", "chapter": ch_idx,
             "title_text": ch_title,
@@ -115,14 +115,6 @@ def derive_special_pages(
             "scene_background": _first_background(ch_segs),
             "scene_summary": ch_info.get("chapter_summary") or first_summary,
             "characters_in_scene": _top_characters(ch_segs, 3),
-        }
-        pages[special_key("chapter_ending", ch_idx)] = {
-            "type": "chapter_ending", "chapter": ch_idx,
-            "title_text": ch_title,
-            "subtitle_text": "... To be continued...",
-            "scene_background": (last_seg.get("scene_background") or "").strip(),
-            "scene_summary": (last_seg.get("scene_summary") or "").strip(),
-            "characters_in_scene": list(last_seg.get("characters_in_scene") or [])[:3],
         }
 
     return pages

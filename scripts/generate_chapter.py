@@ -141,7 +141,7 @@ def main():
         if ch is not None:
             segments, _ = analyzer.get_chapter_segments(data, ch)
             artist.ensure_special_pages(data, ch, segments)
-            artist.ensure_ending_pages(data, ch, segments)
+            artist.ensure_back_cover(data)
         else:
             # Generate book cover + back cover only
             profiles = data.get("analysis", {}).get("character_profiles", [])

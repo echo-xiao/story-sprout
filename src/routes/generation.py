@@ -871,7 +871,7 @@ async def regenerate_special_page(
     chapter: int = 0,
     user_key: str = Depends(_require_user_key),
 ) -> dict[str, Any]:
-    """Regenerate a special page (book_cover, chapter_cover, chapter_ending, back_cover).
+    """Regenerate a special page (book_cover, chapter_cover, back_cover).
 
     Record-driven: characters/background/texts come from the page's editable
     record (preprocess-derived, editor-updated) — the SAME flow story pages
@@ -886,8 +886,7 @@ async def regenerate_special_page(
         raise HTTPException(status_code=409, detail="This page is already regenerating.")
 
     from src.generation.special_pages import (
-        generate_book_cover, generate_chapter_cover,
-        generate_chapter_ending, generate_back_cover,
+        generate_book_cover, generate_chapter_cover, generate_back_cover,
     )
     from src.routes.editor import load_special_records
 
@@ -906,7 +905,7 @@ async def regenerate_special_page(
                 character_sheets.append({"character_name": name, "sheet_path": str(f)})
 
     # Scene reference sheet matched from the record's background (story pages'
-    # matcher — covers/endings now reference scenes the same way).
+    # matcher — covers now reference scenes the same way).
     from src.generation.illustration import _find_scene_sheet
     scene_sheet = _find_scene_sheet(book_id, background) if background else None
 
@@ -945,15 +944,6 @@ async def regenerate_special_page(
             # Pass 1-based chapter number to match the pipeline/PDF file naming.
             await run_in_threadpool(
                 generate_chapter_cover, ch_title, chapter + 1, ch_summary,
-                char_profiles, book_id,
-                character_sheets=character_sheets, scene_sheet_path=scene_sheet,
-                background=background,
-            )
-        elif page_type == "chapter_ending":
-            ch_info = ch_segments.get(str(chapter), {})
-            ch_title = record.get("title_text") or ch_info.get("chapter_title", f"Chapter {chapter + 1}")
-            await run_in_threadpool(
-                generate_chapter_ending, ch_title, chapter + 1, summary,
                 char_profiles, book_id,
                 character_sheets=character_sheets, scene_sheet_path=scene_sheet,
                 background=background,

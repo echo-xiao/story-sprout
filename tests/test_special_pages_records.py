@@ -36,25 +36,24 @@ def test_derivation_is_deterministic_and_complete():
     a = derive_special_pages("Gatsby", _segments(), _ch_map(), [])
     b = derive_special_pages("Gatsby", _segments(), _ch_map(), [])
     assert a == b  # no randomness, no LLM — legacy fallback must equal preprocess output
-    # one record per special page: book + back + (cover+ending) per chapter
-    assert set(a) == {"book_cover", "back_cover",
-                      "chapter_cover:0", "chapter_ending:0",
-                      "chapter_cover:1", "chapter_ending:1"}
+    # Book structure by design: ONE front cover, ONE cover per chapter, ONE
+    # back cover — and nothing else (chapter endings were cut).
+    assert set(a) == {"book_cover", "back_cover", "chapter_cover:0", "chapter_cover:1"}
     assert a["book_cover"]["title_text"] == "Gatsby"
     # characters ranked by mention count
     assert a["book_cover"]["characters_in_scene"][0] == "Gatsby"
-    # chapter ending inherits its LAST segment's scene
-    assert a["chapter_ending:1"]["scene_background"] == "Buchanan drawing room"
     assert a["chapter_cover:0"]["scene_background"] == "West Egg mansion lawn"
+    assert a["chapter_cover:1"]["characters_in_scene"][0] in ("Gatsby", "Daisy", "Nick")
 
 
 def test_file_base_is_single_naming_authority():
     # 1-based file names for 0-based chapters — the regen endpoint, history
     # and restore all resolve through this one function.
     assert special_file_base("chapter_cover", 0) == "chapter_01_cover"
-    assert special_file_base("chapter_ending", 2) == "chapter_03_ending"
+    assert special_file_base("chapter_cover", 2) == "chapter_03_cover"
     assert special_file_base("book_cover") == "book_cover"
     assert special_file_base("nope") is None
+    assert special_file_base("chapter_ending", 0) is None  # cut by design
     assert special_key("chapter_cover", 1) == "chapter_cover:1"
     assert special_key("back_cover") == "back_cover"
 
@@ -79,9 +78,9 @@ def test_get_merges_records_and_put_persists(book, client):
     assert r.status_code == 200
     pages = {p.get("key"): p for p in r.json()["pages"]}
     assert pages["book_cover"]["characters_in_scene"][0] == "Gatsby"
-    assert pages["chapter_ending:1"]["scene_background"] == "Buchanan drawing room"
-    # chapter_ending entries exist for every chapter (the UI lost them before)
-    assert "chapter_ending:0" in pages
+    assert pages["chapter_cover:1"]["scene_background"] == "Buchanan drawing room"
+    # exactly one cover entry per chapter, nothing else per-chapter
+    assert "chapter_cover:0" in pages and "chapter_ending:0" not in pages
 
     # PUT edits one record; first write bootstraps the file with ALL records
     r = client.put("/api/book/b1/special/book_cover",

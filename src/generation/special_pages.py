@@ -3,7 +3,6 @@
 Special pages:
 - Book cover: main characters + iconic scene, with title
 - Chapter title page: scene representing the chapter's theme
-- Chapter ending page: closing mood illustration
 - Back cover ("The End"): warm farewell illustration
 
 All special pages use character sheets, scene sheets, and the book cover
@@ -222,55 +221,6 @@ Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
     save_path = GENERATED_DIR / book_id / "special" / f"chapter_{chapter_num:02d}_cover"
-    return _generate_image_with_refs(prompt, save_path, character_sheets, scene_sheet_path, style_ref)
-
-
-def generate_chapter_ending(
-    chapter_title: str,
-    chapter_num: int,
-    ending_text: str,
-    characters: list[dict],
-    book_id: str,
-    character_sheets: list[dict] | None = None,
-    scene_sheet_path: str | None = None,
-    style: str | None = None,
-    background: str = "",
-) -> str:
-    """Generate a chapter ending illustration, referencing book cover for style."""
-    active_style = style or DEFAULT_STYLE
-    style_ref = _find_book_cover(book_id)
-
-    char_desc = ""
-    for c in characters[:3]:
-        name = c.get("name", "")
-        vi = c.get("visual_identity", "")
-        if name and vi:
-            char_desc += f"- {name}: {vi}\n"
-
-    prompt = f"""Create a CHAPTER ENDING illustration for a children's picture book.
-
-CLOSING SCENE: {ending_text[:200]}
-
-CHARACTERS:
-{char_desc or "Draw characters in a reflective or transitional moment."}
-{_background_block(background)}
-REQUIREMENTS:
-- This is a TRANSITION page between chapters — create a sense of anticipation
-- The mood should be contemplative but forward-looking ("what happens next?")
-- MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
-- Include a small decorative "... To be continued..." text element
-- Use softer, more muted colors than the main pages
-- Add small decorative elements (a small ornament, a trailing vine, etc.)
-
-STRICT TEXT RULES:
-- The ONLY text allowed is "... To be continued..." or "..."
-- Do NOT write "End of Chapter", "The End", chapter numbers, or any other text.
-- Do NOT add page numbers or metadata.
-
-Style: {active_style}
-Do NOT include: {NEGATIVE_PROMPT}"""
-
-    save_path = GENERATED_DIR / book_id / "special" / f"chapter_{chapter_num:02d}_ending"
     return _generate_image_with_refs(prompt, save_path, character_sheets, scene_sheet_path, style_ref)
 
 

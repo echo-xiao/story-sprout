@@ -4,7 +4,7 @@ Responsible for:
 - Generating character reference sheets (portrait + multi-angle)
 - Generating page illustrations with character/scene consistency
 - Managing visual style coherence across all pages
-- Special pages: book cover, chapter covers, endings, back cover
+- Special pages: book cover, chapter covers, back cover
 """
 
 from __future__ import annotations
@@ -368,20 +368,6 @@ class ArtistAgent:
         print(f"  Done in {time.time() - t0:.1f}s")
         return path
 
-    def generate_chapter_ending(
-        self, ch_title: str, ch_num: int, ending_text: str, profiles: list[dict]
-    ) -> str:
-        """Generate chapter ending page."""
-        from src.generation.special_pages import generate_chapter_ending
-        from src.generation.character_sheet import _assign_visual_identities
-
-        profiles = _assign_visual_identities(profiles)
-        print(f"[Artist Agent] Generating chapter {ch_num} ending...")
-        t0 = time.time()
-        path = generate_chapter_ending(ch_title, ch_num, ending_text, profiles, self.book_id)
-        print(f"  Done in {time.time() - t0:.1f}s")
-        return path
-
     def generate_back_cover(self, title: str) -> str:
         """Generate back cover."""
         from src.generation.special_pages import generate_back_cover
@@ -423,32 +409,14 @@ class ArtistAgent:
             summary = segments[0].get("text", "")[:200] if segments else ""
             self.generate_chapter_cover(ch_title, ch_num, summary, main)
 
-    def ensure_ending_pages(
-        self, data: dict, chapter_idx: int, segments: list[dict]
-    ):
-        """Generate ending pages if not already cached."""
+    def ensure_back_cover(self, data: dict):
+        """Generate the book's closing page (back cover) if not already cached.
+
+        Per-chapter ending pages were cut by design — the book is ONE front
+        cover, one cover per chapter, and one back cover."""
         meta = data.get("meta", {})
         title = meta.get("title", "Untitled")
-        profiles = data.get("analysis", {}).get("character_profiles", [])
-        main = [p for p in profiles if p.get("role") in ("main", "supporting")][:5]
-        if not main:
-            main = profiles[:5]
 
-        ch_num = chapter_idx + 1
-
-        # Chapter ending
-        ch_ending_exists = any(
-            (self.special_dir / f"chapter_{ch_num:02d}_ending{ext}").exists()
-            for ext in (".png", ".jpg")
-        )
-        if not ch_ending_exists:
-            from src.agents.analyzer import AnalyzerAgent
-            analyzer = AnalyzerAgent(self.book_id)
-            _, ch_title = analyzer.get_chapter_segments(data, chapter_idx)
-            ending_text = segments[-1].get("text", "")[:200] if segments else ""
-            self.generate_chapter_ending(ch_title, ch_num, ending_text, main)
-
-        # Back cover
         back_exists = any(
             (self.special_dir / f"back_cover{ext}").exists() for ext in (".png", ".jpg")
         )
