@@ -1020,6 +1020,20 @@ Return JSON: {{"summary": "..."}}""")
     _save(preprocess_dir, "analysis", analysis)
     _save(preprocess_dir, "chapter_segments", chapter_segments_map)
 
+    # Special pages (covers/endings) get editable records just like story
+    # pages — derived deterministically here; the editor reads/updates them
+    # and the regen endpoints feed them to the image generators.
+    from src.generation.special_page_data import derive_special_pages
+    try:
+        locations = json.loads(
+            (preprocess_dir / "llm_locations.json").read_text(encoding="utf-8")
+        ).get("locations", [])
+    except (OSError, ValueError):
+        locations = []
+    _save(preprocess_dir, "special_pages", {
+        "pages": derive_special_pages(title, final_segments, chapter_segments_map, locations),
+    })
+
     return final_segments, final_characters, all_events
 
 

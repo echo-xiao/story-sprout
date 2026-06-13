@@ -23,10 +23,26 @@ EDITABLE_FIELDS = (
 )
 
 
+SPECIAL_TYPES = ("book_cover", "chapter_cover", "chapter_ending", "back_cover")
+
+
 def special_key(page_type: str, chapter: int | None = None) -> str:
     if page_type in ("chapter_cover", "chapter_ending"):
         return f"{page_type}:{int(chapter or 0)}"
     return page_type
+
+
+def special_file_base(page_type: str, chapter: int | None = None) -> str | None:
+    """Image-file stem for a special page. Chapter files are 1-based
+    (chapter_01_* for chapter 0) to match the pipeline + PDF naming.
+    The single naming authority — editor history/restore and the regen
+    endpoint must agree or restores silently target the wrong file."""
+    return {
+        "book_cover": "book_cover",
+        "chapter_cover": f"chapter_{(chapter or 0) + 1:02d}_cover",
+        "chapter_ending": f"chapter_{(chapter or 0) + 1:02d}_ending",
+        "back_cover": "back_cover",
+    }.get(page_type)
 
 
 def _top_characters(segments: list[dict], limit: int) -> list[str]:

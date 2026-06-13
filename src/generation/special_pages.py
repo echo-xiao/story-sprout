@@ -98,6 +98,8 @@ def _generate_image_with_refs(
                 return final_path
         except Exception as e:
             logger.warning("Special page attempt %d failed: %s", attempt + 1, e)
+            from src.gemini_backend import note_gen_failure
+            note_gen_failure(e)
             if attempt < max_retries - 1:
                 time.sleep(2)
 
@@ -114,6 +116,13 @@ def _find_book_cover(book_id: str) -> str | None:
     return None
 
 
+def _background_block(background: str) -> str:
+    """Shared SETTING block — editable scene_background reaches every prompt."""
+    if not background.strip():
+        return ""
+    return f"\nSETTING / BACKGROUND:\n{background.strip()[:300]}\n"
+
+
 def generate_book_cover(
     title: str,
     characters: list[dict],
@@ -121,6 +130,8 @@ def generate_book_cover(
     character_sheets: list[dict] | None = None,
     scene_sheet_path: str | None = None,
     style: str | None = None,
+    subtitle: str = "A Picture Book",
+    background: str = "",
 ) -> str:
     """Generate an illustrated book cover. This is the style anchor for the whole book."""
     active_style = style or DEFAULT_STYLE
@@ -140,19 +151,19 @@ TITLE: "{title}"
 
 MAIN CHARACTERS (draw them prominently):
 {char_desc or "Draw friendly, memorable children's book characters."}
-
+{_background_block(background)}
 REQUIREMENTS:
 - This is the FRONT COVER of the book
 - Draw the title "{title}" in large, playful, hand-drawn lettering at the top
 - SPELL THE TITLE EXACTLY letter by letter: {title_spelled}
-- Add "A Picture Book" as subtitle below the title
+- Add "{subtitle}" as subtitle below the title
 - The main characters should be front and center, looking inviting and friendly
 - Use a warm, eye-catching color scheme that makes kids want to pick up the book
 - Include a hint of the story's setting in the background
 - The composition should be balanced and professional, like a real published book cover
 
 STRICT TEXT RULES:
-- The ONLY text in this image should be the title "{title}" and subtitle "A Picture Book".
+- The ONLY text in this image should be the title "{title}" and subtitle "{subtitle}".
 - Do NOT add any other text, labels, credits, or metadata.
 - Do NOT misspell the title. Copy it letter by letter: {title_spelled}
 
@@ -172,6 +183,7 @@ def generate_chapter_cover(
     character_sheets: list[dict] | None = None,
     scene_sheet_path: str | None = None,
     style: str | None = None,
+    background: str = "",
 ) -> str:
     """Generate a chapter title page illustration, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
@@ -193,7 +205,7 @@ CHAPTER THEME: {chapter_summary[:200]}
 
 CHARACTERS:
 {char_desc or "Draw characters that match the chapter's mood."}
-
+{_background_block(background)}
 REQUIREMENTS:
 - Draw "Chapter {chapter_num}" and "{chapter_title}" in playful hand-drawn lettering
 - Spell the chapter title exactly: {chapter_title_spelled}
@@ -220,7 +232,9 @@ def generate_chapter_ending(
     characters: list[dict],
     book_id: str,
     character_sheets: list[dict] | None = None,
+    scene_sheet_path: str | None = None,
     style: str | None = None,
+    background: str = "",
 ) -> str:
     """Generate a chapter ending illustration, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
@@ -239,7 +253,7 @@ CLOSING SCENE: {ending_text[:200]}
 
 CHARACTERS:
 {char_desc or "Draw characters in a reflective or transitional moment."}
-
+{_background_block(background)}
 REQUIREMENTS:
 - This is a TRANSITION page between chapters — create a sense of anticipation
 - The mood should be contemplative but forward-looking ("what happens next?")
@@ -257,24 +271,30 @@ Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
     save_path = GENERATED_DIR / book_id / "special" / f"chapter_{chapter_num:02d}_ending"
-    return _generate_image_with_refs(prompt, save_path, character_sheets, None, style_ref)
+    return _generate_image_with_refs(prompt, save_path, character_sheets, scene_sheet_path, style_ref)
 
 
 def generate_back_cover(
     title: str,
     book_id: str,
     character_sheets: list[dict] | None = None,
+    scene_sheet_path: str | None = None,
     style: str | None = None,
+    title_text: str = "The End",
+    subtitle_text: str = "Thank you for reading!",
+    background: str = "",
 ) -> str:
     """Generate an illustrated back cover, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
     style_ref = _find_book_cover(book_id)
 
-    prompt = f"""Create a beautiful BACK COVER illustration for a children's picture book.
+    title_spelled = "-".join(title_text.upper())
 
+    prompt = f"""Create a beautiful BACK COVER illustration for a children's picture book.
+{_background_block(background)}
 REQUIREMENTS:
-- Draw "The End" in large, playful, hand-drawn lettering in the center. Spell exactly: T-H-E E-N-D
-- Add "Thank you for reading!" below it in smaller text
+- Draw "{title_text}" in large, playful, hand-drawn lettering in the center. Spell exactly: {title_spelled}
+- Add "{subtitle_text}" below it in smaller text
 - MATCH THE STYLE of the book cover reference image exactly (same color palette, line quality, texture)
 - The illustration should feel warm, cozy, and satisfying — like finishing a good bedtime story
 - Include small references to the story (tiny versions of characters waving goodbye, key objects from the story)
@@ -282,11 +302,11 @@ REQUIREMENTS:
 - Add decorative borders or frames
 
 STRICT TEXT RULES:
-- The ONLY text allowed is "The End" and "Thank you for reading!"
+- The ONLY text allowed is "{title_text}" and "{subtitle_text}"
 - Do NOT add the book title, credits, page numbers, or any other text.
 
 Style: {active_style}
 Do NOT include: {NEGATIVE_PROMPT}"""
 
     save_path = GENERATED_DIR / book_id / "special" / "back_cover"
-    return _generate_image_with_refs(prompt, save_path, character_sheets, None, style_ref)
+    return _generate_image_with_refs(prompt, save_path, character_sheets, scene_sheet_path, style_ref)

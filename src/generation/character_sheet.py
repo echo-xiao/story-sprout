@@ -327,6 +327,8 @@ def generate_character_sheets(
                         break
                 except Exception as e:
                     logger.warning("Sheet attempt %d for '%s' failed: %s", attempt + 1, name, e)
+                    from src.gemini_backend import note_gen_failure
+                    note_gen_failure(e)
                     if attempt == 0:
                         time.sleep(2)
 

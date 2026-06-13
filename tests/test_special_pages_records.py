@@ -1,0 +1,122 @@
+"""Special pages as first-class editable records (same framework as story pages):
+deterministic derivation, legacy-book fallback, PUT roundtrip, naming authority,
+and the billing-key error classifier."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from src.gemini_backend import friendly_gen_error
+from src.generation.special_page_data import (
+    derive_special_pages, special_file_base, special_key,
+)
+
+
+def _segments():
+    return [
+        {"id": 1, "chapter_idx": 0, "characters_in_scene": ["Nick", "Gatsby"],
+         "scene_background": "West Egg mansion lawn", "scene_summary": "Nick arrives."},
+        {"id": 2, "chapter_idx": 0, "characters_in_scene": ["Gatsby"],
+         "scene_background": "", "scene_summary": "Gatsby waves."},
+        {"id": 3, "chapter_idx": 1, "characters_in_scene": ["Daisy", "Gatsby", "Nick"],
+         "scene_background": "Buchanan drawing room", "scene_summary": "Tea at Daisy's."},
+    ]
+
+
+def _ch_map():
+    return {
+        "0": {"chapter_title": "The Party", "num_segments": 2},
+        "1": {"chapter_title": "The Reunion", "num_segments": 1},
+    }
+
+
+def test_derivation_is_deterministic_and_complete():
+    a = derive_special_pages("Gatsby", _segments(), _ch_map(), [])
+    b = derive_special_pages("Gatsby", _segments(), _ch_map(), [])
+    assert a == b  # no randomness, no LLM — legacy fallback must equal preprocess output
+    # one record per special page: book + back + (cover+ending) per chapter
+    assert set(a) == {"book_cover", "back_cover",
+                      "chapter_cover:0", "chapter_ending:0",
+                      "chapter_cover:1", "chapter_ending:1"}
+    assert a["book_cover"]["title_text"] == "Gatsby"
+    # characters ranked by mention count
+    assert a["book_cover"]["characters_in_scene"][0] == "Gatsby"
+    # chapter ending inherits its LAST segment's scene
+    assert a["chapter_ending:1"]["scene_background"] == "Buchanan drawing room"
+    assert a["chapter_cover:0"]["scene_background"] == "West Egg mansion lawn"
+
+
+def test_file_base_is_single_naming_authority():
+    # 1-based file names for 0-based chapters — the regen endpoint, history
+    # and restore all resolve through this one function.
+    assert special_file_base("chapter_cover", 0) == "chapter_01_cover"
+    assert special_file_base("chapter_ending", 2) == "chapter_03_ending"
+    assert special_file_base("book_cover") == "book_cover"
+    assert special_file_base("nope") is None
+    assert special_key("chapter_cover", 1) == "chapter_cover:1"
+    assert special_key("back_cover") == "back_cover"
+
+
+@pytest.fixture()
+def book(monkeypatch, tmp_path):
+    """A legacy book on disk: analysis + meta, but NO special_pages.json."""
+    monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.db.is_available", lambda: False, raising=False)
+    pre = tmp_path / "b1" / "preprocess"
+    pre.mkdir(parents=True)
+    (pre / "analysis.json").write_text(json.dumps({"segments": _segments()}))
+    (pre / "meta.json").write_text(json.dumps({"title": "Gatsby"}))
+    (pre / "chapter_segments.json").write_text(json.dumps(_ch_map()))
+    return tmp_path
+
+
+def test_get_merges_records_and_put_persists(book, client):
+    # GET derives records for a legacy book (no re-preprocess needed)
+    r = client.get("/api/book/b1/special-pages")
+    assert r.status_code == 200
+    pages = {p.get("key"): p for p in r.json()["pages"]}
+    assert pages["book_cover"]["characters_in_scene"][0] == "Gatsby"
+    assert pages["chapter_ending:1"]["scene_background"] == "Buchanan drawing room"
+    # chapter_ending entries exist for every chapter (the UI lost them before)
+    assert "chapter_ending:0" in pages
+
+    # PUT edits one record; first write bootstraps the file with ALL records
+    r = client.put("/api/book/b1/special/book_cover",
+                   json={"scene_background": "Green light across the bay",
+                         "characters_in_scene": ["Gatsby"]})
+    assert r.status_code == 200
+    saved = json.loads((book / "b1" / "preprocess" / "special_pages.json").read_text())
+    assert saved["pages"]["book_cover"]["scene_background"] == "Green light across the bay"
+    assert saved["pages"]["book_cover"]["characters_in_scene"] == ["Gatsby"]
+    assert "chapter_cover:0" in saved["pages"]  # bootstrap persisted siblings too
+
+    # GET now serves the edited record, others untouched
+    pages = {p.get("key"): p for p in client.get("/api/book/b1/special-pages").json()["pages"]}
+    assert pages["book_cover"]["scene_background"] == "Green light across the bay"
+    assert pages["chapter_cover:1"]["title_text"] == "The Reunion"
+
+    # unknown type rejected (was a silent no-op claim before)
+    assert client.put("/api/book/b1/special/banana", json={}).status_code == 400
+
+
+def test_history_lists_only_timestamp_versions(book, client):
+    special = book / "b1" / "special"
+    hist = special / "history"
+    hist.mkdir(parents=True)
+    (special / "book_cover.png").write_bytes(b"x")
+    (hist / "book_cover_1700000001.png").write_bytes(b"x")
+    (hist / "book_cover_selfcorrect_prev.png").write_bytes(b"x")  # not a version
+    r = client.get("/api/book/b1/special/book_cover/history")
+    versions = [i["version"] for i in r.json()["images"]]
+    assert versions == ["current", "1700000001"]
+
+
+def test_friendly_error_names_billing_for_free_tier():
+    msg = friendly_gen_error([
+        "429 RESOURCE_EXHAUSTED ... generate_content_free_tier_requests, limit: 0"])
+    assert "BILLING" in msg
+    assert friendly_gen_error(["429 rate limit"]).startswith("Gemini rate limit")
+    assert friendly_gen_error([]) is None

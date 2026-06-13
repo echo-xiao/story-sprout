@@ -66,7 +66,8 @@ def _require_user_key(x_gemini_key: str | None = Header(default=None)) -> str | 
     if not x_gemini_key:
         raise HTTPException(
             status_code=403,
-            detail="A Gemini API key is required to generate. Add yours on the Create page.",
+            detail="A Gemini API key with BILLING ENABLED (paid tier) is required to "
+                   "generate — free keys have zero image quota. Add yours on the Create page.",
         )
     return x_gemini_key
 

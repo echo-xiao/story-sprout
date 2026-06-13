@@ -220,6 +220,10 @@ async def regenerate_segment_illustration(
     if quality_file.exists():
         quality_file.rename(history_dir / f"page_{page_num:03d}_{ts}_quality.json")
 
+    # Shared with _regen_safe's error box — generators append their real
+    # failure reasons here (they swallow exceptions internally).
+    _err_box: list[str] = []
+
     async def _regen():
         from src.generation.text_simplifier import simplify_text
         from src.generation.illustration import generate_illustrations
@@ -316,13 +320,15 @@ async def regenerate_segment_illustration(
         # moved to history above, so without this check the page silently loses
         # its image while the marker below still reports "complete".
         if not any((ch_dir / f"page_{page_num:03d}{ext}").exists() for ext in (".png", ".jpg")):
+            from src.gemini_backend import friendly_gen_error
             _restore_from_history(ch_dir / f"page_{page_num:03d}",
                                   history_dir / f"page_{page_num:03d}_{ts}",
                                   quality_pair=(ch_base / "quality" / f"page_{page_num:03d}_quality.json",
                                                 history_dir / f"page_{page_num:03d}_{ts}_quality.json"))
             write_json_atomic(ch_base / f"regen_{seg_id}.json",
                               {"status": "error", "segment_id": seg_id,
-                               "error": "Image generation failed (all attempts)."})
+                               "error": friendly_gen_error(_err_box)
+                                        or "Image generation failed (all attempts)."})
             return
         logger.info("Regeneration complete for segment %d (page %d)", seg_id, page_num)
 
@@ -400,10 +406,16 @@ async def regenerate_segment_illustration(
         marker.unlink()
 
     async def _regen_safe():
-        from src.gemini_backend import set_user_api_key, reset_user_api_key
+        from src.gemini_backend import (
+            reset_gen_error_box, set_gen_error_box,
+            set_user_api_key, reset_user_api_key,
+        )
         # BYOK — route this task's Gemini calls to the user's key, and reset the
         # contextvar afterwards so the key doesn't leak into the worker context.
         token = set_user_api_key(user_key)
+        # _err_box collects the generators' real errors (they swallow their own
+        # exceptions) so the marker can say WHY — e.g. free-tier key, zero quota.
+        box_token = set_gen_error_box(_err_box)
         try:
             await _regen()
         except Exception as e:
@@ -421,6 +433,7 @@ async def regenerate_segment_illustration(
             write_json_atomic(ch_base / f"regen_{seg_id}.json",
                               {"status": "error", "segment_id": seg_id, "error": str(e)[:300]})
         finally:
+            reset_gen_error_box(box_token)
             reset_user_api_key(token)
             _active_regens.discard(claim)
 
@@ -1283,10 +1296,15 @@ async def regenerate_character_sheet(
                 logger.warning("Auto quality-check failed for %s: %s", char_name, e)
 
     async def _regen():
-        from src.gemini_backend import set_user_api_key, reset_user_api_key
+        from src.gemini_backend import (
+            friendly_gen_error, reset_gen_error_box, set_gen_error_box,
+            set_user_api_key, reset_user_api_key,
+        )
         # BYOK — set the user's key for this task and reset afterwards so it
         # doesn't leak into the worker context.
         token = set_user_api_key(user_key)
+        box: list[str] = []
+        box_token = set_gen_error_box(box)
         err = ""
         try:
             await _regen_inner()
@@ -1294,9 +1312,13 @@ async def regenerate_character_sheet(
             logger.exception("Character sheet regen failed for %s/%s", book_id, char_name)
             err = str(e)[:300]
         finally:
+            reset_gen_error_box(box_token)
             reset_user_api_key(token)
             if _restore_from_history(chars_dir / f"{safe}_sheet", history_dir / f"{safe}_sheet_{ts}"):
-                _last_regen_errors[claim] = err or "Generation produced no image (check API key / quota)."
+                _last_regen_errors[claim] = (
+                    friendly_gen_error(box) or err
+                    or "Generation produced no image (check API key / quota)."
+                )
             _active_regens.discard(claim)
 
     _active_regens.add(claim)

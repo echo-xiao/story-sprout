@@ -252,6 +252,8 @@ def _generate_single_page(
                 time.sleep(wait)
                 continue
             logger.warning("Generation failed for %s: %s", save_path.name, e)
+            from src.gemini_backend import note_gen_failure
+            note_gen_failure(e)
             return False, "", prompt_text
 
     return False, "", prompt_text

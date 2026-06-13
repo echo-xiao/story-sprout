@@ -381,68 +381,196 @@ Return JSON:
     }
 
 
+def load_special_records(book_id: str) -> dict[str, dict]:
+    """Special-page records: preprocess-written special_pages.json, or the
+    SAME deterministic derivation for books processed before the file existed
+    (no re-preprocess needed). Shared by the editor and the regen endpoints."""
+    from src.generation.special_page_data import derive_special_pages
+
+    data = _load_json(book_id, "special_pages.json")
+    if isinstance(data, dict) and isinstance(data.get("pages"), dict) and data["pages"]:
+        return data["pages"]
+    analysis = _load_json(book_id, "analysis.json") or {}
+    meta = _load_json(book_id, "meta.json") or {}
+    ch_map = _load_json(book_id, "chapter_segments.json") or {}
+    locs = (_load_json(book_id, "llm_locations.json") or {}).get("locations", [])
+    return derive_special_pages(
+        meta.get("title", book_id), analysis.get("segments", []), ch_map, locs,
+    )
+
+
+def _special_image_url(book_id: str, base: str) -> str | None:
+    special_dir = GENERATED_DIR / book_id / "special"
+    for ext in (".png", ".jpg"):
+        p = special_dir / f"{base}{ext}"
+        if p.exists():
+            return f"/static/{book_id}/special/{p.name}"
+    return None
+
+
 @router.get("/api/book/{book_id}/special-pages")
 async def get_special_pages(book_id: str) -> dict[str, Any]:
-    """List all special pages (book cover, chapter covers/endings, back cover)."""
-    special_dir = GENERATED_DIR / book_id / "special"
-    pages = []
+    """List all special pages with their editable records + image urls."""
+    from src.generation.special_page_data import special_file_base, special_key
 
-    # Book cover
-    for ext in (".png", ".jpg"):
-        p = special_dir / f"book_cover{ext}"
-        if p.exists():
-            pages.append({"type": "book_cover", "label": "Book Cover", "url": f"/static/{book_id}/special/{p.name}"})
-            break
-    else:
-        pages.append({"type": "book_cover", "label": "Book Cover", "url": None})
-
-    # Chapter covers and endings
+    records = load_special_records(book_id)
     ch_segments = _load_json(book_id, "chapter_segments.json") or {}
+
+    def _entry(page_type: str, chapter: int | None, label: str) -> dict:
+        key = special_key(page_type, chapter)
+        rec = records.get(key, {})
+        base = special_file_base(page_type, chapter) or ""
+        out = {
+            "type": page_type, "label": label, "key": key,
+            "url": _special_image_url(book_id, base),
+            "title_text": rec.get("title_text", ""),
+            "subtitle_text": rec.get("subtitle_text", ""),
+            "scene_background": rec.get("scene_background", ""),
+            "scene_summary": rec.get("scene_summary", ""),
+            "characters_in_scene": rec.get("characters_in_scene", []),
+        }
+        if chapter is not None:
+            ch_info = ch_segments.get(str(chapter), {})
+            out["chapter"] = chapter
+            out["chapter_title"] = ch_info.get("chapter_title", "")
+            out["chapter_summary"] = ch_info.get("chapter_summary", "")
+        return out
+
+    pages = [_entry("book_cover", None, "Book Cover")]
     for ch_key in sorted(ch_segments.keys(), key=lambda x: int(x)):
-        ch_info = ch_segments[ch_key]
         ch_num = int(ch_key)
-
-        # Chapter cover. Files are named 1-based (chapter_01 for chapter 0) by the
-        # pipeline + PDF; ch_num here is 0-based, so +1 to read the right file.
-        cover_url = None
-        for ext in (".png", ".jpg"):
-            p = special_dir / f"chapter_{ch_num + 1:02d}_cover{ext}"
-            if p.exists():
-                cover_url = f"/static/{book_id}/special/{p.name}"
-                break
-        pages.append({
-            "type": "chapter_cover",
-            "chapter": ch_num,
-            "label": f"Ch {ch_num + 1} Cover",
-            "chapter_title": ch_info.get("chapter_title", ""),
-            "chapter_summary": ch_info.get("chapter_summary", ""),
-            "url": cover_url,
-        })
-
-        # Chapter ending (1-based file name; ch_num is 0-based → +1)
-        ending_url = None
-        for ext in (".png", ".jpg"):
-            p = special_dir / f"chapter_{ch_num + 1:02d}_ending{ext}"
-            if p.exists():
-                ending_url = f"/static/{book_id}/special/{p.name}"
-                break
-        pages.append({
-            "type": "chapter_ending",
-            "chapter": ch_num,
-            "label": f"Ch {ch_num + 1} Ending",
-            "url": ending_url,
-        })
-
-    # Back cover
-    for ext in (".png", ".jpg"):
-        p = special_dir / f"back_cover{ext}"
-        if p.exists():
-            pages.append({"type": "back_cover", "label": "Back Cover", "url": f"/static/{book_id}/special/{p.name}"})
-            break
-    else:
-        pages.append({"type": "back_cover", "label": "Back Cover", "url": None})
-
+        pages.append(_entry("chapter_cover", ch_num, f"Ch {ch_num + 1} Cover"))
+        pages.append(_entry("chapter_ending", ch_num, f"Ch {ch_num + 1} Ending"))
+    pages.append(_entry("back_cover", None, "Back Cover"))
     return {"pages": pages}
+
+
+class SpecialPageUpdate(BaseModel):
+    title_text: Optional[str] = None
+    subtitle_text: Optional[str] = None
+    scene_background: Optional[str] = None
+    scene_summary: Optional[str] = None
+    characters_in_scene: Optional[list[str]] = None
+
+
+@router.put("/api/book/{book_id}/special/{page_type}")
+async def update_special_page(
+    book_id: str, page_type: str, update: SpecialPageUpdate, chapter: int = 0,
+) -> dict[str, Any]:
+    """Edit a special page's record (same merge-under-lock pattern as segments).
+
+    First write for a legacy book persists the derived defaults for ALL pages
+    (bootstrap-on-first-write, like chapter_data's upsert)."""
+    from src.generation.special_page_data import SPECIAL_TYPES, special_key
+
+    if page_type not in SPECIAL_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unknown special page type '{page_type}'.")
+    key = special_key(page_type, chapter)
+    update_dict = update.model_dump(exclude_none=True)
+
+    async with _analysis_lock(book_id):
+        records = load_special_records(book_id)
+        rec = records.get(key)
+        if rec is None:
+            raise HTTPException(status_code=404, detail=f"Special page '{key}' not found.")
+        rec.update(update_dict)
+        _save_json(book_id, "special_pages.json", {"pages": records})
+    return {"status": "updated", "key": key, "page": rec}
+
+
+@router.get("/api/book/{book_id}/special/{page_type}/history")
+async def get_special_page_history(book_id: str, page_type: str, chapter: int = 0) -> dict[str, Any]:
+    """Version list for a special page — same shape the segment carousel uses."""
+    from src.generation.special_page_data import special_file_base
+
+    base = special_file_base(page_type, chapter)
+    if not base:
+        raise HTTPException(status_code=400, detail=f"Unknown special page type '{page_type}'.")
+    special_dir = GENERATED_DIR / book_id / "special"
+    images: list[dict] = []
+    for ext in (".png", ".jpg"):
+        cur = special_dir / f"{base}{ext}"
+        if cur.exists():
+            entry: dict[str, Any] = {
+                "url": f"/static/{book_id}/special/{cur.name}",
+                "version": "current",
+                "timestamp": cur.stat().st_mtime,
+            }
+            qf = special_dir / "quality" / f"{base}_quality.json"
+            if qf.exists():
+                try:
+                    entry["quality"] = json.loads(qf.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    pass
+            images.append(entry)
+            break
+    history_dir = special_dir / "history"
+    if history_dir.exists():
+        for f in sorted(history_dir.glob(f"{base}_*.*"), reverse=True):
+            if f.suffix == ".json":
+                continue
+            version = f.stem.split("_")[-1]
+            if not version.isdigit():
+                continue  # non-timestamp backups aren't restorable versions
+            images.append({
+                "url": f"/static/{book_id}/special/history/{f.name}",
+                "version": version,
+                "timestamp": f.stat().st_mtime,
+            })
+    return {"images": images}
+
+
+@router.post("/api/book/{book_id}/special/{page_type}/restore-version")
+async def restore_special_page_version(
+    book_id: str, page_type: str, version: str, chapter: int = 0,
+) -> dict[str, Any]:
+    """Make a historical special-page image current (segment restore's pattern:
+    copy-first so a failed copy never leaves the page imageless)."""
+    import shutil
+    import time as _time
+
+    from src.generation.special_page_data import special_file_base
+
+    if not version.isdigit():
+        raise HTTPException(status_code=400, detail="Invalid version.")
+    base = special_file_base(page_type, chapter)
+    if not base:
+        raise HTTPException(status_code=400, detail=f"Unknown special page type '{page_type}'.")
+    if (book_id, "special", f"{page_type}:{chapter}") in _active_regens:
+        raise HTTPException(status_code=409, detail="This page is regenerating — try again when it finishes.")
+
+    special_dir = GENERATED_DIR / book_id / "special"
+    history_dir = special_dir / "history"
+    restored = None
+    for ext in (".png", ".jpg"):
+        candidate = history_dir / f"{base}_{version}{ext}"
+        if candidate.exists():
+            restored = candidate
+            break
+    if restored is None:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found.")
+
+    special_dir.mkdir(parents=True, exist_ok=True)
+    tmp_restore = special_dir / f".restore_tmp_{base}{restored.suffix}"
+    shutil.copy2(restored, tmp_restore)
+    try:
+        ts = int(_time.time())
+        history_dir.mkdir(parents=True, exist_ok=True)
+        while any((history_dir / f"{base}_{ts}{sfx}").exists() for sfx in (".png", ".jpg")):
+            ts += 1
+        for ext in (".png", ".jpg"):
+            current = special_dir / f"{base}{ext}"
+            if current.exists():
+                current.rename(history_dir / f"{base}_{ts}{ext}")
+        new_current = special_dir / f"{base}{restored.suffix}"
+        tmp_restore.rename(new_current)
+    finally:
+        tmp_restore.unlink(missing_ok=True)
+
+    return {
+        "status": "restored",
+        "url": f"/static/{book_id}/special/{new_current.name}",
+    }
 
 
 @router.get("/api/book/{book_id}/preprocess/locations")

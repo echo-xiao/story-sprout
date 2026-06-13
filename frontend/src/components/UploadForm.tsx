@@ -112,10 +112,12 @@ export function UploadForm({ onStartGeneration }: Props) {
                            font-body text-gray-700 bg-cream/50"
               />
               <p className="text-xs text-gray-400 mt-1">
-                Get a free key at{" "}
+                Create a key at{" "}
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-coral hover:underline">
                   aistudio.google.com/apikey
                 </a>
+                {" "}— it must be from a project with <strong>billing enabled</strong> (paid tier).
+                Free-tier keys have zero image-model quota and cannot generate illustrations.
               </p>
             </div>
           </div>

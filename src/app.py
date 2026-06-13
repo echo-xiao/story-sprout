@@ -101,7 +101,8 @@ class BYOKMiddleware(BaseHTTPMiddleware):
         is_gen = request.method == "POST" and any(path.endswith(s) for s in _GEN_SUFFIXES)
         if is_gen and REQUIRE_USER_KEY and not key:
             return JSONResponse(
-                {"detail": "A Gemini API key is required to generate. Add yours on the Create page."},
+                {"detail": "A Gemini API key with BILLING ENABLED (paid tier) is required to "
+                           "generate — free keys have zero image quota. Add yours on the Create page."},
                 status_code=403,
             )
         # Only route calls through the caller's key when the BYOK gate is on.

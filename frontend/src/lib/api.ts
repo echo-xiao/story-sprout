@@ -167,13 +167,47 @@ export async function getSceneSheetHistory(bookId: string, sceneName: string) {
   return data as { images: Array<{ url: string; version: string; timestamp: number }> };
 }
 
+export type SpecialPageData = {
+  type: string; label: string; key?: string; url: string | null;
+  chapter?: number; chapter_title?: string; chapter_summary?: string;
+  title_text?: string; subtitle_text?: string;
+  scene_background?: string; scene_summary?: string;
+  characters_in_scene?: string[];
+};
+
 export async function getSpecialPages(bookId: string) {
   const { data } = await api.get(`/book/${bookId}/special-pages`);
-  return data as { pages: Array<{ type: string; label: string; url: string | null; chapter?: number; chapter_title?: string; chapter_summary?: string }> };
+  return data as { pages: SpecialPageData[] };
 }
 
 export async function regenerateSpecialPage(bookId: string, pageType: string, chapter: number = 0) {
   const { data } = await api.post(`/book/${bookId}/special/${pageType}/regenerate?chapter=${chapter}`);
+  return data;
+}
+
+export async function updateSpecialPage(
+  bookId: string, pageType: string, chapter: number, updates: Record<string, unknown>,
+) {
+  const { data } = await api.put(`/book/${bookId}/special/${pageType}?chapter=${chapter}`, updates);
+  return data;
+}
+
+export async function getSpecialPageHistory(bookId: string, pageType: string, chapter: number = 0) {
+  const { data } = await api.get(`/book/${bookId}/special/${pageType}/history?chapter=${chapter}`);
+  return data as { images: Array<{ url: string; version: string; timestamp: number; quality?: any }> };
+}
+
+export async function restoreSpecialPageVersion(
+  bookId: string, pageType: string, chapter: number, version: string,
+) {
+  const { data } = await api.post(
+    `/book/${bookId}/special/${pageType}/restore-version?chapter=${chapter}&version=${version}`,
+  );
+  return data as { status: string; url: string };
+}
+
+export async function checkSpecialPageQuality(bookId: string, pageType: string, chapter: number = 0) {
+  const { data } = await api.post(`/book/${bookId}/special/${pageType}/quality?chapter=${chapter}`);
   return data;
 }
 
