@@ -35,7 +35,6 @@ def store(monkeypatch, tmp_path):
     # No illustration/QA/Mongo side effects — this test only cares about text.
     monkeypatch.setattr("src.generation.illustration.generate_illustrations", lambda *a, **k: None)
     monkeypatch.setattr("src.generation.character_sheet.generate_character_sheets", lambda *a, **k: [])
-    monkeypatch.setattr("src.core.db.save_illustration", lambda *a, **k: True)
     return {"load": load, "save": save}
 
 

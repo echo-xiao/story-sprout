@@ -3,8 +3,7 @@
 Collections:
   books          — book metadata (title, book_id, status, created_at)
   characters     — character profiles (canonical_name, aliases, gender, appearance, sheet_path)
-  segments       — all segments (text, characters_in_scene, actions, background, sentiment)
-  illustrations  — generation records (segment_id, prompt, image_path, version)
+  preprocess_files — the per-book preprocess JSONs (analysis.json etc.), Mongo-first read
   generation_log — LLM call logs (input, output, tokens, duration)
 
 All operations are synchronous (pymongo) for compatibility with scripts.
@@ -163,55 +162,6 @@ def update_character(book_id: str, canonical_name: str, updates: dict) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════
-# Segments collection
-# ═══════════════════════════════════════════════════════════════
-
-def save_segments(book_id: str, segments: list[dict]) -> bool:
-    db = _get_db()
-    if db is None:
-        return False
-    db.segments.delete_many({"book_id": book_id})
-    if segments:
-        docs = [{"book_id": book_id, **s} for s in segments]
-        db.segments.insert_many(docs)
-    return True
-
-
-def update_segment(book_id: str, segment_id: int, updates: dict) -> bool:
-    db = _get_db()
-    if db is None:
-        return False
-    result = db.segments.update_one(
-        {"book_id": book_id, "id": segment_id},
-        {"$set": updates},
-    )
-    # matched_count, not blind True — same contract as update_character: callers
-    # must be able to tell "updated" from "segment doesn't exist".
-    return result.matched_count > 0
-
-
-# ═══════════════════════════════════════════════════════════════
-# Illustrations collection
-# ═══════════════════════════════════════════════════════════════
-
-def save_illustration(book_id: str, segment_id: int, prompt: str,
-                      image_path: str, version: int = 1) -> bool:
-    db = _get_db()
-    if db is None:
-        return False
-    doc = {
-        "book_id": book_id,
-        "segment_id": segment_id,
-        "prompt": prompt,
-        "image_path": image_path,
-        "version": version,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    db.illustrations.insert_one(doc)
-    return True
-
-
-# ═══════════════════════════════════════════════════════════════
 # Bulk save from preprocess (all layers at once)
 # ═══════════════════════════════════════════════════════════════
 
@@ -225,8 +175,7 @@ def save_preprocess(book_id: str, title: str, characters: list[dict],
     save_book(book_id, title, len(set(s.get("chapter_idx", 0) for s in segments)),
               alias_map=alias_map, gender_map=gender_map)
     save_characters(book_id, characters)
-    save_segments(book_id, segments)
-    logger.info("Saved preprocess to MongoDB: %d characters, %d segments", len(characters), len(segments))
+    logger.info("Saved preprocess to MongoDB: %d characters", len(characters))
     return True
 
 

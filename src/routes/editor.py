@@ -220,20 +220,6 @@ def _cascade_character_rename(book_id: str, old_name: str, new_name: str) -> Non
             except OSError as e:
                 logger.warning("Sheet rename failed for %s: %s", f.name, e)
 
-    # 5) Sync changed segments to MongoDB
-    if changed_ids and analysis:
-        try:
-            from src.core.db import update_segment as db_update_segment
-            by_id = {s.get("id"): s for s in analysis.get("segments", [])}
-            for seg_id in changed_ids:
-                seg = by_id.get(seg_id)
-                if seg is not None:
-                    db_update_segment(book_id, seg_id, {
-                        "characters_in_scene": seg.get("characters_in_scene", []),
-                        "character_actions": seg.get("character_actions", []),
-                    })
-        except Exception as e:
-            logger.debug("Mongo segment cascade skipped: %s", e)
 
 
 @router.put("/api/book/{book_id}/preprocess/characters/{char_name}")
@@ -693,18 +679,6 @@ async def update_scene(book_id: str, scene_name: str, update: SceneUpdate) -> di
                     changed.append(seg.get("id"))
             if changed:
                 _save_json(book_id, "analysis.json", analysis)
-                try:
-                    from src.core.db import update_segment as db_update_segment
-                    by_id = {s.get("id"): s for s in analysis.get("segments", [])}
-                    for sid in changed:
-                        s = by_id.get(sid)
-                        if s is not None:
-                            db_update_segment(book_id, sid, {
-                                "scene_background": s.get("scene_background", ""),
-                                "scene_summary": s.get("scene_summary", ""),
-                            })
-                except Exception as e:
-                    logger.debug("Mongo scene-text cascade skipped: %s", e)
 
     return {"status": "updated", "scene": new_name, "updated_fields": list(update_dict.keys())}
 
@@ -861,13 +835,6 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
             text=update_dict["simplified_text"],
         )
         invalidate_chapter_consistency(book_id, ch_idx)
-
-    # Sync to MongoDB (separate store — outside the file lock)
-    try:
-        from src.core.db import update_segment as db_update_segment
-        db_update_segment(book_id, seg_id, update_dict)
-    except Exception as e:
-        logger.debug("MongoDB sync skipped for segment %d: %s", seg_id, e)
 
     return {"status": "updated", "segment_id": seg_id, "updated_fields": list(update_dict.keys())}
 

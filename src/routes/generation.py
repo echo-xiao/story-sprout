@@ -370,17 +370,6 @@ async def regenerate_segment_illustration(
         except Exception as e:
             logger.warning("Auto quality check failed for segment %d: %s", seg_id, e)
 
-        # Sync to MongoDB
-        try:
-            from src.core.db import save_illustration
-            for ext in (".png", ".jpg"):
-                img = ch_dir / f"page_{page_num:03d}{ext}"
-                if img.exists():
-                    save_illustration(book_id, seg_id,
-                                      json.dumps(page_prompt, ensure_ascii=False), str(img))
-                    break
-        except Exception as e:
-            logger.warning("MongoDB sync failed for segment %d: %s", seg_id, e)
 
         # Keep chapter_data.json (what the combined PDF reads) pointing at the
         # new image + text — a regen that switched extensions used to leave a
