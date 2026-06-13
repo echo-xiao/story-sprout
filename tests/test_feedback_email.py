@@ -11,19 +11,42 @@ from __future__ import annotations
 import src.routes.books as books
 
 
-def test_email_is_noop_without_smtp_config(monkeypatch):
-    monkeypatch.delenv("SMTP_USER", raising=False)
-    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+def test_email_is_noop_without_any_config(monkeypatch):
+    for v in ("SMTP_USER", "SMTP_PASSWORD", "RESEND_API_KEY", "FEEDBACK_EMAIL_TO"):
+        monkeypatch.delenv(v, raising=False)
     sent = {"called": False}
 
     def _boom(*a, **k):
         sent["called"] = True
-        raise AssertionError("smtplib must not be touched when unconfigured")
+        raise AssertionError("no sender must be touched when unconfigured")
 
     monkeypatch.setattr("smtplib.SMTP", _boom)
-    # Must return cleanly without touching smtplib.
+    monkeypatch.setattr("httpx.post", _boom)
+    # No recipient + no provider → clean no-op.
     books._email_feedback_to_owner("hi", "u@x.com", "/editor")
     assert sent["called"] is False
+
+
+def test_resend_preferred_when_key_set(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    monkeypatch.setenv("FEEDBACK_EMAIL_TO", "me@gmail.com")
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        text = "ok"
+
+    def _post(url, headers=None, json=None, timeout=0):
+        captured.update(url=url, auth=headers["Authorization"], to=json["to"], reply=json.get("reply_to"))
+        return _Resp()
+
+    monkeypatch.setattr("httpx.post", _post)
+    books._email_feedback_to_owner("hi", "user@x.com", "/editor")
+
+    assert captured["url"] == "https://api.resend.com/emails"
+    assert captured["auth"] == "Bearer re_test"
+    assert captured["to"] == ["me@gmail.com"]
+    assert captured["reply"] == "user@x.com"
 
 
 def test_submit_feedback_succeeds_even_if_email_raises(client, monkeypatch):

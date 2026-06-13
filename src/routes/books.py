@@ -363,19 +363,40 @@ class FeedbackRequest(BaseModel):
     context: str | None = None
 
 
-def _send_owner_email(subject: str, body: str, reply_to: str | None = None) -> bool:
-    """Best-effort email to the project owner's inbox. Returns True if sent.
+def _resend_owner_email(to_addr: str, subject: str, body: str, reply_to: str | None) -> bool:
+    """Send via Resend's HTTP API — just an API key, no Gmail 2FA / app password.
+    Set RESEND_API_KEY + FEEDBACK_EMAIL_TO; from-address defaults to Resend's
+    onboarding sender (works to your own verified inbox without a domain)."""
+    key = os.getenv("RESEND_API_KEY", "").strip()
+    if not (key and to_addr):
+        return False
+    payload: dict[str, Any] = {
+        "from": os.getenv("RESEND_FROM", "Story Sprout <onboarding@resend.dev>"),
+        "to": [to_addr],
+        "subject": subject,
+        "text": body,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+    try:
+        r = httpx.post("https://api.resend.com/emails",
+                       headers={"Authorization": f"Bearer {key}"},
+                       json=payload, timeout=15)
+        if r.status_code < 300:
+            return True
+        logger.warning("Resend email failed %s: %s", r.status_code, r.text[:200])
+    except Exception as e:
+        logger.warning("Resend email error: %s", e)
+    return False
 
-    Gated on SMTP env vars — unset (local dev, or before the owner adds a Gmail
-    App Password) = no-op (returns False), never raises. Set SMTP_USER +
-    SMTP_PASSWORD (a Gmail App Password), optionally FEEDBACK_EMAIL_TO and
-    SMTP_HOST/SMTP_PORT (default smtp.gmail.com:587).
-    """
+
+def _smtp_owner_email(to_addr: str, subject: str, body: str, reply_to: str | None) -> bool:
+    """Send via SMTP (e.g. Gmail App Password). Set SMTP_USER + SMTP_PASSWORD,
+    optionally SMTP_HOST/SMTP_PORT (default smtp.gmail.com:587)."""
     user = os.getenv("SMTP_USER", "").strip()
     password = os.getenv("SMTP_PASSWORD", "").strip()
-    if not (user and password):
+    if not (user and password and to_addr):
         return False
-    to_addr = os.getenv("FEEDBACK_EMAIL_TO", "").strip() or user
     host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
     port = int(os.getenv("SMTP_PORT", "587"))
     try:
@@ -394,8 +415,21 @@ def _send_owner_email(subject: str, body: str, reply_to: str | None = None) -> b
             s.send_message(m)
         return True
     except Exception as e:
-        logger.warning("Owner email failed: %s", e)
+        logger.warning("SMTP email failed: %s", e)
         return False
+
+
+def _send_owner_email(subject: str, body: str, reply_to: str | None = None) -> bool:
+    """Best-effort email to the owner's inbox. Returns True if sent, never raises.
+
+    Tries Resend first (API key only — the easy path), then SMTP (Gmail App
+    Password). Both unset = no-op. Recipient: FEEDBACK_EMAIL_TO, or SMTP_USER.
+    """
+    to_addr = os.getenv("FEEDBACK_EMAIL_TO", "").strip() or os.getenv("SMTP_USER", "").strip()
+    if not to_addr:
+        return False
+    return (_resend_owner_email(to_addr, subject, body, reply_to)
+            or _smtp_owner_email(to_addr, subject, body, reply_to))
 
 
 def _email_feedback_to_owner(msg: str, email: str | None, context: str | None) -> None:
