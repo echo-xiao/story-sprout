@@ -87,7 +87,7 @@ app.add_middleware(TimeoutMiddleware)
 # subprocess env, since the request context is gone by the time those run.)
 _GEN_SUFFIXES = (
     "/generate", "/regenerate", "/simplify", "/background",
-    "/summarize", "/chat", "/autofill", "/quality", "/consistency",
+    "/summarize", "/autofill", "/quality", "/consistency",
 )
 
 

@@ -12,9 +12,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from src.config import GENERATED_DIR
 from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
-    _active_generations, _active_regens, _load_json, _require_user_key, _save_json,
-    book_generation_active, book_regen_active, invalidate_chapter_consistency,
-    segment_page_num, update_chapter_data_page, write_json_atomic,
+    _active_generations, _active_regens, _last_regen_errors, _load_json,
+    _require_user_key, _save_json, book_generation_active, book_regen_active,
+    invalidate_chapter_consistency, segment_page_num, update_chapter_data_page,
+    write_json_atomic,
 )
 from starlette.concurrency import run_in_threadpool
 
@@ -23,8 +24,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _sheets_for(book_id: str, names: list[str]) -> list[dict]:
+    """Reference-sheet entries for the named characters (exact filename match).
+    The one sheet-lookup used by story pages AND special pages — keeps the two
+    flows referencing characters identically."""
+    chars_dir = GENERATED_DIR / book_id / "characters"
+    out: list[dict] = []
+    for name in names:
+        safe = _safe_filename(name)
+        for ext in (".png", ".jpg"):
+            p = chars_dir / f"{safe}_sheet{ext}"
+            if p.exists():
+                out.append({"character_name": name, "sheet_path": str(p)})
+                break
+    return out
+
+
 def _restore_from_history(current_stem: Path, history_stem: Path,
-                          quality_pair: tuple[Path, Path] | None = None) -> None:
+                          quality_pair: tuple[Path, Path] | None = None) -> bool:
     """Put back the file a regen moved to history when no new file appeared.
 
     Every regen endpoint moves the current image to history BEFORE generating
@@ -37,9 +54,13 @@ def _restore_from_history(current_stem: Path, history_stem: Path,
     also archived the page's quality JSON, restore it alongside the image —
     otherwise the restored image shows as never-QA'd and the next chapter run
     burns a redundant vision call re-checking it.
+
+    Returns True when the regen produced NO new file (whether or not a
+    history copy existed to restore) — i.e. the run failed; callers use this
+    to record a failure reason for GET /regen-active.
     """
     if any(Path(f"{current_stem}{ext}").exists() for ext in (".png", ".jpg")):
-        return  # a new file was generated — nothing to restore
+        return False  # a new file was generated — nothing to restore
     import shutil
     for ext in (".png", ".jpg"):
         h = Path(f"{history_stem}{ext}")
@@ -57,21 +78,25 @@ def _restore_from_history(current_stem: Path, history_stem: Path,
                         shutil.copy2(hist_q, cur_q)
                     except OSError:
                         pass
-            return
+            return True
+    return True
 
 
 @router.get("/api/book/{book_id}/regen-active")
-async def get_regen_active(book_id: str, kind: str, key: str) -> dict[str, bool]:
+async def get_regen_active(book_id: str, kind: str, key: str) -> dict[str, Any]:
     """Whether a regeneration claim is currently held for one asset.
 
     Sheet/scene/special regens have no marker file — on failure they restore
     the old image, so to a file-existence poll failure looks identical to
     success. The frontend polls this: claim gone + no new file = failed.
     kind: "segment" | "character" | "scene" | "special"; key: seg id /
-    character name / scene name / "type:chapter".
+    character name / scene name / "type:chapter". `error` carries the last
+    failure reason for the asset (cleared when a new regen claims it).
     """
     ident: Any = int(key) if kind == "segment" and key.lstrip("-").isdigit() else key
-    return {"active": (book_id, kind, ident) in _active_regens}
+    claim = (book_id, kind, ident)
+    return {"active": claim in _active_regens,
+            "error": _last_regen_errors.get(claim)}
 
 
 @router.get("/api/book/{book_id}/chapter/{ch_idx}/agent-log")
@@ -833,7 +858,16 @@ async def regenerate_special_page(
     chapter: int = 0,
     user_key: str = Depends(_require_user_key),
 ) -> dict[str, Any]:
-    """Regenerate a special page (book_cover, chapter_cover, chapter_ending, back_cover)."""
+    """Regenerate a special page (book_cover, chapter_cover, chapter_ending, back_cover).
+
+    Record-driven: characters/background/texts come from the page's editable
+    record (preprocess-derived, editor-updated) — the SAME flow story pages
+    use — and matching character sheets + scene sheet are fed as references.
+    """
+    from src.generation.special_page_data import SPECIAL_TYPES, special_key
+
+    if page_type not in SPECIAL_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unknown special page type '{page_type}'.")
     claim = (book_id, "special", f"{page_type}:{chapter}")
     if claim in _active_regens:
         raise HTTPException(status_code=409, detail="This page is already regenerating.")
@@ -842,52 +876,89 @@ async def regenerate_special_page(
         generate_book_cover, generate_chapter_cover,
         generate_chapter_ending, generate_back_cover,
     )
+    from src.routes.editor import load_special_records
 
-    # Load character sheets
-    chars_dir = GENERATED_DIR / book_id / "characters"
-    character_sheets = []
-    if chars_dir.exists():
-        for f in chars_dir.glob("*_sheet.*"):
-            name = f.stem.replace("_sheet", "").replace("_", " ").title()
-            character_sheets.append({"character_name": name, "sheet_path": str(f)})
+    record = load_special_records(book_id).get(special_key(page_type, chapter), {})
+    rec_chars: list[str] = list(record.get("characters_in_scene") or [])
+    background = record.get("scene_background", "")
 
-    # Load book info
+    # Character sheets: exactly the record's characters (same lookup as story
+    # pages). Fall back to all sheets when the record names none.
+    character_sheets = _sheets_for(book_id, rec_chars)
+    if not character_sheets:
+        chars_dir = GENERATED_DIR / book_id / "characters"
+        if chars_dir.exists():
+            for f in chars_dir.glob("*_sheet.*"):
+                name = f.stem.replace("_sheet", "").replace("_", " ").title()
+                character_sheets.append({"character_name": name, "sheet_path": str(f)})
+
+    # Scene reference sheet matched from the record's background (story pages'
+    # matcher — covers/endings now reference scenes the same way).
+    from src.generation.illustration import _find_scene_sheet
+    scene_sheet = _find_scene_sheet(book_id, background) if background else None
+
+    # Visual identities for the record's characters (canonical store first).
+    from src.routes.helpers import load_characters
+    all_chars = load_characters(book_id)
+    by_name = {c.get("canonical_name"): c for c in all_chars}
+    if rec_chars:
+        char_profiles = [
+            {"name": n, "visual_identity": (by_name.get(n) or {}).get("appearance", "")}
+            for n in rec_chars
+        ]
+    else:
+        char_profiles = [
+            {"name": c.get("canonical_name", ""), "visual_identity": c.get("appearance", "")}
+            for c in all_chars[:5]
+        ]
+
     meta = _load_json(book_id, "meta.json") or {}
-    title = meta.get("title", book_id)
+    title = record.get("title_text") or meta.get("title", book_id)
+    subtitle = record.get("subtitle_text", "")
+    summary = record.get("scene_summary", "")
     ch_segments = _load_json(book_id, "chapter_segments.json") or {}
-    llm_chars = _load_json(book_id, "llm_characters.json") or {}
-    characters = llm_chars.get("characters", [])
 
     async def _gen_inner():
         if page_type == "book_cover":
-            char_profiles = [{"name": c["canonical_name"], "visual_identity": c.get("appearance", "")} for c in characters[:5]]
-            await run_in_threadpool(generate_book_cover, title, char_profiles, book_id, character_sheets=character_sheets)
+            await run_in_threadpool(
+                generate_book_cover, title, char_profiles, book_id,
+                character_sheets=character_sheets, scene_sheet_path=scene_sheet,
+                subtitle=subtitle or "A Picture Book", background=background,
+            )
         elif page_type == "chapter_cover":
             ch_info = ch_segments.get(str(chapter), {})
-            ch_title = ch_info.get("chapter_title", f"Chapter {chapter + 1}")
-            ch_summary = ch_info.get("chapter_summary", "")
-            char_profiles = [{"name": c["canonical_name"], "visual_identity": c.get("appearance", "")} for c in characters[:3]]
+            ch_title = record.get("title_text") or ch_info.get("chapter_title", f"Chapter {chapter + 1}")
+            ch_summary = summary or ch_info.get("chapter_summary", "")
             # Pass 1-based chapter number to match the pipeline/PDF file naming.
-            await run_in_threadpool(generate_chapter_cover, ch_title, chapter + 1, ch_summary, char_profiles, book_id, character_sheets=character_sheets)
+            await run_in_threadpool(
+                generate_chapter_cover, ch_title, chapter + 1, ch_summary,
+                char_profiles, book_id,
+                character_sheets=character_sheets, scene_sheet_path=scene_sheet,
+                background=background,
+            )
         elif page_type == "chapter_ending":
             ch_info = ch_segments.get(str(chapter), {})
-            ch_title = ch_info.get("chapter_title", f"Chapter {chapter + 1}")
-            char_profiles = [{"name": c["canonical_name"], "visual_identity": c.get("appearance", "")} for c in characters[:3]]
-            await run_in_threadpool(generate_chapter_ending, ch_title, chapter + 1, "", char_profiles, book_id, character_sheets=character_sheets)
+            ch_title = record.get("title_text") or ch_info.get("chapter_title", f"Chapter {chapter + 1}")
+            await run_in_threadpool(
+                generate_chapter_ending, ch_title, chapter + 1, summary,
+                char_profiles, book_id,
+                character_sheets=character_sheets, scene_sheet_path=scene_sheet,
+                background=background,
+            )
         elif page_type == "back_cover":
-            await run_in_threadpool(generate_back_cover, title, book_id, character_sheets=character_sheets)
-        else:
-            logger.error("Unknown special page type: %s", page_type)
+            await run_in_threadpool(
+                generate_back_cover, meta.get("title", book_id), book_id,
+                character_sheets=character_sheets, scene_sheet_path=scene_sheet,
+                title_text=record.get("title_text") or "The End",
+                subtitle_text=subtitle or "Thank you for reading!",
+                background=background,
+            )
 
     # Move the existing image aside FIRST (like the other regens) so the frontend's
     # "url appeared" completion check waits for the NEW image instead of instantly
     # "completing" on the unchanged old one ("regenerated but nothing changed").
-    _base = {
-        "book_cover": "book_cover",
-        "chapter_cover": f"chapter_{chapter + 1:02d}_cover",
-        "chapter_ending": f"chapter_{chapter + 1:02d}_ending",
-        "back_cover": "back_cover",
-    }.get(page_type)
+    from src.generation.special_page_data import special_file_base
+    _base = special_file_base(page_type, chapter)
     special_dir = GENERATED_DIR / book_id / "special"
     hist = special_dir / "history"
     import time as _t
@@ -903,25 +974,91 @@ async def regenerate_special_page(
                     pass
 
     async def _gen():
-        from src.gemini_backend import set_user_api_key, reset_user_api_key
+        from src.gemini_backend import (
+            friendly_gen_error, reset_gen_error_box, set_gen_error_box,
+            set_user_api_key, reset_user_api_key,
+        )
         # BYOK — set the user's key for this task and reset afterwards so it
         # doesn't leak into the worker context.
         token = set_user_api_key(user_key)
+        # Error box: the generators retry + swallow exceptions internally, so
+        # str(e) here is usually empty — the box captures the REAL reason
+        # (e.g. free-tier key with zero image quota → "use a billing-enabled key").
+        box: list[str] = []
+        box_token = set_gen_error_box(box)
+        err = ""
         try:
             await _gen_inner()
-        except Exception:
+        except Exception as e:
             # Best-effort: the frontend's poll timeout covers the UI; log so the
             # failure isn't swallowed by the background-task runner.
             logger.exception("Special page regen failed for %s/%s", book_id, page_type)
+            err = str(e)[:300]
         finally:
+            reset_gen_error_box(box_token)
             reset_user_api_key(token)
-            if _base:
-                _restore_from_history(special_dir / _base, hist / f"{_base}_{_ts}")
+            if _base and _restore_from_history(special_dir / _base, hist / f"{_base}_{_ts}"):
+                _last_regen_errors[claim] = (
+                    friendly_gen_error(box) or err
+                    or "Generation produced no image (check API key / quota)."
+                )
             _active_regens.discard(claim)
 
     _active_regens.add(claim)
+    _last_regen_errors.pop(claim, None)
     background_tasks.add_task(_gen)
     return {"status": "generating", "page_type": page_type, "chapter": chapter}
+
+
+@router.post("/api/book/{book_id}/special/{page_type}/quality")
+async def check_special_page_quality(
+    book_id: str, page_type: str, chapter: int = 0,
+    _user_key: str | None = Depends(_require_user_key),  # belt to the middleware's suffix match
+) -> dict[str, Any]:
+    """Quality check for a special page — story pages' checker against the
+    page's record (expected text = its title/subtitle, expected characters =
+    its characters_in_scene)."""
+    from src.generation.gemini_consistency_check import check_page_quality
+    from src.generation.special_page_data import SPECIAL_TYPES, special_file_base, special_key
+    from src.routes.editor import load_special_records
+    from src.routes.helpers import load_characters
+
+    if page_type not in SPECIAL_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unknown special page type '{page_type}'.")
+    base = special_file_base(page_type, chapter) or ""
+    special_dir = GENERATED_DIR / book_id / "special"
+    ill_path = ""
+    for ext in (".png", ".jpg"):
+        candidate = special_dir / f"{base}{ext}"
+        if candidate.exists():
+            ill_path = str(candidate)
+            break
+    if not ill_path:
+        raise HTTPException(status_code=404, detail="No image found for this special page.")
+
+    record = load_special_records(book_id).get(special_key(page_type, chapter), {})
+    names = list(record.get("characters_in_scene") or [])
+    sheets = _sheets_for(book_id, names)
+    by_name = {c.get("canonical_name"): c for c in load_characters(book_id)}
+    for s in sheets:
+        s["visual_identity"] = (by_name.get(s["character_name"]) or {}).get("appearance", "")
+    expected_text = " ".join(
+        t for t in (record.get("title_text", ""), record.get("subtitle_text", "")) if t
+    )
+
+    try:
+        result = await run_in_threadpool(
+            check_page_quality, ill_path, sheets, expected_text, names, 0,
+        )
+    except Exception as e:
+        logger.error("Quality check failed for special %s/%s: %s", book_id, page_type, e)
+        raise HTTPException(status_code=500, detail=f"Quality check failed: {str(e)}")
+    result["special_type"] = page_type
+    result["chapter"] = chapter
+
+    quality_dir = special_dir / "quality"
+    write_json_atomic(quality_dir / f"{base}_quality.json", result)
+    return result
 
 
 @router.post("/api/book/{book_id}/scenes/{scene_name}/regenerate")
@@ -1003,25 +1140,40 @@ async def regenerate_scene_sheet(
                         break
             except Exception as e:
                 logger.error("Scene generation failed for %s: %s", scene_name, e)
+                from src.gemini_backend import note_gen_failure
+                note_gen_failure(e)
 
         # Run the blocking Gemini call off the event loop.
         await run_in_threadpool(_gen_scene_image)
 
     async def _gen():
-        from src.gemini_backend import set_user_api_key, reset_user_api_key
+        from src.gemini_backend import (
+            friendly_gen_error, reset_gen_error_box, set_gen_error_box,
+            set_user_api_key, reset_user_api_key,
+        )
         # BYOK — set the user's key for this task and reset afterwards so it
         # doesn't leak into the worker context.
         token = set_user_api_key(user_key)
+        box: list[str] = []
+        box_token = set_gen_error_box(box)
+        err = ""
         try:
             await _gen_inner()
-        except Exception:
+        except Exception as e:
             logger.exception("Scene sheet regen failed for %s/%s", book_id, scene_name)
+            err = str(e)[:300]
         finally:
+            reset_gen_error_box(box_token)
             reset_user_api_key(token)
-            _restore_from_history(scenes_dir / f"{safe}_scene", history_dir / f"{safe}_scene_{ts}")
+            if _restore_from_history(scenes_dir / f"{safe}_scene", history_dir / f"{safe}_scene_{ts}"):
+                _last_regen_errors[claim] = (
+                    friendly_gen_error(box) or err
+                    or "Generation produced no image (check API key / quota)."
+                )
             _active_regens.discard(claim)
 
     _active_regens.add(claim)
+    _last_regen_errors.pop(claim, None)
     background_tasks.add_task(_gen)
     return {"status": "generating", "scene": scene_name}
 
@@ -1135,16 +1287,20 @@ async def regenerate_character_sheet(
         # BYOK — set the user's key for this task and reset afterwards so it
         # doesn't leak into the worker context.
         token = set_user_api_key(user_key)
+        err = ""
         try:
             await _regen_inner()
-        except Exception:
+        except Exception as e:
             logger.exception("Character sheet regen failed for %s/%s", book_id, char_name)
+            err = str(e)[:300]
         finally:
             reset_user_api_key(token)
-            _restore_from_history(chars_dir / f"{safe}_sheet", history_dir / f"{safe}_sheet_{ts}")
+            if _restore_from_history(chars_dir / f"{safe}_sheet", history_dir / f"{safe}_sheet_{ts}"):
+                _last_regen_errors[claim] = err or "Generation produced no image (check API key / quota)."
             _active_regens.discard(claim)
 
     _active_regens.add(claim)
+    _last_regen_errors.pop(claim, None)
     background_tasks.add_task(_regen)
     return {"status": "regenerating", "character": char_name}
 

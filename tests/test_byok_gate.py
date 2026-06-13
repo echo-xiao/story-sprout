@@ -15,7 +15,6 @@ GATED_POSTS = [
     "/api/book/test-book/segment/0/simplify",
     "/api/book/test-book/segment/0/background",
     "/api/book/test-book/segment/0/summarize",
-    "/api/book/test-book/segment/0/chat",
     "/api/book/test-book/segment/0/quality",
     "/api/book/test-book/chapter/0/generate",
     "/api/book/test-book/chapter/0/consistency",

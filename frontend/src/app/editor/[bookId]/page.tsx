@@ -785,7 +785,7 @@ export default function EditorPage() {
         const st = await getRegenActive(bookId, "character", canonicalName).catch(() => null);
         if (st && st.active === false) {
           clearInterval(poll);
-          alert("Regeneration failed — check your API key/quota and try again.");
+          alert(`Regeneration failed: ${st?.error || "check your API key/quota and try again."}`);
         }
       } catch {}
     }, 5000);
@@ -829,7 +829,7 @@ export default function EditorPage() {
             if (st && st.active === false) {
               stop(poll);
               setRegenSpecial(false);
-              alert("Regeneration failed — check your API key/quota and try again.");
+              alert(`Regeneration failed: ${st?.error || "check your API key/quota and try again."}`);
               resolve();
             }
           } catch {}

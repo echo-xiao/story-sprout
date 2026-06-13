@@ -77,30 +77,3 @@ def test_concurrent_edit_survives_summarize(client, monkeypatch, store):
     assert final["scene_summary"] == "A summary."
     assert final["sentiment"] == "tense"
     assert final["simplified_text"] == "EDITED DURING LLM CALL"
-
-
-def test_chat_updates_sync_characters_in_scene(client, monkeypatch, store):
-    """chat applies character_actions and keeps characters_in_scene in sync."""
-
-    def fake_llm(prompt, system=""):
-        return {
-            "reply": "done",
-            "updates": {
-                "character_actions": [
-                    {"name": "Nick Carraway", "action": "writes"},
-                    {"name": "", "action": "ignored — empty name"},
-                ],
-            },
-        }
-
-    monkeypatch.setattr("src.llm_client.generate_json", fake_llm)
-
-    resp = client.post(
-        "/api/book/somebook/segment/0/chat",
-        json={"message": "add Nick", "history": []},
-    )
-    assert resp.status_code == 200
-
-    final = store["load"]("b", "analysis.json")["segments"][0]
-    assert final["characters_in_scene"] == ["Nick Carraway"]
-    assert len(final["character_actions"]) == 2

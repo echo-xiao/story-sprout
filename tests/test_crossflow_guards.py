@@ -97,9 +97,23 @@ def test_restore_version_409_while_chapter_generating(client, book):
 def test_regen_active_endpoint(client, book):
     _active_regens.add((book, "character", "Alice"))
     _active_regens.add((book, "segment", 3))
-    assert client.get(f"/api/book/{book}/regen-active",
-                      params={"kind": "character", "key": "Alice"}).json() == {"active": True}
-    assert client.get(f"/api/book/{book}/regen-active",
-                      params={"kind": "segment", "key": "3"}).json() == {"active": True}
-    assert client.get(f"/api/book/{book}/regen-active",
-                      params={"kind": "scene", "key": "Forest"}).json() == {"active": False}
+
+    def fetch(kind, key):
+        return client.get(f"/api/book/{book}/regen-active",
+                          params={"kind": kind, "key": key}).json()
+
+    assert fetch("character", "Alice") == {"active": True, "error": None}
+    assert fetch("segment", "3") == {"active": True, "error": None}
+    assert fetch("scene", "Forest") == {"active": False, "error": None}
+
+
+def test_regen_active_reports_last_failure(client, book):
+    from src.routes.helpers import _last_regen_errors
+    claim = (book, "scene", "Forest")
+    _last_regen_errors[claim] = "quota exhausted"
+    try:
+        r = client.get(f"/api/book/{book}/regen-active",
+                       params={"kind": "scene", "key": "Forest"}).json()
+        assert r == {"active": False, "error": "quota exhausted"}
+    finally:
+        _last_regen_errors.clear()

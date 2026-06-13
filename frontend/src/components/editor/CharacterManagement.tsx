@@ -169,7 +169,7 @@ export default function CharacterManagement({
             if (st && st.active === false) {
               failed = true;
               clearInterval(poll);
-              alert("Regeneration failed — check your API key/quota and try again.");
+              alert(`Regeneration failed: ${st?.error || "check your API key/quota and try again."}`);
               resolve();
             }
           } catch {}
@@ -234,7 +234,7 @@ export default function CharacterManagement({
                 if (st && st.active === false) {
                   failed = true;
                   clearInterval(poll);
-                  alert("Regeneration failed — check your API key/quota and try again.");
+                  alert(`Regeneration failed: ${st?.error || "check your API key/quota and try again."}`);
                   resolve();
                 }
               } catch {}

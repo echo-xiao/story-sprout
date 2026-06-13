@@ -144,7 +144,7 @@ export async function regenerateSegment(bookId: string, segId: number) {
 // the backend restores the old image, so the file watch alone can't tell.
 export async function getRegenActive(bookId: string, kind: string, key: string) {
   const { data } = await api.get(`/book/${bookId}/regen-active`, { params: { kind, key } });
-  return data as { active: boolean };
+  return data as { active: boolean; error?: string | null };
 }
 
 export async function getRegenStatus(bookId: string, segId: number) {

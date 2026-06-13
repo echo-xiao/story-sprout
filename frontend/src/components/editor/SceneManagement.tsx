@@ -150,7 +150,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
             if (st && st.active === false) {
               stop(poll);
               setGenerating(null);
-              alert("Regeneration failed — check your API key/quota and try again.");
+              alert(`Regeneration failed: ${st?.error || "check your API key/quota and try again."}`);
               resolve();
             }
           } catch {}
@@ -215,7 +215,8 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
           );
           if (states.length > 0 && states.every(st => st !== null && st.active === false)) {
             clearInterval(poll);
-            alert("Regeneration failed — check your API key/quota and try again.");
+            const reason = states.find(st => st?.error)?.error;
+            alert(`Regeneration failed: ${reason || "check your API key/quota and try again."}`);
             resolve();
           }
         } catch {}

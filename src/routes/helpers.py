@@ -42,6 +42,14 @@ def book_regen_active(book_id: str) -> bool:
     return any(claim[0] == book_id for claim in _active_regens)
 
 
+# Last failure message per regen claim, set when a regen task ends without
+# producing a file and cleared when a new regen claims the asset. Served by
+# GET /regen-active so the frontend can tell the user WHY (e.g. "free-tier key
+# has zero image quota — use a billing-enabled key") instead of timing out
+# silently. In-memory like the claims themselves (single-instance service).
+_last_regen_errors: dict[tuple[str, str, Any], str] = {}
+
+
 def _require_user_key(x_gemini_key: str | None = Header(default=None)) -> str | None:
     """BYOK gate (only enforced when REQUIRE_USER_KEY=true).
 
