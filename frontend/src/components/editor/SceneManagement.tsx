@@ -151,7 +151,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
             resolve();
           } catch {}
         }, 5000);
-        timeout = setTimeout(() => { clearInterval(poll); setGenerating(null); resolve(); }, 120000);
+        timeout = setTimeout(() => { clearInterval(poll); setGenerating(null); if (!unmountedRef.current) alert("Still generating in the background — reload in a minute to see it."); resolve(); }, 120000);
       });
       onSceneRegen?.();  // notify parent → refresh stale pages + parent's scene copy
     } catch (e: any) {
@@ -217,7 +217,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
           }
         } catch {}
       }, 5000);
-      setTimeout(() => { clearInterval(poll); resolve(); }, 300000);
+      setTimeout(() => { clearInterval(poll); if (!unmountedRef.current) alert("Still generating in the background — reload in a minute to see it."); resolve(); }, 300000);
     });
 
     setGenerating(null);

@@ -832,7 +832,7 @@ export default function EditorPage() {
             resolve();
           } catch {}
         }, 5000);
-        timeout = setTimeout(() => { clearInterval(poll); setRegenSpecial(false); resolve(); }, 120000);
+        timeout = setTimeout(() => { clearInterval(poll); setRegenSpecial(false); if (!unmountedRef.current) alert("Still generating in the background — reload in a minute to see it."); resolve(); }, 120000);
       });
     } catch (e: any) {
       setRegenSpecial(false);

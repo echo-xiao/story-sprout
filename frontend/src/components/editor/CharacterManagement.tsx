@@ -172,7 +172,7 @@ export default function CharacterManagement({
           } catch {}
         }, 5000);
         // 240s: sheet regen may now self-correct (2x generate + 2x QA worst case)
-        setTimeout(() => { clearInterval(poll); resolve(); }, 240000);
+        setTimeout(() => { clearInterval(poll); if (!unmountedRef.current) alert("Still generating in the background — reload in a minute to see it."); resolve(); }, 240000);
       });
       setSheetCacheBust(Date.now());  // force big preview + Current thumbnail to reload
     } finally {
@@ -231,7 +231,7 @@ export default function CharacterManagement({
                 resolve();
               } catch {}
             }, 10000);
-            setTimeout(() => { clearInterval(poll); resolve(); }, 240000);
+            setTimeout(() => { clearInterval(poll); if (!unmountedRef.current) alert("Still generating in the background — reload in a minute to see it."); resolve(); }, 240000);
           });
         } catch {}
         if (failed) break;
