@@ -14,8 +14,8 @@ from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
     _active_generations, _active_regens, _last_regen_errors, _load_json,
     _require_user_key, _save_json, book_generation_active, book_regen_active,
-    invalidate_chapter_consistency, segment_page_num, update_chapter_data_page,
-    write_json_atomic,
+    invalidate_chapter_consistency, load_characters, segment_page_num,
+    update_chapter_data_page, write_json_atomic,
 )
 from starlette.concurrency import run_in_threadpool
 
@@ -235,6 +235,11 @@ async def regenerate_segment_illustration(
         character_sheets = []
         chars_to_generate = []
 
+        # Read profiles from the consistency hub (characters collection,
+        # file-fallback) — the SAME canonical source the editor reads, so a
+        # rename/appearance edit can't leave generation drawing the old look.
+        by_canonical = {c.get("canonical_name"): c for c in load_characters(book_id)}
+
         for name in target.get("characters_in_scene", []):
             safe = _safe_filename(name)
             found = False
@@ -248,18 +253,15 @@ async def regenerate_segment_illustration(
                     found = True
                     break
             if not found:
-                # Find character profile from LLM data
-                llm_chars = _load_json(book_id, "llm_characters.json") or {}
-                for c in llm_chars.get("characters", []):
-                    if c.get("canonical_name") == name:
-                        chars_to_generate.append({
-                            "name": name,
-                            "role": c.get("role", "supporting"),
-                            "gender": c.get("gender", "unknown"),
-                            "appearance_description": [c.get("appearance", ""), c.get("description", "")],
-                            "visual_details": c.get("visual_details", {}),
-                        })
-                        break
+                c = by_canonical.get(name)
+                if c:
+                    chars_to_generate.append({
+                        "name": name,
+                        "role": c.get("role", "supporting"),
+                        "gender": c.get("gender", "unknown"),
+                        "appearance_description": [c.get("appearance", ""), c.get("description", "")],
+                        "visual_details": c.get("visual_details", {}),
+                    })
 
         if chars_to_generate:
             new_sheets = await run_in_threadpool(generate_character_sheets, chars_to_generate, book_id)
@@ -691,7 +693,9 @@ async def check_segment_quality(
 
     # Find character sheets — match by scene character name directly
     chars_dir = GENERATED_DIR / book_id / "characters"
-    llm_chars = _load_json(book_id, "llm_characters.json") or {}
+    # Consistency hub (characters collection, file-fallback) — same source the
+    # editor reads, so appearance text stays in sync with the sheet image.
+    char_profiles = load_characters(book_id)
     scene_chars = target.get("characters_in_scene", [])
     character_sheets = []
     for name in scene_chars:
@@ -699,9 +703,9 @@ async def check_segment_quality(
         for ext in (".png", ".jpg"):
             sheet_path = chars_dir / f"{safe}_sheet{ext}"
             if sheet_path.exists():
-                # Find appearance from llm_characters for visual_identity
+                # Find appearance for visual_identity
                 appearance = ""
-                for c in llm_chars.get("characters", []):
+                for c in char_profiles:
                     cn = c.get("canonical_name", "").lower()
                     if cn == name.lower() or name.lower() in [a.lower() for a in c.get("aliases", [])]:
                         appearance = c.get("appearance", "")
@@ -775,9 +779,8 @@ async def check_chapter_consistency(
 
     # Build character sheets
     import re as _re
-    llm_chars = _load_json(book_id, "llm_characters.json") or {}
     character_sheets = []
-    for char in llm_chars.get("characters", []):
+    for char in load_characters(book_id):
         name = char.get("canonical_name", "")
         safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
         safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
