@@ -31,6 +31,9 @@ def store(monkeypatch, tmp_path):
     monkeypatch.setattr("src.routes.editor._load_json", load)
     monkeypatch.setattr("src.routes.editor._save_json", save)
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    # update_chapter_data_page (helpers) now UPSERTS — without this patch
+    # it bootstraps chapter_data.json under the REAL data/generated dir.
+    monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
     return {"load": load, "save": save}
 
 

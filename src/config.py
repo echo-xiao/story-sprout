@@ -32,9 +32,6 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "picture_book_generator")
 
 
-# NLP
-SPACY_MODEL = "en_core_web_lg"
-
 # Image generation styles
 ILLUSTRATION_STYLES = {
     "watercolor": "watercolor children's book illustration, soft pastel colors, rounded shapes, warm lighting, gentle and friendly style",

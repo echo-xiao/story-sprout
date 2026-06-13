@@ -25,6 +25,9 @@ def book(monkeypatch, tmp_path):
         lambda book_id, filename: analysis if filename == "analysis.json" else {},
     )
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    # update_chapter_data_page (helpers) now UPSERTS — without this patch
+    # it bootstraps chapter_data.json under the REAL data/generated dir.
+    monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
 
     ch_base = tmp_path / "somebook" / "chapters" / "ch00"
     pages = ch_base / "pages"

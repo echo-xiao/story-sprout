@@ -52,6 +52,9 @@ def sync_env(monkeypatch, tmp_path):
     monkeypatch.setattr("src.routes.generation._load_json", load)
     monkeypatch.setattr("src.routes.generation._save_json", save)
     monkeypatch.setattr("src.routes.generation.GENERATED_DIR", tmp_path)
+    # _apply_deferred_text_sync also writes chapter_data via helpers — without
+    # this the user-won writeback lands in the REAL data/generated dir.
+    monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
 
     ch = tmp_path / "somebook" / "chapters" / "ch00"
     ch.mkdir(parents=True)
