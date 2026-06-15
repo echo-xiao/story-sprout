@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Users, RefreshCw, Shield } from "lucide-react";
-import { updateCharacter, regenerateCharacterSheet, getCharacters, getCharacterSheetHistory, autofillCharacterDetails, checkCharacterSheetQuality, getRegenActive } from "@/lib/api";
+import { updateCharacter, regenerateCharacterSheet, getCharacters, getAssetVersions, selectVersion, autofillCharacterDetails, checkCharacterSheetQuality, getRegenActive } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
 import type { CharacterInfo } from "@/types";
 
@@ -33,7 +33,8 @@ export default function CharacterManagement({
   const [editing, setEditing] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
   const [regenning, setRegenning] = useState(false);
-  const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
+  const [versions, setVersions] = useState<Array<{ id: string; url: string; created_at: string }>>([]);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
   // Bumped after each regeneration to force the browser to reload the new sheet
   // (the current sheet keeps the same filename, so the URL alone won't change).
@@ -92,9 +93,8 @@ export default function CharacterManagement({
       }
       setActiveSheetUrl(null);
       setQualityResult(null);
-      // Show current sheet immediately as placeholder while history loads
-      const sheetUrl = sheets[char.canonical_name];
-      setSheetHistory(sheetUrl ? [{ url: sheetUrl, version: "current", timestamp: Date.now() }] : []);
+      setVersions([]);
+      setSelectedVersionId(null);
     }
     setSelectedChar(char.canonical_name);
     const snapshot = {
@@ -118,16 +118,32 @@ export default function CharacterManagement({
     }
   }, [navigateToChar]);
 
-  // Load sheet history when character changes
+  // Load selectable versions when the character changes / after a regen.
   useEffect(() => {
     if (!selectedChar) return;
-    getCharacterSheetHistory(bookId, selectedChar)
+    getAssetVersions(bookId, "character", selectedChar)
       .then(data => {
-        setSheetHistory(data.images || []);
-        // Don't override activeSheetUrl — let sheets[name] be the default
+        setVersions(data.versions || []);
+        setSelectedVersionId(data.selected_version_id || null);
       })
-      .catch(() => { setSheetHistory([]); });
+      .catch(() => { setVersions([]); setSelectedVersionId(null); });
   }, [bookId, selectedChar, regenning]);
+
+  // Pick a version → backend promotes it to the live sheet, so the editor, the
+  // Pages "Characters in Scene" panel and page generation all use it. Selecting
+  // does NOT generate a new version.
+  const pickVersion = async (versionId: string) => {
+    if (!selectedChar || !canGenerate) return;
+    try {
+      await selectVersion(bookId, "character", selectedChar, versionId);
+      setSelectedVersionId(versionId);
+      const data = await getCharacters(bookId);
+      onCharactersUpdate(data.characters || [], data.sheets || {});
+      setSheetCacheBust(Date.now());
+    } catch (e: any) {
+      alert(`Select failed: ${e?.response?.data?.detail || e?.message || e}`);
+    }
+  };
 
   // Auto-select first character once data is available. In an effect, not the
   // render body — calling setState (selectChar) during render warns under
@@ -362,43 +378,31 @@ export default function CharacterManagement({
               </div>
             </div>
 
-            {/* History thumbnails (vertical, right side of sheet) */}
-            {(() => {
-              // Build versions list: current from sheets + historical from sheetHistory
-              const currentUrl = sheets[selected.canonical_name];
-              const historical = sheetHistory
-                .filter(img => img.version !== "current")
-                .sort((a, b) => b.timestamp - a.timestamp);  // newest first -> Current, v2, v1
-              const allVersions = [
-                ...(currentUrl ? [{ url: currentUrl, version: "current", timestamp: Date.now() }] : []),
-                ...historical,
-              ];
-              if (allVersions.length === 0) return null;
-              return (
-                <div className="w-[320px] shrink-0 overflow-y-auto p-4 space-y-3 border-l border-peach/20">
-                  <p className="text-xs text-gray-500 font-semibold">Versions ({allVersions.length})</p>
-                  {allVersions.map((img, idx) => (
-                    <div key={`${selected.canonical_name}-${img.version}-${idx}`}>
-                      <img
-                        src={`${API_BASE}${img.url}${img.version === "current" && sheetCacheBust ? `?v=${sheetCacheBust}` : ""}`}
-                        alt={img.version === "current" ? "Current" : `v${allVersions.length - idx}`}
-                        loading="lazy"
-                        decoding="async"
-                        onClick={() => setActiveSheetUrl(img.url)}
-                        className={`w-full rounded-xl cursor-pointer border-2 transition-colors ${
-                          (activeSheetUrl || currentUrl) === img.url
-                            ? "border-coral shadow-md"
-                            : "border-transparent hover:border-coral/50"
-                        }`}
-                      />
-                      <p className="text-[10px] text-gray-400 text-center mt-1">
-                        {img.version === "current" ? "Current" : `Version ${allVersions.length - idx}`}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
+            {/* Version thumbnails — click to pick the one used in the book/PDF */}
+            {versions.length > 1 && (
+              <div className="w-[320px] shrink-0 overflow-y-auto p-4 space-y-3 border-l border-peach/20">
+                <p className="text-xs text-gray-500 font-semibold">Versions ({versions.length})</p>
+                {versions.slice().reverse().map((v, idx) => (
+                  <div key={v.id}>
+                    <img
+                      src={`${v.url.startsWith("http") ? "" : API_BASE}${v.url}`}
+                      alt={v.id === selectedVersionId ? "Selected" : `v${versions.length - idx}`}
+                      loading="lazy"
+                      decoding="async"
+                      onClick={() => pickVersion(v.id)}
+                      className={`w-full rounded-xl cursor-pointer border-2 transition-colors ${
+                        v.id === selectedVersionId
+                          ? "border-coral shadow-md"
+                          : "border-transparent hover:border-coral/50"
+                      }`}
+                    />
+                    <p className="text-[10px] text-gray-400 text-center mt-1">
+                      {v.id === selectedVersionId ? "Selected" : `Version ${versions.length - idx}`}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Quality Check column (between thumbnails and edit fields) */}
