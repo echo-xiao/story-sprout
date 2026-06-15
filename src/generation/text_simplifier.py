@@ -12,8 +12,6 @@ creatively rewrite selected scenes into picture book format with:
 import json
 import logging
 
-from src.llm_client import generate_json
-
 logger = logging.getLogger(__name__)
 
 SYSTEM_INSTRUCTION = """\
@@ -191,6 +189,9 @@ def simplify_text(
         characters_info=chars_info,
     )
 
+    # Imported here (not at module load) so a test patching
+    # src.llm_client.generate_json reaches it — matching pipeline.py's pattern.
+    from src.llm_client import generate_json
     result = generate_json(prompt, system=SYSTEM_INSTRUCTION)
     pages = result.get("pages", [])
 

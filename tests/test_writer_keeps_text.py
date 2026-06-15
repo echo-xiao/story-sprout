@@ -81,3 +81,13 @@ def test_writer_keeps_user_text_and_merges_in_order(writer_stage):
     assert [s["page_number"] for s in simplified] == [1, 2]
     assert simplified[0]["page_text"] == "USER EDITED TEXT"
     assert simplified[1]["page_text"] == "LLM TEXT p2"
+
+
+def test_force_regen_redraws_images_but_keeps_text(writer_stage, monkeypatch):
+    """PBG_FORCE_REGEN means "redraw the images", NOT "recompute the text".
+    The Writer is provenance-driven, so a chapter re-gen must keep user/Writer
+    text instead of burning an LLM pass on every page each time."""
+    monkeypatch.setenv("PBG_FORCE_REGEN", "1")
+    _drive(writer_stage["stage"])
+    sent = [s["page_number"] for batch in writer_stage["calls"] for s in batch]
+    assert sent == [2], "even under force, an existing-text page must NOT be re-simplified"

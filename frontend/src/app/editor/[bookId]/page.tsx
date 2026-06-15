@@ -164,6 +164,11 @@ export default function EditorPage() {
     segmentsRef.current = segments;
   }, [segments]);
 
+  // How many pages the chapter generation has finished so far — so the poll can
+  // stream completed images into the editor LIVE (re-fetch only when it climbs),
+  // instead of leaving the user staring at stale pages for the whole 40-min run.
+  const lastCompletedPagesRef = useRef(0);
+
   // Keep a ref of the selected chapter too — the long Gen-All loop captures it
   // once and would otherwise refresh/compare against the chapter that was
   // selected when the button was clicked, not the one the user is now viewing.
@@ -250,11 +255,27 @@ export default function EditorPage() {
     // here just doubles the requests and makes the progress bar flicker between
     // the two responses. Let the loop own it.
     if (genAllChapters) return;
+    // New run for this chapter — reset the live-stream watermark.
+    lastCompletedPagesRef.current = 0;
     const interval = setInterval(async () => {
       try {
         const prog = await getChapterProgress(bookId, generatingChapter).catch(() => null);
         if (!prog) return;
         setChapterProgress(prog);
+        // Stream finished pages into the editor as the Artist completes them —
+        // re-fetch only when the completed-page count climbs (cheap, ~once per
+        // page), so a finished illustration shows up within ~5s instead of only
+        // after the whole chapter is done. Versioned URLs make the image refresh.
+        if (prog.status === "generating" && selectedChapterRef.current === generatingChapter) {
+          const done = (prog as any).completed_pages ?? 0;
+          if (done > lastCompletedPagesRef.current) {
+            lastCompletedPagesRef.current = done;
+            const data = await getChapterSegments(bookId, generatingChapter).catch(() => null);
+            if (data && selectedChapterRef.current === generatingChapter) {
+              applyServerSegments(data.segments || []);
+            }
+          }
+        }
         if (prog.status === "failed") {
           setGeneratingChapter(null);
           setChapterProgress(null);
@@ -1363,6 +1384,7 @@ export default function EditorPage() {
                     </button>
                   </div>
                   <AutoTextarea
+                    name="simplified_text"
                     value={selectedSegment.simplified_text || ""}
                     onChange={(e) => updateField("simplified_text", e.target.value)}
                     className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26] min-h-[3rem]"
@@ -1389,6 +1411,7 @@ export default function EditorPage() {
                     </button>
                   </div>
                   <AutoTextarea
+                    name="scene_background"
                     value={selectedSegment.scene_background || ""}
                     onChange={(e) => updateField("scene_background", e.target.value)}
                     className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26] min-h-[2.5rem]"
@@ -1407,6 +1430,7 @@ export default function EditorPage() {
                       <div key={idx} className="flex gap-1.5 items-center">
                         <div className="w-1/3 relative">
                           <input
+                            name={`character-${idx}-name`}
                             list={`char-list-${idx}`}
                             value={ca.name}
                             onChange={(e) => updateAction(idx, "name", e.target.value)}
@@ -1422,6 +1446,7 @@ export default function EditorPage() {
                           </datalist>
                         </div>
                         <input
+                          name={`character-${idx}-action`}
                           value={ca.action}
                           onChange={(e) => updateAction(idx, "action", e.target.value)}
                           className="flex-1 rounded-md border border-peach/50 px-2 py-1.5 text-xs focus:ring-2 focus:ring-coral/30 outline-none !leading-[1.26]"
@@ -1438,6 +1463,7 @@ export default function EditorPage() {
                     {/* Add character: dropdown to pick from list, or type custom */}
                     <div className="flex gap-1.5 items-center">
                       <select
+                        name="add-character"
                         value=""
                         onChange={(e) => {
                           if (!e.target.value || !selectedSegment) return;
@@ -1495,6 +1521,7 @@ export default function EditorPage() {
                     </button>
                   </div>
                   <AutoTextarea
+                    name="scene_summary"
                     value={selectedSegment.scene_summary || ""}
                     onChange={(e) => updateField("scene_summary", e.target.value)}
                     className="w-full rounded-lg border border-peach/50 p-3 text-xs focus:ring-2 focus:ring-coral/30 focus:border-coral outline-none resize-none !leading-[1.26] mb-2 min-h-[2.5rem]"
@@ -1503,6 +1530,7 @@ export default function EditorPage() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500"><Smile size={12} className="inline" /> Sentiment:</span>
                     <select
+                      name="sentiment"
                       value={selectedSegment.sentiment || "neutral"}
                       onChange={(e) => updateField("sentiment", e.target.value)}
                       className="rounded-md border border-peach/50 px-2 py-1 text-xs focus:ring-2 focus:ring-coral/30 outline-none bg-white"
@@ -1589,6 +1617,10 @@ export default function EditorPage() {
           chapterIdx={generatingChapter ?? selectedChapter}
           isGenerating={generatingChapter !== null}
           currentAgent={(chapterProgress as any)?.agent || null}
+          currentStep={chapterProgress?.current_step}
+          progress={chapterProgress?.progress}
+          completedPages={(chapterProgress as any)?.completed_pages}
+          totalPages={(chapterProgress as any)?.total_pages}
           onClose={() => setAgentPanelOpen(false)}
         />
       )}

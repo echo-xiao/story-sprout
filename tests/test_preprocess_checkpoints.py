@@ -108,6 +108,14 @@ def l6(monkeypatch, tmp_path):
     saved = {}
     monkeypatch.setattr(pipeline, "_save",
                         lambda pre, name, data, subdir=None: saved.__setitem__(name, data))
+    # Text simplification is now a separate preprocess pass — stub it so the
+    # tests stay hermetic (text_simplifier imports generate_json at module load,
+    # so the src.llm_client mock wouldn't reach it).
+    monkeypatch.setattr(
+        "src.generation.text_simplifier.simplify_text",
+        lambda scenes, **k: [{"page_text": f"kid text {i}", "scene_direction": "dir"}
+                             for i, _ in enumerate(scenes)],
+    )
     pre = tmp_path / "preprocess"
     pre.mkdir()
     return {"dir": pre, "saved": saved,
@@ -143,7 +151,8 @@ def test_full_match_writes_checkpoint_with_roster(l6, monkeypatch):
                               {0: segs}, skip_sheets=True)
     ckpt = json.loads(l6["ckpt"].read_text())
     assert len(ckpt["annotations"]) == 2
-    assert ckpt["fingerprint"][-1].startswith("roster:")
+    # Fingerprint carries a roster hash (+ a trailing schema-version token).
+    assert any(h.startswith("roster:") for h in ckpt["fingerprint"])
     assert all("_annotated" not in a for a in ckpt["annotations"])
     assert l6["saved"]["analysis"]["annotation_failed_chapters"] == []
 

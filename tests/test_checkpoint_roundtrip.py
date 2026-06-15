@@ -12,6 +12,8 @@ import pytest
 import src.preprocessing.pipeline as pipeline
 from tests.conftest import make_segment
 
+# Machine fields the annotation produces. simplified_text is NOT here anymore —
+# it's written by the separate _simplify_chapter pass (stubbed in the fixture).
 ANNOTATION = {
     "characters_in_scene": ["Nick Carraway"],
     "character_actions": [{"name": "Nick Carraway", "action": "writes at a desk"}],
@@ -20,8 +22,10 @@ ANNOTATION = {
     "sentiment": "calm",
     "is_key_event": True,
     "event_description": "Nick reflects",
-    "simplified_text": "Nick sat at his desk and remembered his dad's kind words.",
 }
+
+# What the dedicated simplifier produces for this segment.
+SIMPLE_TEXT = "Nick sat at his desk and remembered his dad's kind words."
 
 
 @pytest.fixture()
@@ -48,6 +52,14 @@ def env(monkeypatch, tmp_path):
     # chapter summaries + analysis writes must not hit LLM/Mongo
     monkeypatch.setattr("src.llm_client.generate_json", lambda *a, **k: {"summary": "s"})
     monkeypatch.setattr(pipeline, "_save", lambda *a, **k: None)
+    # The dedicated simplifier pass — stub it so the checkpoint captures known
+    # natural text (text_simplifier imports generate_json at module load, so the
+    # src.llm_client mock above wouldn't reach it).
+    monkeypatch.setattr(
+        "src.generation.text_simplifier.simplify_text",
+        lambda scenes, **k: [{"page_text": SIMPLE_TEXT, "scene_direction": "a quiet desk"}
+                             for _ in scenes],
+    )
 
     preprocess_dir = tmp_path / "preprocess"
     preprocess_dir.mkdir()
@@ -76,6 +88,13 @@ def test_second_run_uses_checkpoint(env):
 
 
 def test_checkpoint_preserves_simplified_text(env):
-    env["run"]()
+    """The simplifier's natural text (written in a separate pass) and its
+    provenance must survive a resume — dropping them would make a resumed book
+    QA against raw novel text / re-simplify every page."""
+    first = env["run"]()
     restored = env["run"]()
-    assert restored.get("simplified_text") == ANNOTATION["simplified_text"]
+    # First run computed it; resume restored it from the checkpoint unchanged.
+    assert first["simplified_text"] == SIMPLE_TEXT
+    assert restored.get("simplified_text") == SIMPLE_TEXT
+    assert restored.get("scene_direction") == "a quiet desk"
+    assert restored.get("text_source") == "writer"

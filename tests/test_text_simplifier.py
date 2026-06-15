@@ -23,7 +23,9 @@ def llm(monkeypatch):
             return state["response"](prompt)
         return state["response"]
 
-    monkeypatch.setattr(ts, "generate_json", fake)
+    # simplify_text now imports generate_json locally from src.llm_client
+    # (so preprocess test mocks reach it) — patch it at the source.
+    monkeypatch.setattr("src.llm_client.generate_json", fake)
     return state
 
 

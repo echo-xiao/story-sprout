@@ -18,6 +18,12 @@ interface Props {
   chapterIdx: number | null;
   isGenerating: boolean;
   currentAgent: string | null;
+  // Live progress for the header so the user can see WHAT is running (e.g.
+  // "Illustrating page 12/39") and how far along, not just "in progress".
+  currentStep?: string;
+  progress?: number;
+  completedPages?: number;
+  totalPages?: number;
   onClose: () => void;
 }
 
@@ -56,6 +62,10 @@ export default function AgentActivityPanel({
   chapterIdx,
   isGenerating,
   currentAgent,
+  currentStep,
+  progress,
+  completedPages,
+  totalPages,
   onClose,
 }: Props) {
   const [logs, setLogs] = useState<AgentLogEntry[]>([]);
@@ -119,13 +129,30 @@ export default function AgentActivityPanel({
     <div className="w-[340px] bg-white border-l border-gray-200 flex flex-col h-full shrink-0">
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-blue-50 to-purple-50">
-        <div>
+        <div className="min-w-0 flex-1 mr-2">
           <h3 className="font-bold text-sm text-gray-800">Agent Pipeline</h3>
-          <p className="text-[10px] text-gray-500">
-            {isGenerating ? "Generation in progress..." : logs.length > 0 ? "Generation complete" : "No activity yet"}
+          {/* Live step so the user can always see WHAT is running — e.g.
+              "Illustrating page 12/39" — instead of an opaque "in progress". */}
+          <p className="text-[10px] text-gray-600 truncate">
+            {isGenerating
+              ? (currentStep || "Starting...")
+              : logs.length > 0 ? "Generation complete" : "No activity yet"}
           </p>
+          {isGenerating && (
+            <>
+              <div className="mt-1 h-1 bg-gray-200 rounded-full overflow-hidden">
+                <div className="h-full bg-purple-400 rounded-full transition-all duration-500"
+                     style={{ width: `${Math.max(progress ?? 0, 3)}%` }} />
+              </div>
+              {!!totalPages && (
+                <p className="text-[9px] text-gray-400 mt-0.5">
+                  {completedPages ?? 0}/{totalPages} pages done
+                </p>
+              )}
+            </>
+          )}
         </div>
-        <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded">
+        <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded shrink-0">
           <X size={16} />
         </button>
       </div>

@@ -27,7 +27,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from src.config import GENERATED_DIR
-from src.core.provenance import TEXT_SOURCE_PREPROCESS
+from src.core.provenance import TEXT_SOURCE_PREPROCESS, TEXT_SOURCE_WRITER
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -360,26 +360,18 @@ For EACH scene, provide ALL of the following fields:
 
 5. sentiment: One of "positive", "negative", "neutral", "tense", "emotional"
 
-6. simplified_text: Rewrite this scene as a warm, lively children's picture book page (age 4-6).
-   - 3-6 short sentences with natural RHYTHM — it should sing when read aloud.
-   - Write NATURALLY: name a character ONCE, then use pronouns (he/she/they). VARY how
-     sentences begin. The pronoun-resolution rule in fields 2/3/8 is ONLY for those
-     illustrator fields — it does NOT apply here.
-   - BAD (robotic, never do this): "Nick finished school. Nick went to war. Nick wanted
-     to see new places. Nick decided to go East."
-     GOOD: "Nick finished school and went to war. Soon he longed for new places, so off
-     he set for the East."
-   - Keep key dialogue as direct speech; add warmth and the odd sound word. Never preachy.
-   - Simple, vivid, concrete vocabulary.
+6. is_key_event: true/false
+7. event_description: If key event, one sentence describing what happens (else null)
 
-7. is_key_event: true/false
-8. event_description: If key event, one sentence describing what happens (else null)
+(The child-friendly page text is written in a SEPARATE step by the dedicated
+simplifier — do NOT produce it here. This annotation only supplies the machine
+fields above.)
 
 CRITICAL RULES:
 - In characters_in_scene, scene_background and event_description, NEVER use pronouns
   (he/she/they/his/her) — always the full canonical name (these feed the ILLUSTRATOR, which
-  must know exactly who is who). scene_summary and simplified_text are HUMAN-readable: write
-  them naturally with pronouns and varied phrasing, NOT full names every sentence.
+  must know exactly who is who). scene_summary is HUMAN-readable: write it naturally with
+  pronouns the way a person would.
 - NEVER reference other scenes ("same as scene 6", "continues from before"). Each annotation must be self-contained.
 - EVERY character physically present MUST be listed with a specific action.
 
@@ -438,11 +430,10 @@ Return JSON: {{"annotations": [...]}}"""
         seg["scene_summary"] = ann.get("scene_summary", "")
         seg["scene_background"] = ann.get("scene_background", "")
         seg["sentiment"] = ann.get("sentiment", "neutral")
-        seg["simplified_text"] = ann.get("simplified_text", "")
-        # First-pass, replaceable text — the Writer's natural rewrite (or a user
-        # edit) supersedes it. Without this tag, the parent merge mistook this
-        # robotic text for a user edit and never let "Gen chapter" replace it.
-        seg["text_source"] = TEXT_SOURCE_PREPROCESS
+        # NOTE: simplified_text is intentionally NOT set here — the dedicated
+        # simplifier (_simplify_chapter) writes the natural child-friendly text
+        # in a separate pass, so this annotation can't bleed its "full name
+        # every sentence" illustrator rule into the reader text.
         seg["is_key_event"] = ann.get("is_key_event", False)
         seg["event_description"] = ann.get("event_description")
 
@@ -838,7 +829,49 @@ def _annotation_fingerprint(segs, characters=None) -> list[str]:
     ]
     roster = "|".join(sorted(c.get("canonical_name", "") for c in (characters or [])))
     hashes.append("roster:" + hashlib.md5(roster.encode("utf-8")).hexdigest()[:12])
+    # Schema version — bump to invalidate checkpoints from a prior pipeline shape.
+    # v2: simplified_text moved out of the annotation prompt into _simplify_chapter,
+    # so old checkpoints carry robotic text and must be re-annotated + re-simplified.
+    hashes.append("schema:v2-simplify")
     return hashes
+
+
+def _simplify_chapter(segs: list[dict], characters: list[dict]) -> None:
+    """Write natural child-friendly text for a chapter's segments IN PLACE.
+
+    This is the single home of text simplification. The combined annotation
+    prompt produced robotic "Name. Name. Name." text because the same call also
+    demanded full names for the illustrator fields; the dedicated simplifier has
+    no such conflict. Running it here means the page text is defined ONCE, at
+    preprocess — generation keeps it (text_source='writer') instead of
+    re-simplifying every chapter, and the editor never shows robotic text.
+
+    text_source='writer' marks it machine-generated-but-good: a later re-gen
+    leaves it alone, only a user edit overrides it. A page the simplifier
+    couldn't rewrite stays replaceable (preprocess) so generation can retry it.
+    """
+    from src.generation.text_simplifier import simplify_text
+
+    scenes = [{
+        "page_number": i + 1,
+        "original_text": s.get("text", ""),
+        "key_characters": s.get("characters_in_scene", []),
+        "scene_summary": s.get("scene_summary", ""),
+    } for i, s in enumerate(segs)]
+    try:
+        rewritten = simplify_text(scenes, characters=characters)
+    except Exception as e:
+        tqdm.write(f"    simplification failed (text left for generation): {e}")
+        return
+    for s, r in zip(segs, rewritten):
+        text = r.get("page_text", "")
+        if not text:
+            continue  # leave empty → generation fills it later (replaceable)
+        s["simplified_text"] = text
+        s["scene_direction"] = r.get("scene_direction", "") or s.get("scene_background", "")
+        s["text_source"] = (
+            TEXT_SOURCE_PREPROCESS if r.get("simplify_failed") else TEXT_SOURCE_WRITER
+        )
 
 
 def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_seg_groups, skip_sheets):
@@ -893,6 +926,9 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
         if not replayed:
             try:
                 segs = _llm_annotate_chapter(title, ch_title, segs, characters)
+                # Natural page text, written ONCE here (checkpointed alongside
+                # the annotation so a resume restores it too).
+                _simplify_chapter(segs, characters)
                 # Only checkpoint a FULLY annotated chapter. A partial match
                 # (e.g. 3 of 10 scene_numbers lined up) used to write a
                 # checkpoint whose unmatched segments carried empty defaults —
@@ -915,6 +951,7 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
                             # Resumed runs restore segments from this dump — dropping a
                             # field here silently loses it for every resumed book.
                             "simplified_text": s.get("simplified_text", ""),
+                            "scene_direction": s.get("scene_direction", ""),
                             "text_source": s.get("text_source", TEXT_SOURCE_PREPROCESS),
                         } for s in segs],
                     }, indent=2, ensure_ascii=False))

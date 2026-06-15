@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import AsyncGenerator
 
 from google.adk.agents import BaseAgent, SequentialAgent
@@ -206,12 +205,14 @@ class WriterStage(_Stage):
         chapter_char_names = {s["character_name"] for s in c.character_sheets}
         chapter_chars = [p for p in c.profiles if p.get("name") in chapter_char_names]
 
-        # Same semantics as the single-page regen endpoint: a page that already
-        # HAS text (user-edited in the editor, or from a previous run) keeps it.
-        # Re-simplifying everything overwrote user edits and — because the
-        # Artist skips pages whose image already exists — left the new text
-        # permanently out of sync with the text painted into the cached image.
-        to_write, kept = _writer_split(c.scenes, os.getenv("PBG_FORCE_REGEN") == "1")
+        # Text is PROVENANCE-driven, not force-driven. PBG_FORCE_REGEN means
+        # "redraw the images" (a style/character change) — it must NOT recompute
+        # text the user or a prior Writer run already produced. So the Writer
+        # only (re)simplifies empty pages and robotic preprocess text: the
+        # robotic→natural upgrade happens ONCE per chapter and then sticks,
+        # instead of burning an LLM pass on all 39 pages every "Gen chapter".
+        # (Force still redraws every image below — see the Artist checkpoint.)
+        to_write, kept = _writer_split(c.scenes, force=False)
         log_event(c.book_id, c.chapter_idx, "writer", "simplify_text",
                   f"Simplifying {len(to_write)} scenes"
                   + (f" ({len(kept)} pages keep their existing text)" if kept else ""))
