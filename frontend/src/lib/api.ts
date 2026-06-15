@@ -92,6 +92,27 @@ export async function selectVersion(
   return data as { status: string; version_id: string };
 }
 
+// Book-wide style reference — one image every scene/character/page is generated
+// to match. Default is the cover; uploading overrides; deleting reverts.
+export async function getStyleReference(bookId: string) {
+  const { data } = await api.get(`/book/${bookId}/style-reference`);
+  return data as { url: string | null; custom: boolean };
+}
+
+export async function uploadStyleReference(bookId: string, file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const { data } = await api.post(`/book/${bookId}/style-reference`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data as { status: string; url: string; custom: boolean };
+}
+
+export async function deleteStyleReference(bookId: string) {
+  const { data } = await api.delete(`/book/${bookId}/style-reference`);
+  return data as { status: string };
+}
+
 export async function getAssetVersions(
   bookId: string, assetType: AssetType, assetKey: string
 ) {

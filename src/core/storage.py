@@ -80,6 +80,37 @@ def image_url(key: str) -> str:
     return f"/static/{key}"
 
 
+def localize(key: str) -> str | None:
+    """Ensure a LOCAL file copy of `key` exists and return its path, downloading
+    from GCS if needed. Generators/the PDF renderer read local paths, so a GCS
+    object has to be materialized before they can use it."""
+    local = GENERATED_DIR / key
+    if local.exists():
+        return str(local)
+    data = get_image(key)
+    if data is None:
+        return None
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(data)
+    return str(local)
+
+
+def delete_key(key: str) -> None:
+    """Delete a single stored image (GCS + any local copy)."""
+    b = _bucket()
+    if b is not None:
+        try:
+            b.blob(key).delete()
+        except Exception:
+            pass
+    p = GENERATED_DIR / key
+    if p.exists():
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
 def exists(key: str) -> bool:
     b = _bucket()
     if b is not None:

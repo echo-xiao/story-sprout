@@ -117,6 +117,33 @@ def _find_book_cover(book_id: str) -> str | None:
     return None
 
 
+def get_style_ref(book_id: str) -> str | None:
+    """The book's single style anchor, as a LOCAL path: a user-uploaded style
+    reference if one is set, else the book cover. Resolves through durable
+    storage (GCS) and materializes the image locally (generators read paths),
+    so it works even after a Cloud Run redeploy wiped the local disk.
+
+    Every scene/character/page generation anchors to this — upload one reference
+    and the whole book matches it; edit it and the book re-anchors."""
+    from src.core import storage
+
+    # 1) User-uploaded style reference wins.
+    for ext in ("png", "jpg"):
+        key = f"{book_id}/style_reference.{ext}"
+        if storage.exists(key):
+            local = storage.localize(key)
+            if local:
+                return local
+    # 2) Default: the book cover (via storage so a redeploy can't lose it).
+    for ext in ("png", "jpg"):
+        key = f"{book_id}/special/book_cover.{ext}"
+        if storage.exists(key):
+            local = storage.localize(key)
+            if local:
+                return local
+    return _find_book_cover(book_id)
+
+
 def _background_block(background: str) -> str:
     """Shared SETTING block — editable scene_background reaches every prompt."""
     if not background.strip():

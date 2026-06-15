@@ -1153,7 +1153,7 @@ async def regenerate_scene_sheet(
             from src.config import GEMINI_IMAGE_MODEL
             from src.gemini_backend import make_genai_client
             from src.generation.illustration import _build_reference_content
-            from src.generation.special_pages import _find_book_cover
+            from src.generation.special_pages import get_style_ref
             client = make_genai_client()
             # Anchor every scene to the SAME book-wide style reference (the cover)
             # through the shared reference builder pages already use. This path
@@ -1161,7 +1161,7 @@ async def regenerate_scene_sheet(
             # each regen drifted in style. Empty character_sheets — a scene sheet
             # is background-only. If the cover is missing the builder degrades to
             # a plain text prompt, so this is safe before a cover exists.
-            cover = _find_book_cover(book_id)
+            cover = get_style_ref(book_id)
             scene_contents = _build_reference_content(prompt, [], style_ref_path=cover)
             try:
                 response = client.models.generate_content(

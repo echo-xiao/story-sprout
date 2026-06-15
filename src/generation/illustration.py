@@ -314,8 +314,8 @@ def generate_illustrations(
 
     # Auto-use book cover as style reference if not provided
     if not style_ref_path:
-        from src.generation.special_pages import _find_book_cover
-        style_ref_path = _find_book_cover(book_id)
+        from src.generation.special_pages import get_style_ref
+        style_ref_path = get_style_ref(book_id)
         if style_ref_path:
             logger.info("Using book cover as style reference: %s", style_ref_path)
 

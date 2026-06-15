@@ -307,8 +307,8 @@ def generate_character_sheets(
             # Anchor the sheet's art style to the book cover — the single
             # book-wide style reference scenes and pages also use — so every
             # character matches the cover's look instead of drifting per regen.
-            from src.generation.special_pages import _find_book_cover
-            cover_path = _find_book_cover(book_id)
+            from src.generation.special_pages import get_style_ref
+            cover_path = get_style_ref(book_id)
             if cover_path:
                 try:
                     _cdata = Path(cover_path).read_bytes()

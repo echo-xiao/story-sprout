@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 import asyncio
@@ -179,6 +179,64 @@ async def list_asset_versions_endpoint(
     from src.core.db import list_asset_versions
     await run_in_threadpool(_backfill_versions, book_id, asset_type, asset_key)
     return await run_in_threadpool(list_asset_versions, book_id, asset_type, asset_key)
+
+
+# ---------------------------------------------------------------------------
+# Book-wide style reference — one uploaded image that anchors EVERY scene /
+# character / page generation, so the whole book stays in one style. Default is
+# the cover; uploading overrides it; deleting reverts to the cover. Resolved by
+# special_pages.get_style_ref.
+# ---------------------------------------------------------------------------
+
+@router.get("/api/book/{book_id}/style-reference")
+async def get_style_reference(book_id: str) -> dict[str, Any]:
+    """Current style reference (uploaded image if set, else the cover). Open."""
+    from src.core import storage
+    for ext in ("png", "jpg"):
+        key = f"{book_id}/style_reference.{ext}"
+        if storage.exists(key):
+            return {"url": f"/static/{key}", "custom": True}
+    for ext in ("png", "jpg"):
+        ck = f"{book_id}/special/book_cover.{ext}"
+        if storage.exists(ck):
+            return {"url": f"/static/{ck}", "custom": False}
+    return {"url": None, "custom": False}
+
+
+@router.post("/api/book/{book_id}/style-reference")
+async def upload_style_reference(
+    book_id: str, file: UploadFile = File(...),
+    _user_key: str | None = Depends(_require_user_key),
+) -> dict[str, Any]:
+    """Upload/replace the book-wide style reference. Generation anchors to it."""
+    ct = (file.content_type or "").lower()
+    if not ct.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Please upload an image.")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB).")
+    from src.core import storage
+    ext = "png" if "png" in ct else "jpg"
+    # Drop the other extension so the resolver can't pick a stale one.
+    await run_in_threadpool(storage.delete_key,
+                            f"{book_id}/style_reference.{'jpg' if ext == 'png' else 'png'}")
+    key = f"{book_id}/style_reference.{ext}"
+    await run_in_threadpool(storage.put_image, key, data,
+                            "image/png" if ext == "png" else "image/jpeg")
+    return {"status": "ok", "url": f"/static/{key}", "custom": True}
+
+
+@router.delete("/api/book/{book_id}/style-reference")
+async def delete_style_reference(
+    book_id: str, _user_key: str | None = Depends(_require_user_key),
+) -> dict[str, Any]:
+    """Revert to the default style reference (the cover)."""
+    from src.core import storage
+    for ext in ("png", "jpg"):
+        await run_in_threadpool(storage.delete_key, f"{book_id}/style_reference.{ext}")
+    return {"status": "reverted"}
 
 
 def _find_segment(analysis: dict, seg_id: int) -> dict | None:

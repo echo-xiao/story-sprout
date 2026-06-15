@@ -38,6 +38,7 @@ import QualityCheckPanel from "@/components/editor/QualityCheckPanel";
 import CharacterSheetsPanel from "@/components/editor/CharacterSheetsPanel";
 import AIChatPanel from "@/components/editor/AIChatPanel";
 import VersionsCarousel from "@/components/editor/VersionsCarousel";
+import StyleReferenceWidget from "@/components/editor/StyleReferenceWidget";
 import CharacterManagement from "@/components/editor/CharacterManagement";
 import SceneManagement from "@/components/editor/SceneManagement";
 import AutoTextarea from "@/components/editor/AutoTextarea";
@@ -951,6 +952,8 @@ export default function EditorPage() {
               <BookOpen size={12} /> Pages
             </button>
           </div>
+          {/* Book-wide style reference — anchors all generation */}
+          <StyleReferenceWidget bookId={bookId} canEdit={canEdit} />
           {/* Agent Activity Indicator */}
           <button
             onClick={() => setAgentPanelOpen(!agentPanelOpen)}
