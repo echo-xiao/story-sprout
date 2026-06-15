@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -144,13 +145,18 @@ class ArtistAgent:
             save_path = pages_dir / f"page_{page_num:03d}"
             scene = simplified[idx] if idx < len(simplified) else {}
 
-            # Checkpoint
+            # Checkpoint — reuse a page already drawn (and its cached QA report),
+            # UNLESS a force-regen was requested. The web "Gen chapter" sets
+            # PBG_FORCE_REGEN so every page is REDRAWN + re-QA'd after a style/
+            # character change, instead of all 39 being served from cache (which
+            # made "Gen chapter" finish instantly and change nothing).
             existing = None
-            for ext in (".png", ".jpg"):
-                candidate = save_path.with_suffix(ext)
-                if candidate.exists():
-                    existing = str(candidate)
-                    break
+            if os.getenv("PBG_FORCE_REGEN") != "1":
+                for ext in (".png", ".jpg"):
+                    candidate = save_path.with_suffix(ext)
+                    if candidate.exists():
+                        existing = str(candidate)
+                        break
 
             # Update progress on the SAME 40–90 scale the pipeline callback uses
             # (was 0–100, which fought the callback and made the bar jump around).

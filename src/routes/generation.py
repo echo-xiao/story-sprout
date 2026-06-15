@@ -648,10 +648,13 @@ async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             progress_data = None
     if progress_data is not None and progress_data.get("status") in ("starting", "generating"):
-        # In-flight run — report its live status, with actual file counts.
-        progress_data["completed_pages"] = completed
+        # In-flight: TRUST the generator's own per-page count (the artist writes
+        # completed_pages to progress.json as each page finishes). The file count
+        # is WRONG during a force-regen — the old page files sit on disk until
+        # they are overwritten, so counting them reports "39/39 done" instantly
+        # and every page dot would go green before anything was redrawn.
+        progress_data.setdefault("completed_pages", 0)
         progress_data["total_pages"] = total
-        progress_data["completed_page_numbers"] = _done_nums
         return progress_data
 
     # No in-flight run: if all pages exist, it's complete regardless of progress.json

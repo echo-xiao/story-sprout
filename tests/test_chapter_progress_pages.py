@@ -1,8 +1,12 @@
-"""Regression: chapter progress reports WHICH pages are done, not just a count.
+"""Regression: live chapter progress trusts the generator's own per-page count,
+not the on-disk file count.
 
-This backs the per-page live progress dots (each page turns green the moment its
-image file appears during generation). No network: GENERATED_DIR is redirected to
-a tmp dir and Mongo is forced unavailable.
+During a force-regen the old page files sit on disk until each is overwritten in
+place, so counting files would report "all done" instantly and every progress dot
+would turn green before anything was redrawn. The in-flight branch must instead
+report the count the artist writes to progress.json as each page finishes.
+
+No network: GENERATED_DIR is redirected to a tmp dir and Mongo is forced off.
 """
 
 from __future__ import annotations
@@ -24,26 +28,40 @@ def book(monkeypatch, tmp_path):
     segs = [{"id": i, "chapter_idx": 0, "text": " ".join(["word"] * 20)} for i in range(5)]
     (pre / "analysis.json").write_text(json.dumps({"segments": segs}))
 
-    pages = tmp_path / "b1" / "chapters" / "ch00" / "pages"
+    ch = tmp_path / "b1" / "chapters" / "ch00"
+    pages = ch / "pages"
     pages.mkdir(parents=True)
-    # 3 of 5 pages drawn so far (mixed extensions), out of order.
+    # 3 STALE page files from the previous run still sit on disk (force-regen
+    # overwrites in place).
     (pages / "page_001.png").write_bytes(b"x")
     (pages / "page_002.jpg").write_bytes(b"x")
     (pages / "page_004.png").write_bytes(b"x")
 
-    # A live run is in flight.
-    (tmp_path / "b1" / "chapters" / "ch00" / "progress.json").write_text(
-        json.dumps({"status": "generating", "progress": 50, "current_step": "Illustrating..."})
-    )
+    # The artist has so far redrawn 2 pages this run (written to progress.json).
+    (ch / "progress.json").write_text(json.dumps(
+        {"status": "generating", "progress": 45, "current_step": "Illustrating page 3/5...",
+         "completed_pages": 2}
+    ))
     return tmp_path
 
 
-def test_progress_lists_completed_page_numbers(book):
-    client = TestClient(__import__("src.app", fromlist=["app"]).app,
-                        raise_server_exceptions=False)
-    data = client.get("/api/book/b1/chapter/0/progress").json()
+def _client():
+    return TestClient(__import__("src.app", fromlist=["app"]).app,
+                      raise_server_exceptions=False)
+
+
+def test_inflight_progress_uses_artist_count_not_file_count(book):
+    data = _client().get("/api/book/b1/chapter/0/progress").json()
     assert data["status"] == "generating"
     assert data["total_pages"] == 5
-    assert data["completed_pages"] == 3
-    # The exact page numbers present — so the UI can turn just those green.
-    assert data["completed_page_numbers"] == [1, 2, 4]
+    # The artist's reported count (2) — NOT the 3 stale files on disk.
+    assert data["completed_pages"] == 2
+
+
+def test_complete_progress_counts_real_files(book, monkeypatch):
+    # When the run is done (no in-flight progress.json), the real file count is
+    # authoritative again.
+    ch = book / "b1" / "chapters" / "ch00"
+    (ch / "progress.json").unlink()
+    data = _client().get("/api/book/b1/chapter/0/progress").json()
+    assert data["completed_pages"] == 3  # the 3 page files present

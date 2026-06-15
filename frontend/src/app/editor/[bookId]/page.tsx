@@ -103,9 +103,6 @@ export default function EditorPage() {
   const dirtySegIds = useRef<Set<number>>(new Set());
   const [staleSegIds, setStaleSegIds] = useState<Set<number>>(new Set());
   const [staleReasons, setStaleReasons] = useState<Record<number, string>>({});
-  // Page numbers (1-based within the chapter) whose image already exists during
-  // a live generation — drives the per-page red/amber→green progress dots.
-  const [completedPageNums, setCompletedPageNums] = useState<Set<number>>(new Set());
   const [specialCacheBust, setSpecialCacheBust] = useState(0);
   // Bumped only after a character/scene sheet is regenerated, so CharacterSheetsPanel
   // reloads images then — NOT on every keystroke (which Date.now() in render caused).
@@ -253,13 +250,11 @@ export default function EditorPage() {
     // here just doubles the requests and makes the progress bar flicker between
     // the two responses. Let the loop own it.
     if (genAllChapters) return;
-    setCompletedPageNums(new Set());  // fresh run — clear last run's green dots
     const interval = setInterval(async () => {
       try {
         const prog = await getChapterProgress(bookId, generatingChapter).catch(() => null);
         if (!prog) return;
         setChapterProgress(prog);
-        setCompletedPageNums(new Set<number>((prog as any).completed_page_numbers || []));
         if (prog.status === "failed") {
           setGeneratingChapter(null);
           setChapterProgress(null);
@@ -1247,11 +1242,11 @@ export default function EditorPage() {
                         <span
                           className={`w-2 h-2 rounded-full shrink-0 ${
                             isGenerating
-                              ? (completedPageNums.has(idx + 1) ? "bg-green-400" : "bg-amber-400 animate-pulse")
+                              ? (idx < ((chapterProgress as any)?.completed_pages ?? 0) ? "bg-green-400" : "bg-amber-400 animate-pulse")
                               : staleSegIds.has(seg.id) ? "bg-red-500" : hasIllustration ? "bg-green-400" : "bg-gray-300"
                           }`}
                           title={isGenerating
-                            ? (completedPageNums.has(idx + 1) ? "Done" : "Generating…")
+                            ? (idx < ((chapterProgress as any)?.completed_pages ?? 0) ? "Done" : "Generating…")
                             : staleSegIds.has(seg.id) ? `Stale — ${staleReasons[seg.id] || "a character/scene changed"}; regenerate` : undefined}
                         />
                         <span className="font-mono text-[10px] text-gray-400">
