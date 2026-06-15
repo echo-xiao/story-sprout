@@ -108,7 +108,8 @@ def record_image_version(book_id: str, asset_type: str, asset_key: str,
     safe_key = _re.sub(r"[^\w.-]+", "_", asset_key).strip("_")[:60] or "asset"
     key = f"{book_id}/{asset_type}s/{safe_key}_{digest[:12]}.{ext}"
     url = put_image(key, data, content_type)
-    add_asset_version(book_id, asset_type, asset_key, url, image_hash=digest)
+    add_asset_version(book_id, asset_type, asset_key, url,
+                      image_hash=digest, storage_key=key)
     return url
 
 

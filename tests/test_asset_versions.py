@@ -128,3 +128,28 @@ def test_delete_clears_versions(fake_db):
     db.add_asset_version(B, T, K, "http://x/v1.png", image_hash="h1")
     db.delete_asset_versions(B)
     assert db.list_asset_versions(B, T, K) == {"versions": [], "selected_version_id": None}
+
+
+def test_storage_key_is_stored(fake_db):
+    """select must be able to fetch the picked version's bytes — so the storage
+    key has to round-trip through the version record."""
+    db.add_asset_version(B, T, K, "http://x/v1.png", image_hash="h1",
+                         storage_key="bk/scenes/x_h1.png")
+    assert db.get_selected_version(B, T, K)["storage_key"] == "bk/scenes/x_h1.png"
+
+
+def test_canonical_current_path_mapping():
+    """Locks the asset_key -> live 'current' path mapping (the bug-prone keystone
+    that makes a pick land where display/PDF read)."""
+    from src.routes.editor import _canonical_current
+
+    _, fbase, skey = _canonical_current("bk", "scene", "Gatsby's Mansion")
+    assert fbase == "gatsbys_mansion_scene"
+    assert skey == "bk/scenes/gatsbys_mansion_scene"
+
+    _, fbase, skey = _canonical_current("bk", "page", "ch00:p003")
+    assert fbase == "page_003"
+    assert skey == "bk/chapters/ch00/pages/page_003"
+
+    # An unparseable page key resolves to nothing rather than a wrong path.
+    assert _canonical_current("bk", "page", "garbage") == (None, None, None)

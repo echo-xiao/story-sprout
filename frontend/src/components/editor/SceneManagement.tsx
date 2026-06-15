@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { MapPin, RefreshCw } from "lucide-react";
-import { getLocations, regenerateSceneSheet, getSceneSheetHistory, updateScene, getRegenActive } from "@/lib/api";
+import { getLocations, regenerateSceneSheet, getAssetVersions, selectVersion, updateScene, getRegenActive } from "@/lib/api";
 import AutoTextarea from "./AutoTextarea";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
@@ -22,7 +22,8 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState<string | null>(null);
   const [editing, setEditing] = useState<Record<string, any>>({});
-  const [sheetHistory, setSheetHistory] = useState<Array<{ url: string; version: string; timestamp: number }>>([]);
+  const [versions, setVersions] = useState<Array<{ id: string; url: string; created_at: string }>>([]);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [activeSheetUrl, setActiveSheetUrl] = useState<string | null>(null);
   const [sceneCacheBust, setSceneCacheBust] = useState(Date.now());
 
@@ -79,17 +80,38 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
     onSelectScene?.(loc.name);
   };
 
-  // Load sheet history when location changes
+  // Load selectable versions when the location changes / after a regen.
+  const loadVersions = (loc: string) => {
+    getAssetVersions(bookId, "scene", loc)
+      .then(data => {
+        setVersions(data.versions || []);
+        setSelectedVersionId(data.selected_version_id || null);
+      })
+      .catch(() => { setVersions([]); setSelectedVersionId(null); });
+  };
   useEffect(() => {
     if (!selectedLoc) return;
-    getSceneSheetHistory(bookId, selectedLoc)
-      .then(data => {
-        setSheetHistory(data.images || []);
-        const current = data.images?.find(i => i.version === "current");
-        setActiveSheetUrl(current?.url || null);
-      })
-      .catch(() => { setSheetHistory([]); setActiveSheetUrl(null); });
+    loadVersions(selectedLoc);
+    setActiveSheetUrl(null);
   }, [bookId, selectedLoc, generating]);
+
+  // Pick a version → it becomes the live scene image (backend promotes it to
+  // 'current'), so the Pages "Scene Location" panel + page generation + PDF all
+  // use it. Clicking selects; it does NOT generate a new version.
+  const pickVersion = async (versionId: string) => {
+    if (!selectedLoc || !canGenerate) return;
+    try {
+      await selectVersion(bookId, "scene", selectedLoc, versionId);
+      setSelectedVersionId(versionId);
+      const data = await getLocations(bookId);
+      setLocations(data.locations || []);
+      setSceneSheets(data.scene_sheets || {});
+      setSceneCacheBust(Date.now());
+      onSceneRegen?.();  // refresh stale pages that reference this scene
+    } catch (e: any) {
+      alert(`Select failed: ${e?.response?.data?.detail || e?.message || e}`);
+    }
+  };
 
   const handleRegenerate = async () => {
     if (!selected) return;
@@ -297,7 +319,7 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
               <div className="flex-1 flex items-center justify-center min-h-0">
                 {(activeSheetUrl || sceneSheets[selected.name]) ? (
                   <img
-                    src={`${API_BASE}${activeSheetUrl || sceneSheets[selected.name]}?t=${sheetHistory.find(i => i.version === "current")?.timestamp || sceneCacheBust}`}
+                    src={`${API_BASE}${activeSheetUrl || sceneSheets[selected.name]}?t=${sceneCacheBust}`}
                     alt={selected.name}
                     className="max-h-[calc(100vh-180px)] max-w-full rounded-xl shadow-md object-contain"
                   />
@@ -317,24 +339,24 @@ export default function SceneManagement({ bookId, initialScene, onSelectScene, o
               </div>
             </div>
 
-            {/* History thumbnails (vertical, right side of sheet) */}
-            {sheetHistory.length > 1 && (
+            {/* Version thumbnails — click to pick the one used in the book/PDF */}
+            {versions.length > 1 && (
               <div className="w-[320px] shrink-0 overflow-y-auto p-4 space-y-3 border-l border-peach/20">
-                <p className="text-xs text-gray-500 font-semibold">Versions ({sheetHistory.length})</p>
-                {sheetHistory.map((img, idx) => (
-                  <div key={idx}>
+                <p className="text-xs text-gray-500 font-semibold">Versions ({versions.length})</p>
+                {versions.slice().reverse().map((v, idx) => (
+                  <div key={v.id}>
                     <img
-                      src={`${API_BASE}${img.url}?t=${img.timestamp}`}
-                      alt={img.version === "current" ? "Current" : `v${sheetHistory.length - idx}`}
-                      onClick={() => setActiveSheetUrl(img.url)}
+                      src={`${v.url.startsWith("http") ? "" : API_BASE}${v.url}`}
+                      alt={v.id === selectedVersionId ? "Selected" : `v${versions.length - idx}`}
+                      onClick={() => pickVersion(v.id)}
                       className={`w-full rounded-xl cursor-pointer border-2 transition-colors ${
-                        (activeSheetUrl || sceneSheets[selected.name]) === img.url
+                        v.id === selectedVersionId
                           ? "border-coral shadow-md"
                           : "border-transparent hover:border-coral/50"
                       }`}
                     />
                     <p className="text-[10px] text-gray-400 text-center mt-1">
-                      {img.version === "current" ? "Current" : `Version ${sheetHistory.length - idx}`}
+                      {v.id === selectedVersionId ? "Selected" : `Version ${versions.length - idx}`}
                     </p>
                   </div>
                 ))}

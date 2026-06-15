@@ -297,7 +297,8 @@ _MAX_ASSET_VERSIONS = 12
 
 
 def add_asset_version(book_id: str, asset_type: str, asset_key: str, url: str,
-                      image_hash: str | None = None) -> Optional[str]:
+                      image_hash: str | None = None,
+                      storage_key: str | None = None) -> Optional[str]:
     """Append a freshly generated version and make it the selected one.
 
     Dedupe: if a version with the same content hash already exists, no new
@@ -325,6 +326,7 @@ def add_asset_version(book_id: str, asset_type: str, asset_key: str, url: str,
         "id": vid,
         "url": url,
         "hash": image_hash,
+        "storage_key": storage_key,  # the storage.py key — used to fetch bytes on select
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     # Cap to the most recent N, but never drop the one we're about to select.

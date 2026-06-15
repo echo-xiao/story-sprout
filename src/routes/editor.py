@@ -44,13 +44,124 @@ class SelectVersionRequest(BaseModel):
     version_id: str
 
 
+def _canonical_current(book_id: str, asset_type: str, asset_key: str):
+    """(local_dir, filename_base, static_key_base) for an asset's live 'current'
+    image — where regen writes it and the display panels / page-gen / PDF read it.
+    The caller appends the extension. (None, None, None) if the key is unknown."""
+    import re as _re
+    from src.generation.character_sheet import _safe_filename
+    base = GENERATED_DIR / book_id
+    if asset_type == "scene":
+        safe = _re.sub(r'[^\w\s一-鿿-]', '', asset_key)
+        safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
+        return base / "scenes", f"{safe}_scene", f"{book_id}/scenes/{safe}_scene"
+    if asset_type == "character":
+        safe = _safe_filename(asset_key)
+        return base / "characters", f"{safe}_sheet", f"{book_id}/characters/{safe}_sheet"
+    if asset_type == "page":
+        m = _re.match(r"ch(\d+):p(\d+)", asset_key)
+        if not m:
+            return None, None, None
+        ci, pn = int(m.group(1)), int(m.group(2))
+        return (base / "chapters" / f"ch{ci:02d}" / "pages", f"page_{pn:03d}",
+                f"{book_id}/chapters/ch{ci:02d}/pages/page_{pn:03d}")
+    if asset_type == "special":
+        from src.generation.special_page_data import special_file_base
+        pt, _, ch = asset_key.partition(":")
+        b = special_file_base(pt, int(ch or 0))
+        if not b:
+            return None, None, None
+        return base / "special", b, f"{book_id}/special/{b}"
+    return None, None, None
+
+
+def _promote_selected(book_id: str, asset_type: str, asset_key: str) -> None:
+    """Copy the selected version's bytes onto the asset's live 'current' image
+    (local + GCS) so every existing reader uses the picked version with no
+    read-path changes. The keystone of 'pick a version -> it's the one used'."""
+    from src.core.db import get_selected_version
+    from src.core import storage
+    sel = get_selected_version(book_id, asset_type, asset_key)
+    if not sel or not sel.get("storage_key"):
+        return
+    data = storage.get_image(sel["storage_key"])
+    if not data:
+        return
+    cdir, fbase, static_base = _canonical_current(book_id, asset_type, asset_key)
+    if cdir is None:
+        return
+    ext = ".png" if str(sel["storage_key"]).endswith(".png") else ".jpg"
+    ctype = "image/png" if ext == ".png" else "image/jpeg"
+    cdir.mkdir(parents=True, exist_ok=True)
+    # Drop a stale other-extension current file so the glob can't serve it.
+    for _e in (".png", ".jpg"):
+        _p = cdir / f"{fbase}{_e}"
+        if _e != ext and _p.exists():
+            try:
+                _p.unlink()
+            except OSError:
+                pass
+    (cdir / f"{fbase}{ext}").write_bytes(data)
+    try:
+        storage.put_image(f"{static_base}{ext}", data, ctype)
+    except Exception:
+        pass
+    # Pages feed the combined PDF via chapter_data.json — keep its path in step.
+    if asset_type == "page":
+        import re as _re
+        m = _re.match(r"ch(\d+):p(\d+)", asset_key)
+        if m:
+            update_chapter_data_page(book_id, int(m.group(1)), int(m.group(2)),
+                                     image_path=str(cdir / f"{fbase}{ext}"))
+
+
+def _backfill_versions(book_id: str, asset_type: str, asset_key: str) -> None:
+    """One-time import of an asset's existing on-disk versions (history + current)
+    into asset_versions + GCS, so versions generated BEFORE this system existed
+    are still pickable (and become durable). No-op once records exist."""
+    import hashlib
+    from src.core.db import list_asset_versions, add_asset_version
+    from src.core import storage
+
+    if list_asset_versions(book_id, asset_type, asset_key)["versions"]:
+        return
+    cdir, fbase, _ = _canonical_current(book_id, asset_type, asset_key)
+    if cdir is None or not cdir.exists():
+        return
+    files: list = []
+    hist = cdir / "history"
+    if hist.exists():
+        files += sorted(
+            (f for f in hist.glob(f"{fbase}_*") if f.suffix in (".png", ".jpg")),
+            key=lambda p: p.stat().st_mtime,
+        )
+    for _e in (".png", ".jpg"):  # current last == newest == auto-selected
+        cur = cdir / f"{fbase}{_e}"
+        if cur.exists():
+            files.append(cur)
+            break
+    for f in files:
+        try:
+            data = f.read_bytes()
+        except OSError:
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        ext = "png" if f.suffix == ".png" else "jpg"
+        key = f"{book_id}/{asset_type}s/{fbase}_{digest[:12]}.{ext}"
+        url = storage.put_image(key, data, "image/png" if ext == "png" else "image/jpeg")
+        add_asset_version(book_id, asset_type, asset_key, url,
+                          image_hash=digest, storage_key=key)
+
+
 @router.post("/api/book/{book_id}/asset/{asset_type}/{asset_key:path}/select")
 async def select_asset_version(
     book_id: str, asset_type: str, asset_key: str, req: SelectVersionRequest,
     _user_key: str | None = Depends(_require_user_key),
 ) -> dict[str, Any]:
-    """Set the selected version for an asset. asset_type ∈ page|scene|character;
-    asset_key is the page key / location name / canonical character name."""
+    """Pick a version: set the pointer AND promote its bytes to the live image,
+    so the panels / page-gen reference / PDF all use it. asset_type ∈
+    page|scene|character|special; asset_key is the page key / location name /
+    canonical character name / 'page_type:chapter'."""
     if asset_type not in ("page", "scene", "character", "special"):
         raise HTTPException(status_code=400, detail="Invalid asset type.")
     from src.core.db import set_selected_version
@@ -59,6 +170,7 @@ async def select_asset_version(
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Version not found for this asset.")
+    await run_in_threadpool(_promote_selected, book_id, asset_type, asset_key)
     return {"status": "selected", "version_id": req.version_id}
 
 
@@ -70,6 +182,7 @@ async def list_asset_versions_endpoint(
     if asset_type not in ("page", "scene", "character", "special"):
         raise HTTPException(status_code=400, detail="Invalid asset type.")
     from src.core.db import list_asset_versions
+    await run_in_threadpool(_backfill_versions, book_id, asset_type, asset_key)
     return await run_in_threadpool(list_asset_versions, book_id, asset_type, asset_key)
 
 
