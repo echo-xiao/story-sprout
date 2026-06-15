@@ -564,6 +564,11 @@ async def generate_chapter_endpoint(
         # A payload left by a previous (crashed) run must not be applied to
         # THIS run's analysis state.
         (progress_file.parent / "text_sync.json").unlink(missing_ok=True)
+        # Force a full redraw WITHOUT deleting anything: tell the generator to
+        # regenerate over existing pages instead of skipping them (the skip is a
+        # resume optimization that made "Gen chapter" a no-op on a warm instance).
+        # Old images are overwritten in place; history is untouched.
+        env["PBG_FORCE_REGEN"] = "1"
         try:
             proc = await _asyncio.create_subprocess_exec(
                 # --self-correct: without it the QA stage is report-only — a
@@ -621,7 +626,16 @@ async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
             and len((s.get("text") or "").split()) >= 10
         )
 
-    completed = len(list(ch_dir.glob("page_*.*"))) if ch_dir.exists() else 0
+    import re as _re
+    # WHICH page numbers have an image (not just how many) — the frontend turns
+    # each page green the moment its file appears, so you can see which page is
+    # being drawn live.
+    _done_nums = sorted({
+        int(_m.group(1))
+        for _f in (ch_dir.glob("page_*.*") if ch_dir.exists() else [])
+        if (_m := _re.match(r"page_(\d+)", _f.stem))
+    })
+    completed = len(_done_nums)
 
     # Consult progress.json FIRST: when an already-complete chapter is being
     # re-generated, the old page files still exist, so the file-count shortcut
@@ -637,6 +651,7 @@ async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
         # In-flight run — report its live status, with actual file counts.
         progress_data["completed_pages"] = completed
         progress_data["total_pages"] = total
+        progress_data["completed_page_numbers"] = _done_nums
         return progress_data
 
     # No in-flight run: if all pages exist, it's complete regardless of progress.json
@@ -645,12 +660,14 @@ async def get_chapter_progress(book_id: str, ch_idx: int) -> dict[str, Any]:
             "status": "complete", "progress": 100,
             "current_step": "Done", "agent": "complete",
             "total_pages": total, "completed_pages": completed,
+            "completed_page_numbers": _done_nums,
         }
 
     if progress_data is not None:
         # Terminal status (complete/failed) — override with actual file count for accuracy
         progress_data["completed_pages"] = completed
         progress_data["total_pages"] = total
+        progress_data["completed_page_numbers"] = _done_nums
         return progress_data
 
     if not ch_dir.exists() or completed == 0:

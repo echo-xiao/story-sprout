@@ -5,6 +5,7 @@ references for consistency — not just text prompts.
 """
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -328,13 +329,16 @@ def generate_illustrations(
         page_num = page.get("page_number", len(results) + 1)
         save_path = output_dir / f"page_{page_num:03d}"
 
-        # Checkpoint: skip if image already exists
+        # Checkpoint: skip if image already exists — UNLESS a force-regen was
+        # requested (the web "Gen chapter" sets PBG_FORCE_REGEN so a style/
+        # character change actually redraws every page instead of resuming).
         existing = None
-        for ext in (".png", ".jpg"):
-            candidate = save_path.with_suffix(ext)
-            if candidate.exists():
-                existing = str(candidate)
-                break
+        if os.getenv("PBG_FORCE_REGEN") != "1":
+            for ext in (".png", ".jpg"):
+                candidate = save_path.with_suffix(ext)
+                if candidate.exists():
+                    existing = str(candidate)
+                    break
 
         if existing:
             logger.info("Page %d: already exists, skipping (%s)", page_num, existing)

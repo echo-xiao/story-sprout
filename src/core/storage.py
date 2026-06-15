@@ -98,6 +98,11 @@ def mirror_to_gcs(local_path) -> None:
     try:
         ct = "image/png" if p.suffix == ".png" else "image/jpeg"
         put_image(key, p.read_bytes(), ct)
+        # Drop the other-extension object so a stale .png can't shadow a new .jpg
+        # (or vice-versa) — the serving layer would otherwise return the old one.
+        other = key[: -len(p.suffix)] + (".jpg" if p.suffix == ".png" else ".png")
+        if other != key:
+            delete_key(other)
     except Exception as e:
         logger.warning("mirror_to_gcs failed for %s: %s", local_path, e)
 

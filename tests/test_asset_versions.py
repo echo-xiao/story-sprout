@@ -138,6 +138,27 @@ def test_storage_key_is_stored(fake_db):
     assert db.get_selected_version(B, T, K)["storage_key"] == "bk/scenes/x_h1.png"
 
 
+def test_mirror_removes_stale_other_extension(monkeypatch, tmp_path):
+    """A new .jpg must drop the old .png (and vice-versa) so the serving layer
+    can't return the stale image — the png/jpg collision bug."""
+    from src.core import storage
+    monkeypatch.setattr(storage, "GCS_BUCKET", "fakebucket")  # take the mirror path
+    monkeypatch.setattr(storage, "_bucket", lambda: None)     # ...but no real GCS -> local
+    monkeypatch.setattr(storage, "GENERATED_DIR", tmp_path)
+
+    pages = tmp_path / "b" / "pages"
+    pages.mkdir(parents=True)
+    old_png = pages / "page_001.png"
+    old_png.write_bytes(b"old")
+    new_jpg = pages / "page_001.jpg"
+    new_jpg.write_bytes(b"new")
+
+    storage.mirror_to_gcs(new_jpg)
+
+    assert new_jpg.exists()
+    assert not old_png.exists()  # stale other-extension copy removed
+
+
 def test_canonical_current_path_mapping():
     """Locks the asset_key -> live 'current' path mapping (the bug-prone keystone
     that makes a pick land where display/PDF read)."""
