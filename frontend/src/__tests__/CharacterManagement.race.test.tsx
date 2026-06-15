@@ -27,6 +27,10 @@ vi.mock("@/lib/api", () => ({
   autofillCharacterDetails: vi.fn(),
   checkCharacterSheetQuality: vi.fn(),
   getRegenActive: vi.fn(),
+  // The component loads selectable versions on character change — without these
+  // in the mock the render throws ("No export defined") and every test errors.
+  getAssetVersions: vi.fn(() => Promise.resolve({ versions: [], selected_version_id: null })),
+  selectVersion: vi.fn(() => Promise.resolve({})),
 }));
 
 const mockAutofill = vi.mocked(autofillCharacterDetails);

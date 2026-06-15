@@ -357,7 +357,7 @@ export default function CharacterManagement({
               <div className="flex-1 flex items-center justify-center min-h-0">
                 {(sheets[selected.canonical_name] || activeSheetUrl) ? (
                   <img
-                    src={`${API_BASE}${activeSheetUrl || sheets[selected.canonical_name]}${activeSheetUrl || !sheetCacheBust ? "" : `?v=${sheetCacheBust}`}`}
+                    src={`${API_BASE}${activeSheetUrl || sheets[selected.canonical_name]}${activeSheetUrl || !sheetCacheBust ? "" : `${(sheets[selected.canonical_name] || "").includes("?") ? "&" : "?"}v=${sheetCacheBust}`}`}
                     alt={selected.canonical_name}
                     decoding="async"
                     className="max-h-[calc(100vh-180px)] max-w-full rounded-xl shadow-md object-contain"

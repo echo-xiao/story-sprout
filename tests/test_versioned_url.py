@@ -70,3 +70,23 @@ def test_url_version_changes_when_image_is_redrawn(client, book):
     after = _get_url(client)
     assert before != after, "URL must change after the image is overwritten"
     assert after.endswith("?v=2000000")
+
+
+def test_special_cover_url_is_versioned(monkeypatch, tmp_path):
+    """Special pages (covers) are overwritten in place too — same fix as pages."""
+    from src.routes import editor
+
+    monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    special = tmp_path / "somebook" / "special"
+    special.mkdir(parents=True)
+    cover = special / "book_cover.png"
+    cover.write_bytes(b"cover")
+    os.utime(cover, (3_000_000, 3_000_000))
+
+    url = editor._special_image_url("somebook", "book_cover")
+    assert url == "/static/somebook/special/book_cover.png?v=3000000"
+
+    # A re-gen overwrites in place → the version (and so the URL) changes.
+    cover.write_bytes(b"new cover")
+    os.utime(cover, (4_000_000, 4_000_000))
+    assert editor._special_image_url("somebook", "book_cover").endswith("?v=4000000")

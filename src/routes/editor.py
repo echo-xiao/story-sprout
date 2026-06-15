@@ -197,11 +197,11 @@ async def get_style_reference(book_id: str) -> dict[str, Any]:
     for ext in ("png", "jpg"):
         key = f"{book_id}/style_reference.{ext}"
         if storage.exists(key):
-            return {"url": f"/static/{key}", "custom": True}
+            return {"url": versioned_static_url(key, GENERATED_DIR / key), "custom": True}
     for ext in ("png", "jpg"):
         ck = f"{book_id}/special/book_cover.{ext}"
         if storage.exists(ck):
-            return {"url": f"/static/{ck}", "custom": False}
+            return {"url": versioned_static_url(ck, GENERATED_DIR / ck), "custom": False}
     return {"url": None, "custom": False}
 
 
@@ -227,7 +227,7 @@ async def upload_style_reference(
     key = f"{book_id}/style_reference.{ext}"
     await run_in_threadpool(storage.put_image, key, data,
                             "image/png" if ext == "png" else "image/jpeg")
-    return {"status": "ok", "url": f"/static/{key}", "custom": True}
+    return {"status": "ok", "url": versioned_static_url(key, GENERATED_DIR / key), "custom": True}
 
 
 @router.delete("/api/book/{book_id}/style-reference")
@@ -346,9 +346,11 @@ async def get_characters(book_id: str) -> dict[str, Any]:
             safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
             safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
             if safe in sheet_files:
-                sheets[name] = f"/static/{book_id}/characters/{sheet_files[safe].name}"
+                sheets[name] = versioned_static_url(
+                    f"{book_id}/characters/{sheet_files[safe].name}", sheet_files[safe])
             if safe in portrait_files:
-                portraits[name] = f"/static/{book_id}/characters/{portrait_files[safe].name}"
+                portraits[name] = versioned_static_url(
+                    f"{book_id}/characters/{portrait_files[safe].name}", portrait_files[safe])
 
     return {
         "characters": chars,
@@ -661,7 +663,9 @@ def _special_image_url(book_id: str, base: str) -> str | None:
     for ext in (".png", ".jpg"):
         p = special_dir / f"{base}{ext}"
         if p.exists():
-            return f"/static/{book_id}/special/{p.name}"
+            # Covers are overwritten in place at a stable path — version the URL
+            # by mtime so a re-gen actually refreshes (same fix as page images).
+            return versioned_static_url(f"{book_id}/special/{p.name}", p)
     return None
 
 
@@ -850,7 +854,7 @@ async def restore_special_page_version(
 
     return {
         "status": "restored",
-        "url": f"/static/{book_id}/special/{new_current.name}",
+        "url": versioned_static_url(f"{book_id}/special/{new_current.name}", new_current),
     }
 
 
@@ -872,7 +876,8 @@ async def get_locations(book_id: str) -> dict[str, Any]:
             for ext in (".png", ".jpg"):
                 scene_file = scenes_dir / f"{safe}_scene{ext}"
                 if scene_file.exists():
-                    scene_sheets[name] = f"/static/{book_id}/scenes/{scene_file.name}"
+                    scene_sheets[name] = versioned_static_url(
+                        f"{book_id}/scenes/{scene_file.name}", scene_file)
                     break
 
     return {"locations": locations, "scene_sheets": scene_sheets}
@@ -972,7 +977,7 @@ async def get_scene_sheet_history(book_id: str, scene_name: str) -> dict[str, An
         current = scenes_dir / f"{safe}_scene{ext}"
         if current.exists():
             images.append({
-                "url": f"/static/{book_id}/scenes/{current.name}",
+                "url": versioned_static_url(f"{book_id}/scenes/{current.name}", current),
                 "version": "current",
                 "timestamp": current.stat().st_mtime,
             })
@@ -1009,7 +1014,7 @@ async def get_character_sheet_history(book_id: str, char_name: str) -> dict[str,
         current = chars_dir / f"{safe}_sheet{ext}"
         if current.exists():
             images.append({
-                "url": f"/static/{book_id}/characters/{current.name}",
+                "url": versioned_static_url(f"{book_id}/characters/{current.name}", current),
                 "version": "current",
                 "timestamp": current.stat().st_mtime,
             })
