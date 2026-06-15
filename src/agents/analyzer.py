@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from src.config import GENERATED_DIR
+from src.core.provenance import effective_source
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,9 @@ class AnalyzerAgent:
                 # diverge from the text already painted into cached page images.
                 "simplified_text": seg.get("simplified_text", ""),
                 "scene_direction": seg.get("scene_direction", ""),
+                # Provenance rides along so the Writer split keeps user/Writer
+                # text but still re-simplifies robotic preprocess text.
+                "text_source": effective_source(seg),
             })
 
         return scenes

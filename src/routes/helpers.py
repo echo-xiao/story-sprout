@@ -237,6 +237,23 @@ def load_character_profiles(book_id: str) -> list[dict]:
     ]
 
 
+def versioned_static_url(rel_path: str, fs_path) -> str:
+    """A /static URL with a cache-busting ``?v=<mtime>`` derived from the file.
+
+    Page images are written in place at a STABLE path (page_001.png), so a
+    redraw never changes the URL — the browser kept serving the cached bytes
+    and "Gen chapter" looked like a no-op. Tying the version to the file mtime
+    means the URL changes whenever the file does, so every consumer (editor,
+    page list, PDF preview, thumbnails) re-fetches without per-component
+    ``?v=counter`` hacks. Falls back to no version when the file is missing.
+    """
+    try:
+        v = int(fs_path.stat().st_mtime)
+    except OSError:
+        return f"/static/{rel_path}"
+    return f"/static/{rel_path}?v={v}"
+
+
 def segment_page_num(segments: list[dict], ch_idx: int, seg_id: int) -> int:
     """Page number of a segment: 1-based position within its chapter's
     segments sorted by id. Falls back to 1 when the segment isn't found —

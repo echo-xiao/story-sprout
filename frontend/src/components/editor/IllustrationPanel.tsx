@@ -1,4 +1,3 @@
-import { useState, useEffect } from "react";
 import { Image, BookOpen } from "lucide-react";
 import type { Segment } from "@/types";
 
@@ -13,11 +12,13 @@ export default function IllustrationPanel({
   selectedSegment,
   regenerating,
 }: IllustrationPanelProps) {
-  // Stable cache key: changes when illustration URL changes or after regeneration completes
-  const [imgCacheKey, setImgCacheKey] = useState(0);
-  useEffect(() => {
-    setImgCacheKey(prev => prev + 1);
-  }, [selectedSegment.id, selectedSegment.illustration_url, regenerating]);
+  // Cache-busting now lives in the URL: the backend appends ?v=<file mtime>, so
+  // the URL changes whenever the image does (a redraw overwrites the same path).
+  // We just key the <img> on that URL so React re-mounts it on any change — no
+  // client-side counter, and no stale image after "Gen chapter".
+  const imgSrc = selectedSegment.illustration_url
+    ? `${API_BASE}${selectedSegment.illustration_url}`
+    : "";
 
   return (
     <div className="w-[40%] shrink-0 overflow-y-auto p-3 border-r border-peach/20">
@@ -31,10 +32,10 @@ export default function IllustrationPanel({
             <p className="text-sm font-semibold text-gray-600">Generating illustration...</p>
             <p className="text-xs text-gray-400">This usually takes 30-60 seconds</p>
           </div>
-        ) : selectedSegment.illustration_url ? (
+        ) : imgSrc ? (
           <img
-            key={`${selectedSegment.id}-${imgCacheKey}`}
-            src={`${API_BASE}${selectedSegment.illustration_url}?v=${imgCacheKey}`}
+            key={imgSrc}
+            src={imgSrc}
             alt="Page illustration"
             className="w-full rounded-xl shadow-md"
           />

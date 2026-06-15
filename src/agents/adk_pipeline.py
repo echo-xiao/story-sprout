@@ -26,6 +26,11 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from src.config import GENERATED_DIR
+from src.core.provenance import (
+    TEXT_SOURCE_WRITER,
+    is_user_edited,
+    keeps_existing_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +178,13 @@ def _writer_split(scenes: list[dict], force: bool):
     """
     if force:
         return list(scenes), []
-    to_write = [s for s in scenes if not s.get("simplified_text")]
+    # Keep text the user owns or the Writer already produced; re-simplify empty
+    # pages AND robotic preprocess text (the old "any non-empty text" rule kept
+    # the robotic version forever on a warm instance).
+    to_write = [s for s in scenes if not keeps_existing_text(s)]
     kept = [
         {**s, "page_text": s["simplified_text"]}
-        for s in scenes if s.get("simplified_text")
+        for s in scenes if keeps_existing_text(s)
     ]
     return to_write, kept
 
@@ -209,6 +217,10 @@ class WriterStage(_Stage):
                   + (f" ({len(kept)} pages keep their existing text)" if kept else ""))
         fresh = writer.simplify(to_write, characters=chapter_chars,
                                 character_sheets=c.character_sheets) if to_write else []
+        # Tag the Writer's natural text so the analysis merge knows it may
+        # replace robotic preprocess text (but never a user edit).
+        for s in fresh:
+            s["text_source"] = TEXT_SOURCE_WRITER
         c.simplified = sorted(kept + fresh, key=lambda s: s.get("page_number", 0))
         log_event(c.book_id, c.chapter_idx, "writer", "simplify_text",
                   f"Simplified {len(fresh)} pages, kept {len(kept)}", status="done")
@@ -355,6 +367,7 @@ class IllustrateQAStage(_Stage):
                 "segment_id": s.get("source_segment_id"),
                 "simplified_text": s.get("page_text", ""),
                 "scene_direction": s.get("scene_direction", ""),
+                "text_source": s.get("text_source", TEXT_SOURCE_WRITER),
             }
             for s in c.simplified if s.get("page_text")
         ]
@@ -380,8 +393,11 @@ class IllustrateQAStage(_Stage):
             for scene in c.simplified:
                 seg = by_id.get(scene.get("source_segment_id"))
                 text = scene.get("page_text", "")
-                if seg is not None and text and seg.get("simplified_text") != text:
+                if seg is None or not text or is_user_edited(seg):
+                    continue  # unknown page, no text, or user owns it → don't touch
+                if seg.get("simplified_text") != text:
                     seg["simplified_text"] = text
+                    seg["text_source"] = scene.get("text_source", TEXT_SOURCE_WRITER)
                     if scene.get("scene_direction"):
                         seg["scene_direction"] = scene["scene_direction"]
                     changed = True

@@ -87,7 +87,8 @@ def test_editor_segments_route_uses_canonical_page_numbers(client, monkeypatch, 
     resp = client.get("/api/book/somebook/preprocess/chapter/0/segments")
     assert resp.status_code == 200
     seg2 = next(s for s in resp.json()["segments"] if s["id"] == 2)
-    assert seg2.get("illustration_url", "").endswith("page_002.png")
+    # URL now carries a ?v=<mtime> cache-buster — compare the path only.
+    assert seg2.get("illustration_url", "").split("?")[0].endswith("page_002.png")
 
 
 def test_editor_segments_route_contiguous_ids(client, monkeypatch, tmp_path):
@@ -108,5 +109,5 @@ def test_editor_segments_route_contiguous_ids(client, monkeypatch, tmp_path):
     resp = client.get("/api/book/somebook/preprocess/chapter/0/segments")
     assert resp.status_code == 200
     segs = {s["id"]: s for s in resp.json()["segments"]}
-    assert segs[0]["illustration_url"].endswith("page_001.png")
-    assert segs[1]["illustration_url"].endswith("page_002.png")
+    assert segs[0]["illustration_url"].split("?")[0].endswith("page_001.png")
+    assert segs[1]["illustration_url"].split("?")[0].endswith("page_002.png")

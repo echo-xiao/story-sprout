@@ -12,10 +12,12 @@ from pydantic import BaseModel
 import asyncio
 
 from src.config import GENERATED_DIR
+from src.core.provenance import TEXT_SOURCE_USER, TEXT_SOURCE_WRITER
 from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
     _active_regens, _load_json, _require_user_key, _save_json, book_generation_active,
     invalidate_chapter_consistency, segment_page_num, update_chapter_data_page,
+    versioned_static_url,
 )
 from starlette.concurrency import run_in_threadpool
 
@@ -1051,7 +1053,11 @@ async def get_chapter_segments(book_id: str, ch_idx: int) -> dict[str, Any]:
         for ext in (".png", ".jpg"):
             img_path = ch_dir / "pages" / f"page_{page_num:03d}{ext}"
             if img_path.exists():
-                seg["illustration_url"] = f"/static/{book_id}/chapters/ch{ch_idx:02d}/pages/{img_path.name}"
+                # ?v=<mtime>: a redraw overwrites the file in place at the same
+                # path, so without a version token the editor kept showing the
+                # cached old image and "Gen chapter" looked like a no-op.
+                seg["illustration_url"] = versioned_static_url(
+                    f"{book_id}/chapters/ch{ch_idx:02d}/pages/{img_path.name}", img_path)
                 break
 
     # Chapter info
@@ -1090,6 +1096,10 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
             raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
         for key, value in update_dict.items():
             target[key] = value
+        # A hand-edit takes ownership of this page's text: mark it so a later
+        # "Gen chapter" / regen keeps it instead of overwriting with new text.
+        if "simplified_text" in update_dict:
+            target["text_source"] = TEXT_SOURCE_USER
         _save_json(book_id, "analysis.json", analysis)
 
     # The page text changed — the cached text-image-match verdict is stale now,
@@ -1260,7 +1270,8 @@ async def restore_segment_version(book_id: str, seg_id: int, version: str) -> di
     return {
         "status": "restored",
         "segment_id": seg_id,
-        "illustration_url": f"/static/{book_id}/chapters/ch{ch_idx:02d}/pages/{new_current.name}",
+        "illustration_url": versioned_static_url(
+            f"{book_id}/chapters/ch{ch_idx:02d}/pages/{new_current.name}", new_current),
     }
 
 
@@ -1286,6 +1297,8 @@ async def simplify_segment_text(
     await _merge_segment_fields(book_id, seg_id, {
         "simplified_text": simplified,
         "scene_direction": scene_direction,
+        # LLM-generated, not a hand-edit — a later re-gen may still replace it.
+        "text_source": TEXT_SOURCE_WRITER,
     })
 
     return {"simplified_text": simplified, "scene_direction": scene_direction}

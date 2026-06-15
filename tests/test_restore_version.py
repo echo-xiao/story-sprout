@@ -48,7 +48,8 @@ def test_restore_swaps_current_and_archives_old(client, book):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "restored"
-    assert body["illustration_url"].endswith("page_001.jpg")
+    # URL now carries a ?v=<mtime> cache-buster — compare the path only.
+    assert body["illustration_url"].split("?")[0].endswith("page_001.jpg")
 
     pages, history, quality = book / "pages", book / "history", book / "quality"
     # Restored version became current (extension follows the restored file).

@@ -27,6 +27,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from src.config import GENERATED_DIR
+from src.core.provenance import TEXT_SOURCE_PREPROCESS
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -361,8 +362,13 @@ For EACH scene, provide ALL of the following fields:
 
 6. simplified_text: Rewrite this scene as a warm, lively children's picture book page (age 4-6).
    - 3-6 short sentences with natural RHYTHM — it should sing when read aloud.
-   - Write NATURALLY: once a character is named, use pronouns (he/she/they), and VARY how
-     sentences begin. Do NOT start every sentence with the character's full name.
+   - Write NATURALLY: name a character ONCE, then use pronouns (he/she/they). VARY how
+     sentences begin. The pronoun-resolution rule in fields 2/3/8 is ONLY for those
+     illustrator fields — it does NOT apply here.
+   - BAD (robotic, never do this): "Nick finished school. Nick went to war. Nick wanted
+     to see new places. Nick decided to go East."
+     GOOD: "Nick finished school and went to war. Soon he longed for new places, so off
+     he set for the East."
    - Keep key dialogue as direct speech; add warmth and the odd sound word. Never preachy.
    - Simple, vivid, concrete vocabulary.
 
@@ -433,6 +439,10 @@ Return JSON: {{"annotations": [...]}}"""
         seg["scene_background"] = ann.get("scene_background", "")
         seg["sentiment"] = ann.get("sentiment", "neutral")
         seg["simplified_text"] = ann.get("simplified_text", "")
+        # First-pass, replaceable text — the Writer's natural rewrite (or a user
+        # edit) supersedes it. Without this tag, the parent merge mistook this
+        # robotic text for a user edit and never let "Gen chapter" replace it.
+        seg["text_source"] = TEXT_SOURCE_PREPROCESS
         seg["is_key_event"] = ann.get("is_key_event", False)
         seg["event_description"] = ann.get("event_description")
 
@@ -905,6 +915,7 @@ def _layer6_annotate(book_id, preprocess_dir, chapters, characters, title, ch_se
                             # Resumed runs restore segments from this dump — dropping a
                             # field here silently loses it for every resumed book.
                             "simplified_text": s.get("simplified_text", ""),
+                            "text_source": s.get("text_source", TEXT_SOURCE_PREPROCESS),
                         } for s in segs],
                     }, indent=2, ensure_ascii=False))
                 else:

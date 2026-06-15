@@ -30,7 +30,8 @@ def test_payload_writer_dumps_pages_with_text(tmp_path):
 
     payload = json.loads((tmp_path / TEXT_SYNC_FILENAME).read_text())
     assert payload == [
-        {"segment_id": 0, "simplified_text": "LLM TEXT", "scene_direction": "a desk"},
+        {"segment_id": 0, "simplified_text": "LLM TEXT", "scene_direction": "a desk",
+         "text_source": "writer"},
     ]
 
 
@@ -40,7 +41,10 @@ def sync_env(monkeypatch, tmp_path):
     store_path = tmp_path / "analysis.json"
     store_path.write_text(json.dumps({"segments": [
         make_segment(0),                                   # no text yet
-        make_segment(1, simplified_text="USER TYPED THIS"),  # user-edited
+        make_segment(1, simplified_text="USER TYPED THIS",  # user owns it
+                     text_source="user"),
+        make_segment(2, simplified_text="Robotic. Robotic. Robotic.",  # preprocess → replaceable
+                     text_source="preprocess"),
     ]}))
 
     def load(book_id, filename):
@@ -60,8 +64,12 @@ def sync_env(monkeypatch, tmp_path):
     ch.mkdir(parents=True)
     payload_path = ch / "text_sync.json"
     payload_path.write_text(json.dumps([
-        {"segment_id": 0, "simplified_text": "PIPELINE TEXT 0", "scene_direction": "dir 0"},
-        {"segment_id": 1, "simplified_text": "PIPELINE TEXT 1", "scene_direction": "dir 1"},
+        {"segment_id": 0, "simplified_text": "PIPELINE TEXT 0", "scene_direction": "dir 0",
+         "text_source": "writer"},
+        {"segment_id": 1, "simplified_text": "PIPELINE TEXT 1", "scene_direction": "dir 1",
+         "text_source": "writer"},
+        {"segment_id": 2, "simplified_text": "Natural Writer rewrite.", "scene_direction": "dir 2",
+         "text_source": "writer"},
         {"segment_id": 99, "simplified_text": "ORPHAN", "scene_direction": ""},
     ]))
     return {"store": store_path, "payload": payload_path}
@@ -75,10 +83,17 @@ def _apply():
 def test_parent_merge_fills_empty_and_keeps_user_text(sync_env):
     _apply()
     segs = json.loads(sync_env["store"].read_text())["segments"]
+    # Empty page filled, and tagged as Writer-produced.
     assert segs[0]["simplified_text"] == "PIPELINE TEXT 0"
     assert segs[0]["scene_direction"] == "dir 0"
+    assert segs[0]["text_source"] == "writer"
     # The user's text — typed before or during the run — must win.
     assert segs[1]["simplified_text"] == "USER TYPED THIS"
+    assert segs[1]["text_source"] == "user"
+    # The robotic preprocess text MUST be replaced (the bug: it used to freeze
+    # because "non-empty" was mistaken for a user edit).
+    assert segs[2]["simplified_text"] == "Natural Writer rewrite."
+    assert segs[2]["text_source"] == "writer"
     assert not sync_env["payload"].exists(), "payload must be consumed"
 
 

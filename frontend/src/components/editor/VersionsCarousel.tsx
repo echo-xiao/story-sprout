@@ -40,7 +40,9 @@ export default function VersionsCarousel({
                 title={img.version === "current" ? "Current version" : "Click to restore this version"}
                 onClick={() => onSelectVersion(img)}
                 className={`w-20 h-20 object-contain rounded-lg cursor-pointer border-2 transition-colors bg-gray-50 ${
-                  selectedSegment?.illustration_url === img.url
+                  // Compare paths only — illustration_url now carries a ?v=<mtime>
+                  // cache-buster the history url doesn't, so a raw === never matched.
+                  selectedSegment?.illustration_url?.split("?")[0] === img.url.split("?")[0]
                     ? "border-coral"
                     : "border-transparent hover:border-coral/50"
                 }`}

@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from src.config import GENERATED_DIR
+from src.core.provenance import TEXT_SOURCE_WRITER, is_user_edited
 from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
     _active_generations, _active_regens, _last_regen_errors, _load_json,
@@ -291,6 +292,7 @@ async def regenerate_segment_illustration(
                     if fseg is not None and not fseg.get("simplified_text"):
                         fseg["simplified_text"] = simplified_text
                         fseg["scene_direction"] = scene_direction
+                        fseg["text_source"] = TEXT_SOURCE_WRITER
                         _save_json(book_id, "analysis.json", fresh)
                     elif fseg is not None:
                         # The user typed their own text mid-flight — theirs wins,
@@ -501,15 +503,18 @@ async def _apply_deferred_text_sync(book_id: str, ch_idx: int) -> None:
                 text = item.get("simplified_text", "")
                 if seg is None or not text:
                     continue  # unknown segment or no text — skip
-                if seg.get("simplified_text"):
-                    # User typed text during the run — theirs wins. But the
+                if is_user_edited(seg):
+                    # A human owns this page's text — theirs wins. But the
                     # subprocess already wrote ITS text into chapter_data.json
                     # (the PDF source); record the user text to write back, or
                     # the editor and the printed book diverge permanently.
+                    # (Provenance, not "is it non-empty?": preprocess pre-fills
+                    # simplified_text, and that test froze the robotic version.)
                     if seg.get("simplified_text") != text:
                         user_won.append((seg.get("id"), seg.get("simplified_text")))
                     continue
                 seg["simplified_text"] = text
+                seg["text_source"] = item.get("text_source", TEXT_SOURCE_WRITER)
                 if item.get("scene_direction"):
                     seg["scene_direction"] = item["scene_direction"]
                 changed += 1

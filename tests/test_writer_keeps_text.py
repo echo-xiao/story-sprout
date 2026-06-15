@@ -51,6 +51,7 @@ def writer_stage(monkeypatch):
     ctx = PipelineContext("somebook", {"analysis": {}, "meta": {}}, 0, None, "4-6", False)
     ctx.scenes = [
         {"page_number": 1, "source_segment_id": 0, "simplified_text": "USER EDITED TEXT",
+         "text_source": "user",  # a hand-edit — kept, never re-simplified
          "scene_direction": "kept direction", "key_characters": [], "character_actions": [],
          "scene_summary": "", "scene_background": "", "original_text": "orig 1"},
         {"page_number": 2, "source_segment_id": 1, "simplified_text": "",
