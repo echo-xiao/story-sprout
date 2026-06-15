@@ -32,6 +32,12 @@ REQUIRE_USER_KEY = os.getenv("REQUIRE_USER_KEY", "true").lower() != "false"
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "picture_book_generator")
 
+# Durable image storage. When GCS_BUCKET is set, image bytes (current + every
+# version) live in that GCS bucket; only metadata/version pointers stay in Mongo.
+# Unset -> storage.py falls back to local files under GENERATED_DIR (local dev,
+# or before the bucket is provisioned), so nothing breaks pre-setup.
+GCS_BUCKET = os.getenv("GCS_BUCKET", "picture-book-gen-assets")
+
 
 # Illustration style — single style; the old 7-entry ILLUSTRATION_STYLES dict
 # had no picker anywhere (UI or API), so only this entry was ever used.

@@ -277,3 +277,126 @@ def list_preprocess_books() -> list[dict]:
         logger.warning("list_preprocess_books failed (%s); falling back to disk", e)
         return []
     return results
+
+
+# ═══════════════════════════════════════════════════════════════
+# Asset versions — ONE place that records "which versions of an image exist
+# and which one is selected", for pages / scenes / characters alike.
+#
+#   asset_type: "page" | "scene" | "character"
+#   asset_key : page -> "ch00:seg12"; scene -> location name; character -> canonical_name
+#
+# Image BYTES live in GCS (src.core.storage); only the pointer + version list
+# live here. Selecting is a pure pointer write (no image is generated); only a
+# regenerate appends a version — so clicking a thumbnail can never spawn a new
+# version. Versions dedupe by content hash and are capped so the list can't grow
+# without bound.
+# ═══════════════════════════════════════════════════════════════
+
+_MAX_ASSET_VERSIONS = 12
+
+
+def add_asset_version(book_id: str, asset_type: str, asset_key: str, url: str,
+                      image_hash: str | None = None) -> Optional[str]:
+    """Append a freshly generated version and make it the selected one.
+
+    Dedupe: if a version with the same content hash already exists, no new
+    version is added — that existing version is re-selected and its id returned
+    (a regen that produced a byte-identical image must not bloat the list).
+    Returns the selected version id, or None if MongoDB is unavailable.
+    """
+    import uuid
+    db = _get_db()
+    if db is None:
+        return None
+    key = {"book_id": book_id, "asset_type": asset_type, "asset_key": asset_key}
+    doc = db.asset_versions.find_one(key) or {"versions": []}
+    versions = doc.get("versions", [])
+
+    if image_hash:
+        for v in versions:
+            if v.get("hash") == image_hash:
+                # Identical image already on record — re-select it, add nothing.
+                set_selected_version(book_id, asset_type, asset_key, v["id"])
+                return v["id"]
+
+    vid = uuid.uuid4().hex[:12]
+    versions.append({
+        "id": vid,
+        "url": url,
+        "hash": image_hash,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    # Cap to the most recent N, but never drop the one we're about to select.
+    if len(versions) > _MAX_ASSET_VERSIONS:
+        versions = versions[-_MAX_ASSET_VERSIONS:]
+    db.asset_versions.update_one(
+        key,
+        {"$set": {**key, "versions": versions, "selected_version_id": vid,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return vid
+
+
+def set_selected_version(book_id: str, asset_type: str, asset_key: str,
+                         version_id: str) -> bool:
+    """Pick an EXISTING version as the selected one. Pure pointer write — no
+    image is generated. No-op-safe if the version id isn't known."""
+    db = _get_db()
+    if db is None:
+        return False
+    key = {"book_id": book_id, "asset_type": asset_type, "asset_key": asset_key}
+    res = db.asset_versions.update_one(
+        {**key, "versions.id": version_id},
+        {"$set": {"selected_version_id": version_id,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return res.matched_count > 0
+
+
+def get_selected_version(book_id: str, asset_type: str, asset_key: str) -> Optional[dict]:
+    """The selected version dict {id, url, hash, created_at}, or None.
+
+    The SINGLE read entry every consumer (Pages view, PDF export, page-gen
+    references) uses to resolve 'the image to use for this asset'."""
+    db = _get_db()
+    if db is None:
+        return None
+    doc = db.asset_versions.find_one(
+        {"book_id": book_id, "asset_type": asset_type, "asset_key": asset_key},
+        {"_id": 0, "versions": 1, "selected_version_id": 1},
+    )
+    if not doc:
+        return None
+    sel = doc.get("selected_version_id")
+    versions = doc.get("versions", [])
+    chosen = next((v for v in versions if v.get("id") == sel), None)
+    # Fall back to the newest version if the pointer is missing/stale.
+    return chosen or (versions[-1] if versions else None)
+
+
+def list_asset_versions(book_id: str, asset_type: str, asset_key: str) -> dict:
+    """All versions + the selected id for one asset (newest last)."""
+    db = _get_db()
+    if db is None:
+        return {"versions": [], "selected_version_id": None}
+    doc = db.asset_versions.find_one(
+        {"book_id": book_id, "asset_type": asset_type, "asset_key": asset_key},
+        {"_id": 0, "versions": 1, "selected_version_id": 1},
+    )
+    if not doc:
+        return {"versions": [], "selected_version_id": None}
+    return {"versions": doc.get("versions", []),
+            "selected_version_id": doc.get("selected_version_id")}
+
+
+def delete_asset_versions(book_id: str) -> None:
+    """Drop all version records for a book (called from delete_book)."""
+    db = _get_db()
+    if db is None:
+        return
+    try:
+        db.asset_versions.delete_many({"book_id": book_id})
+    except Exception:
+        pass

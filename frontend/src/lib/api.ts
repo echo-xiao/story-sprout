@@ -78,6 +78,32 @@ export async function getSegmentHistory(bookId: string, segId: number) {
   return data;
 }
 
+// Version selection — pick which generated version of an image is used in the
+// book/PDF. Pure pointer write (no generation). assetType ∈ page|scene|character.
+export type AssetType = "page" | "scene" | "character" | "special";
+
+export async function selectVersion(
+  bookId: string, assetType: AssetType, assetKey: string, versionId: string
+) {
+  const { data } = await api.post(
+    `/book/${bookId}/asset/${assetType}/${encodeURIComponent(assetKey)}/select`,
+    { version_id: versionId }
+  );
+  return data as { status: string; version_id: string };
+}
+
+export async function getAssetVersions(
+  bookId: string, assetType: AssetType, assetKey: string
+) {
+  const { data } = await api.get(
+    `/book/${bookId}/asset/${assetType}/${encodeURIComponent(assetKey)}/versions`
+  );
+  return data as {
+    versions: Array<{ id: string; url: string; hash: string | null; created_at: string }>;
+    selected_version_id: string | null;
+  };
+}
+
 // ── Editor APIs ──
 
 export async function getChapters(bookId: string) {

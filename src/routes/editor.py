@@ -32,6 +32,47 @@ def _analysis_lock(book_id: str) -> asyncio.Lock:
     return _analysis_locks.setdefault(book_id, asyncio.Lock())
 
 
+# ---------------------------------------------------------------------------
+# Version selection — pick which generated version of an image is the one used.
+# ONE endpoint for pages / scenes / characters (replaces the per-type
+# restore-version endpoints). Pure pointer write: it never generates, so
+# clicking a thumbnail can't spawn a new version. Owner-gated by the app.py
+# middleware (any write to /api/book/{id}/...) plus the BYOK key gate.
+# ---------------------------------------------------------------------------
+
+class SelectVersionRequest(BaseModel):
+    version_id: str
+
+
+@router.post("/api/book/{book_id}/asset/{asset_type}/{asset_key:path}/select")
+async def select_asset_version(
+    book_id: str, asset_type: str, asset_key: str, req: SelectVersionRequest,
+    _user_key: str | None = Depends(_require_user_key),
+) -> dict[str, Any]:
+    """Set the selected version for an asset. asset_type ∈ page|scene|character;
+    asset_key is the page key / location name / canonical character name."""
+    if asset_type not in ("page", "scene", "character", "special"):
+        raise HTTPException(status_code=400, detail="Invalid asset type.")
+    from src.core.db import set_selected_version
+    ok = await run_in_threadpool(
+        set_selected_version, book_id, asset_type, asset_key, req.version_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Version not found for this asset.")
+    return {"status": "selected", "version_id": req.version_id}
+
+
+@router.get("/api/book/{book_id}/asset/{asset_type}/{asset_key:path}/versions")
+async def list_asset_versions_endpoint(
+    book_id: str, asset_type: str, asset_key: str,
+) -> dict[str, Any]:
+    """All versions + the selected id for an asset (read-only, open)."""
+    if asset_type not in ("page", "scene", "character", "special"):
+        raise HTTPException(status_code=400, detail="Invalid asset type.")
+    from src.core.db import list_asset_versions
+    return await run_in_threadpool(list_asset_versions, book_id, asset_type, asset_key)
+
+
 def _find_segment(analysis: dict, seg_id: int) -> dict | None:
     return next((s for s in analysis.get("segments", []) if s.get("id") == seg_id), None)
 

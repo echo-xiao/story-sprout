@@ -370,6 +370,21 @@ async def regenerate_segment_illustration(
         except Exception as e:
             logger.warning("Auto quality check failed for segment %d: %s", seg_id, e)
 
+        # Durable storage + register the final page image as a pickable version.
+        for _ext in (".png", ".jpg"):
+            _pimg = ch_dir / f"page_{page_num:03d}{_ext}"
+            if _pimg.exists():
+                try:
+                    from src.core.storage import record_image_version
+                    record_image_version(
+                        book_id, "page", f"ch{ch_idx:02d}:p{page_num:03d}",
+                        _pimg.read_bytes(),
+                        content_type="image/png" if _ext == ".png" else "image/jpeg",
+                    )
+                except Exception as _e:
+                    logger.warning("page version record failed: %s", _e)
+                break
+
 
         # Keep chapter_data.json (what the combined PDF reads) pointing at the
         # new image + text — a regen that switched extensions used to leave a
@@ -990,6 +1005,21 @@ async def regenerate_special_page(
         err = ""
         try:
             await _gen_inner()
+            # Durable storage + register the new special page as a pickable version.
+            if _base:
+                for _ext in (".png", ".jpg"):
+                    _sp = special_dir / f"{_base}{_ext}"
+                    if _sp.exists():
+                        try:
+                            from src.core.storage import record_image_version
+                            record_image_version(
+                                book_id, "special", f"{page_type}:{chapter}",
+                                _sp.read_bytes(),
+                                content_type="image/png" if _ext == ".png" else "image/jpeg",
+                            )
+                        except Exception as _e:
+                            logger.warning("special version record failed: %s", _e)
+                        break
         except Exception as e:
             # Best-effort: the frontend's poll timeout covers the UI; log so the
             # failure isn't swallowed by the background-task runner.
@@ -1122,11 +1152,21 @@ async def regenerate_scene_sheet(
             from google import genai
             from src.config import GEMINI_IMAGE_MODEL
             from src.gemini_backend import make_genai_client
+            from src.generation.illustration import _build_reference_content
+            from src.generation.special_pages import _find_book_cover
             client = make_genai_client()
+            # Anchor every scene to the SAME book-wide style reference (the cover)
+            # through the shared reference builder pages already use. This path
+            # used to send contents=prompt (text only, zero visual anchor), so
+            # each regen drifted in style. Empty character_sheets — a scene sheet
+            # is background-only. If the cover is missing the builder degrades to
+            # a plain text prompt, so this is safe before a cover exists.
+            cover = _find_book_cover(book_id)
+            scene_contents = _build_reference_content(prompt, [], style_ref_path=cover)
             try:
                 response = client.models.generate_content(
                     model=GEMINI_IMAGE_MODEL,
-                    contents=prompt,
+                    contents=scene_contents,
                     config=genai.types.GenerateContentConfig(
                         response_modalities=["IMAGE", "TEXT"],
                         # Keep scene sheets square like character sheets and book
@@ -1140,6 +1180,14 @@ async def regenerate_scene_sheet(
                         out_path = scenes_dir / f"{safe}_scene{ext}"
                         out_path.write_bytes(part.inline_data.data)
                         logger.info("Scene sheet saved: %s", out_path)
+                        # Durable storage + register as a pickable version.
+                        try:
+                            from src.core.storage import record_image_version
+                            record_image_version(book_id, "scene", scene_name,
+                                                  part.inline_data.data,
+                                                  content_type=part.inline_data.mime_type)
+                        except Exception as _e:
+                            logger.warning("scene version record failed: %s", _e)
                         break
             except Exception as e:
                 logger.error("Scene generation failed for %s: %s", scene_name, e)

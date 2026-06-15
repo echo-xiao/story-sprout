@@ -304,6 +304,19 @@ def generate_character_sheets(
                 )
             import base64
             contents: list = []
+            # Anchor the sheet's art style to the book cover — the single
+            # book-wide style reference scenes and pages also use — so every
+            # character matches the cover's look instead of drifting per regen.
+            from src.generation.special_pages import _find_book_cover
+            cover_path = _find_book_cover(book_id)
+            if cover_path:
+                try:
+                    _cdata = Path(cover_path).read_bytes()
+                    _cmime = "image/png" if str(cover_path).endswith(".png") else "image/jpeg"
+                    contents.append({"text": "[STYLE REFERENCE — match this art style, colors, line quality, and overall look]"})
+                    contents.append({"inline_data": {"mime_type": _cmime, "data": base64.b64encode(_cdata).decode()}})
+                except Exception:
+                    pass
             if portrait_path:
                 try:
                     img_data = Path(portrait_path).read_bytes()
@@ -334,6 +347,16 @@ def generate_character_sheets(
             except Exception as e:
                 logger.warning("Sheet generation for '%s' failed: %s", name, e)
                 note_gen_failure(e)
+
+            if sheet_path:
+                # Durable storage + register as a pickable version.
+                try:
+                    from src.core.storage import record_image_version
+                    _sb = Path(sheet_path).read_bytes()
+                    _sct = "image/png" if str(sheet_path).endswith(".png") else "image/jpeg"
+                    record_image_version(book_id, "character", name, _sb, content_type=_sct)
+                except Exception as _e:
+                    logger.warning("character version record failed: %s", _e)
 
         role = profile.get("role", "unknown")
         results.append({

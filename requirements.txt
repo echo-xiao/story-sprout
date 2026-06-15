@@ -1,6 +1,7 @@
 # Gemini Agent — pipeline orchestrated with Google ADK (Agent Builder)
 google-genai>=1.0.0
 google-cloud-aiplatform>=1.95.0
+google-cloud-storage>=2.16.0
 google-adk>=2.0.0
 
 # Image handling
