@@ -90,6 +90,28 @@ def exists(key: str) -> bool:
     return (GENERATED_DIR / key).exists()
 
 
+def list_prefix(prefix: str) -> list[str]:
+    """List stored image keys under `prefix`. Reads GCS when configured (so it
+    works after a Cloud Run redeploy wiped the local disk — the durable copy is
+    in GCS), else the local filesystem."""
+    b = _bucket()
+    if b is not None:
+        try:
+            return [blob.name for blob in b.list_blobs(prefix=prefix)]
+        except Exception as e:
+            logger.warning("GCS list_prefix failed for %s: %s", prefix, e)
+            return []
+    root = GENERATED_DIR / prefix
+    parent = root.parent
+    if not parent.exists():
+        return []
+    stem = root.name
+    return [
+        str(p.relative_to(GENERATED_DIR))
+        for p in parent.glob(f"{stem}*") if p.is_file()
+    ]
+
+
 def record_image_version(book_id: str, asset_type: str, asset_key: str,
                          data: bytes, content_type: str = "image/png") -> str:
     """Persist a freshly generated image AND register it as a selectable version.

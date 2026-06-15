@@ -63,6 +63,7 @@ def book(monkeypatch, tmp_path):
     """A legacy book on disk: analysis + meta, but NO special_pages.json."""
     monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.core.db.is_available", lambda: False, raising=False)
     pre = tmp_path / "b1" / "preprocess"
     pre.mkdir(parents=True)

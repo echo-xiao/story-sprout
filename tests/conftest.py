@@ -31,6 +31,14 @@ def _gate_off_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_gcs(monkeypatch):
+    """Force the image storage layer to its local-file fallback for every test —
+    never reach the real GCS bucket (the production default). Tests that need a
+    tmp dir also patch src.core.storage.GENERATED_DIR."""
+    monkeypatch.setattr("src.core.storage.GCS_BUCKET", "", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_email(monkeypatch):
     """Safety net: clear email-sender credentials that .env's load_dotenv may
     have pulled into the environment, so no test ever sends a real email.

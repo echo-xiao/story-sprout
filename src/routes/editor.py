@@ -116,41 +116,36 @@ def _promote_selected(book_id: str, asset_type: str, asset_key: str) -> None:
 
 
 def _backfill_versions(book_id: str, asset_type: str, asset_key: str) -> None:
-    """One-time import of an asset's existing on-disk versions (history + current)
-    into asset_versions + GCS, so versions generated BEFORE this system existed
-    are still pickable (and become durable). No-op once records exist."""
-    import hashlib
+    """Import an asset's existing versions (history + current) into asset_versions
+    from DURABLE storage (GCS), so versions generated before this system — or
+    after a Cloud Run redeploy wiped the local disk — are still listed and
+    pickable. Registers the existing GCS objects by reference (no re-upload).
+    No-op once records exist."""
     from src.core.db import list_asset_versions, add_asset_version
     from src.core import storage
 
     if list_asset_versions(book_id, asset_type, asset_key)["versions"]:
         return
-    cdir, fbase, _ = _canonical_current(book_id, asset_type, asset_key)
-    if cdir is None or not cdir.exists():
+    cdir, fbase, static_base = _canonical_current(book_id, asset_type, asset_key)
+    if static_base is None:
         return
-    files: list = []
-    hist = cdir / "history"
-    if hist.exists():
-        files += sorted(
-            (f for f in hist.glob(f"{fbase}_*") if f.suffix in (".png", ".jpg")),
-            key=lambda p: p.stat().st_mtime,
-        )
-    for _e in (".png", ".jpg"):  # current last == newest == auto-selected
-        cur = cdir / f"{fbase}{_e}"
-        if cur.exists():
-            files.append(cur)
+    subdir = static_base.rsplit("/", 1)[0]  # e.g. "<book_id>/scenes"
+
+    # History versions first (the filename's timestamp sorts them chronologically).
+    keys = [
+        k for k in storage.list_prefix(f"{subdir}/history/{fbase}_")
+        if k.endswith((".png", ".jpg")) and "_quality" not in k
+    ]
+    keys.sort()
+    # Current last == newest == the one auto-selected.
+    for _e in (".png", ".jpg"):
+        ck = f"{static_base}{_e}"
+        if storage.exists(ck):
+            keys.append(ck)
             break
-    for f in files:
-        try:
-            data = f.read_bytes()
-        except OSError:
-            continue
-        digest = hashlib.sha256(data).hexdigest()
-        ext = "png" if f.suffix == ".png" else "jpg"
-        key = f"{book_id}/{asset_type}s/{fbase}_{digest[:12]}.{ext}"
-        url = storage.put_image(key, data, "image/png" if ext == "png" else "image/jpeg")
-        add_asset_version(book_id, asset_type, asset_key, url,
-                          image_hash=digest, storage_key=key)
+    for k in keys:
+        add_asset_version(book_id, asset_type, asset_key,
+                          storage.image_url(k), storage_key=k)
 
 
 @router.post("/api/book/{book_id}/asset/{asset_type}/{asset_key:path}/select")
@@ -696,15 +691,18 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
     base = special_file_base(page_type, chapter)
     if not base:
         raise HTTPException(status_code=400, detail=f"Unknown special page type '{page_type}'.")
+    from src.core import storage
     special_dir = GENERATED_DIR / book_id / "special"
     images: list[dict] = []
+    # Current — from DURABLE storage (GCS) so it survives a redeploy that wiped
+    # the local disk (the bug that made history "vanish").
     for ext in (".png", ".jpg"):
-        cur = special_dir / f"{base}{ext}"
-        if cur.exists():
+        ck = f"{book_id}/special/{base}{ext}"
+        if storage.exists(ck):
             entry: dict[str, Any] = {
-                "url": f"/static/{book_id}/special/{cur.name}",
+                "url": f"/static/{ck}",
                 "version": "current",
-                "timestamp": cur.stat().st_mtime,
+                "timestamp": 0,
             }
             qf = special_dir / "quality" / f"{base}_quality.json"
             if qf.exists():
@@ -714,19 +712,20 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
                     pass
             images.append(entry)
             break
-    history_dir = special_dir / "history"
-    if history_dir.exists():
-        for f in sorted(history_dir.glob(f"{base}_*.*"), reverse=True):
-            if f.suffix == ".json":
-                continue
-            version = f.stem.split("_")[-1]
-            if not version.isdigit():
-                continue  # non-timestamp backups aren't restorable versions
-            images.append({
-                "url": f"/static/{book_id}/special/history/{f.name}",
-                "version": version,
-                "timestamp": f.stat().st_mtime,
-            })
+
+    def _ver(k: str) -> str:
+        return k.rsplit("/", 1)[-1].rsplit(".", 1)[0].split("_")[-1]
+    hkeys = [
+        k for k in storage.list_prefix(f"{book_id}/special/history/{base}_")
+        if k.endswith((".png", ".jpg")) and "_quality" not in k and _ver(k).isdigit()
+    ]
+    hkeys.sort(key=lambda k: int(_ver(k)), reverse=True)
+    for k in hkeys:
+        images.append({
+            "url": f"/static/{k}",
+            "version": _ver(k),
+            "timestamp": int(_ver(k)),
+        })
     return {"images": images}
 
 
@@ -1069,45 +1068,46 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
     ch_idx = target.get("chapter_idx", 0)
     page_num = segment_page_num(segments, ch_idx, seg_id)
 
-    # Find all versions in pages dir + history dir
+    # Versions from DURABLE storage (GCS) so they survive a redeploy that wiped
+    # the local disk (the bug that made history "vanish").
+    from src.core import storage
     images = []
     ch_dir = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
-    pages_dir = ch_dir / "pages"
-    history_dir = ch_dir / "history"
+    pdir = f"{book_id}/chapters/ch{ch_idx:02d}/pages"
+    hdir = f"{book_id}/chapters/ch{ch_idx:02d}/history"
 
     # Current image + quality
-    if pages_dir.exists():
-        for ext in (".png", ".jpg"):
-            current = pages_dir / f"page_{page_num:03d}{ext}"
-            if current.exists():
-                entry: dict[str, Any] = {
-                    "url": f"/static/{book_id}/chapters/ch{ch_idx:02d}/pages/{current.name}",
-                    "version": "current",
-                    "timestamp": current.stat().st_mtime,
-                }
-                # Attach quality if exists
-                qf = ch_dir / "quality" / f"page_{page_num:03d}_quality.json"
-                if qf.exists():
-                    entry["quality"] = json.loads(qf.read_text(encoding="utf-8"))
-                images.append(entry)
-                break
-
-    # Historical images + quality
-    if history_dir.exists():
-        for f in sorted(history_dir.glob(f"page_{page_num:03d}_*.*"), reverse=True):
-            if f.suffix == ".json":
-                continue  # skip quality files, they're attached below
-            version_ts = f.stem.split("_")[-1]
-            entry = {
-                "url": f"/static/{book_id}/chapters/ch{ch_idx:02d}/history/{f.name}",
-                "version": version_ts,
-                "timestamp": f.stat().st_mtime,
+    for ext in (".png", ".jpg"):
+        ck = f"{pdir}/page_{page_num:03d}{ext}"
+        if storage.exists(ck):
+            entry: dict[str, Any] = {
+                "url": f"/static/{ck}",
+                "version": "current",
+                "timestamp": 0,
             }
-            # Attach quality for this version
-            qf = history_dir / f"page_{page_num:03d}_{version_ts}_quality.json"
+            qf = ch_dir / "quality" / f"page_{page_num:03d}_quality.json"
             if qf.exists():
-                entry["quality"] = json.loads(qf.read_text(encoding="utf-8"))
+                try:
+                    entry["quality"] = json.loads(qf.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    pass
             images.append(entry)
+            break
+
+    # Historical images
+    def _ver(k: str) -> str:
+        return k.rsplit("/", 1)[-1].rsplit(".", 1)[0].split("_")[-1]
+    hkeys = [
+        k for k in storage.list_prefix(f"{hdir}/page_{page_num:03d}_")
+        if k.endswith((".png", ".jpg")) and "_quality" not in k and _ver(k).isdigit()
+    ]
+    hkeys.sort(key=lambda k: int(_ver(k)), reverse=True)
+    for k in hkeys:
+        images.append({
+            "url": f"/static/{k}",
+            "version": _ver(k),
+            "timestamp": int(_ver(k)),
+        })
 
     return {"images": images}
 
