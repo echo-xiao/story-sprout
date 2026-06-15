@@ -161,6 +161,26 @@ class ArtistSetupStage(_Stage):
         yield Event(author=self.name)
 
 
+def _writer_split(scenes: list[dict], force: bool):
+    """Pick which scenes the Writer (re)simplifies vs keeps.
+
+    force (web "Gen chapter" sets PBG_FORCE_REGEN) -> re-simplify EVERY page, so
+    the whole chapter's text is rewritten naturally (overwriting the preprocess
+    annotation's robotic version); the Artist also redraws under force, so text
+    and images stay in sync. Otherwise keep pages that already have text (protects
+    user edits + stays in sync with cached images) and only simplify the empty
+    ones. Returns (to_write, kept); kept items carry page_text = their text.
+    """
+    if force:
+        return list(scenes), []
+    to_write = [s for s in scenes if not s.get("simplified_text")]
+    kept = [
+        {**s, "page_text": s["simplified_text"]}
+        for s in scenes if s.get("simplified_text")
+    ]
+    return to_write, kept
+
+
 class WriterStage(_Stage):
     """Simplify each scene into child-friendly text and build illustration prompts."""
 
@@ -183,18 +203,7 @@ class WriterStage(_Stage):
         # Re-simplifying everything overwrote user edits and — because the
         # Artist skips pages whose image already exists — left the new text
         # permanently out of sync with the text painted into the cached image.
-        # Force-regen (web "Gen chapter" sets PBG_FORCE_REGEN) re-runs the warm
-        # simplifier on EVERY page so the whole chapter's text is rewritten
-        # naturally (the old text was the preprocess annotation's robotic, full-
-        # name version). The Artist also redraws every page under force, so text
-        # and images stay in sync. Without force, pages keep their text (protects
-        # user edits + stays in sync with cached images).
-        force = os.getenv("PBG_FORCE_REGEN") == "1"
-        to_write = list(c.scenes) if force else [s for s in c.scenes if not s.get("simplified_text")]
-        kept = [] if force else [
-            {**s, "page_text": s["simplified_text"]}
-            for s in c.scenes if s.get("simplified_text")
-        ]
+        to_write, kept = _writer_split(c.scenes, os.getenv("PBG_FORCE_REGEN") == "1")
         log_event(c.book_id, c.chapter_idx, "writer", "simplify_text",
                   f"Simplifying {len(to_write)} scenes"
                   + (f" ({len(kept)} pages keep their existing text)" if kept else ""))
