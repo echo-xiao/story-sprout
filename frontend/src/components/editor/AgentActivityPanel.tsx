@@ -132,11 +132,11 @@ export default function AgentActivityPanel({
 
       {/* Pipeline DAG */}
       <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between">
           {agentStatuses.map((agent, idx) => (
-            <div key={agent.key} className="flex items-center">
+            <div key={agent.key} className="flex items-start">
               {/* Node */}
-              <div className="flex flex-col items-center">
+              <div className="flex flex-col items-center w-16">
                 <div
                   className={`w-10 h-10 rounded-full flex items-center justify-center text-lg border-2 transition-all duration-300 ${
                     agent.status === "active"
@@ -153,16 +153,16 @@ export default function AgentActivityPanel({
                 >
                   {agent.icon}
                 </div>
-                <span className={`text-[9px] mt-1 font-semibold ${
+                <span className={`text-[9px] mt-1 font-semibold text-center ${
                   agent.status === "active" ? "text-gray-800" : agent.status === "done" ? "text-green-600" : "text-gray-400"
                 }`}>
                   {agent.name}
                 </span>
-                <span className="text-[8px] text-gray-400">{agent.desc}</span>
+                <span className="text-[8px] text-gray-400 text-center leading-tight">{agent.desc}</span>
               </div>
               {/* Arrow */}
               {idx < agentStatuses.length - 1 && (
-                <div className="mx-1.5 flex flex-col items-center">
+                <div className="mx-1.5 mt-4 flex flex-col items-center">
                   {/* Special bidirectional arrow between Artist and QA */}
                   {idx === 2 ? (
                     <div className="flex flex-col items-center">
@@ -186,6 +186,9 @@ export default function AgentActivityPanel({
             </div>
           ))}
         </div>
+        <p className="text-[9px] text-gray-400 italic text-center mt-2 leading-tight">
+          This pipeline runs only when you generate a whole chapter.
+        </p>
       </div>
 
       {/* Negotiation Summary (if any) */}

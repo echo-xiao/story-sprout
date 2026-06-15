@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 
 from src.config import GCS_BUCKET, GENERATED_DIR
 
@@ -78,6 +79,27 @@ def image_url(key: str) -> str:
     if GCS_BUCKET:
         return f"https://storage.googleapis.com/{GCS_BUCKET}/{key}"
     return f"/static/{key}"
+
+
+def mirror_to_gcs(local_path) -> None:
+    """Upload a just-written LOCAL file to GCS at its GENERATED_DIR-relative key,
+    so generated images survive Cloud Run instance recycling. No-op without GCS.
+
+    Called from the one low-level image saver (save_inline_image), so EVERY
+    generation path (page / character sheet / special page) persists durably —
+    not just the per-asset regen endpoints."""
+    if not GCS_BUCKET:
+        return
+    p = local_path if isinstance(local_path, Path) else Path(local_path)
+    try:
+        key = str(p.relative_to(GENERATED_DIR))
+    except ValueError:
+        return
+    try:
+        ct = "image/png" if p.suffix == ".png" else "image/jpeg"
+        put_image(key, p.read_bytes(), ct)
+    except Exception as e:
+        logger.warning("mirror_to_gcs failed for %s: %s", local_path, e)
 
 
 def localize(key: str) -> str | None:

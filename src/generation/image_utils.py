@@ -42,6 +42,13 @@ def save_inline_image(response: object, save_path: Path) -> str:
             ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
             final = save_path.with_suffix(ext)
             final.write_bytes(part.inline_data.data)
+            # Mirror to durable storage (GCS) so chapter-generated pages/sheets/
+            # covers survive a Cloud Run redeploy instead of being local-only.
+            try:
+                from src.core import storage
+                storage.mirror_to_gcs(final)
+            except Exception:
+                pass
             return str(final)
     return ""
 
