@@ -23,11 +23,15 @@ export default function StyleReferenceWidget({
     custom: false,
   });
   const [busy, setBusy] = useState(false);
+  const [bust, setBust] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = () =>
     getStyleReference(bookId)
-      .then(setRef)
+      .then((r) => {
+        setRef(r);
+        setBust(Date.now());  // force the <img> to reload even on a same-name re-upload
+      })
       .catch(() => {});
 
   useEffect(() => {
@@ -76,7 +80,7 @@ export default function StyleReferenceWidget({
       >
         {ref.url ? (
           <img
-            src={`${ref.url.startsWith("http") ? "" : API_BASE}${ref.url}`}
+            src={`${ref.url.startsWith("http") ? "" : API_BASE}${ref.url}${ref.url.includes("?") ? "&" : "?"}t=${bust}`}
             alt="style reference"
             className="h-full w-full object-cover"
           />

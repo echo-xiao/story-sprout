@@ -102,9 +102,9 @@ export async function getStyleReference(bookId: string) {
 export async function uploadStyleReference(bookId: string, file: File) {
   const fd = new FormData();
   fd.append("file", file);
-  const { data } = await api.post(`/book/${bookId}/style-reference`, fd, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+  // Do NOT set Content-Type manually — axios/browser must add the multipart
+  // boundary itself, or the server can't parse the upload.
+  const { data } = await api.post(`/book/${bookId}/style-reference`, fd);
   return data as { status: string; url: string; custom: boolean };
 }
 
