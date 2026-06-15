@@ -75,6 +75,26 @@ def test_writer_only_simplifies_pages_without_text(writer_stage):
     assert sent == [2], "the edited page must NOT be sent to the LLM"
 
 
+def test_writer_writes_text_sync_payload_early_when_deferred(writer_stage, tmp_path):
+    """The payload must be written in the Writer stage — BEFORE the slow Artist
+    loop — so a timeout/crash mid-illustration can't discard the natural text
+    (the prod bug: a 39-page chapter always ran past the subprocess timeout, so
+    the end-of-run sync never happened and the text never updated)."""
+    import json
+    from src.agents.adk_pipeline import TEXT_SYNC_FILENAME
+
+    ctx = writer_stage["ctx"]
+    ctx.defer_text_sync = True
+    ctx.chapter_dir = tmp_path
+    _drive(writer_stage["stage"])
+
+    payload_path = tmp_path / TEXT_SYNC_FILENAME
+    assert payload_path.exists(), "payload must exist right after the Writer stage"
+    texts = {p["simplified_text"] for p in json.loads(payload_path.read_text())}
+    assert "USER EDITED TEXT" in texts  # kept user page
+    assert "LLM TEXT p2" in texts       # freshly simplified page
+
+
 def test_writer_keeps_user_text_and_merges_in_order(writer_stage):
     _drive(writer_stage["stage"])
     simplified = writer_stage["ctx"].simplified

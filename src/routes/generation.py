@@ -588,19 +588,32 @@ async def generate_chapter_endpoint(
                 stderr=_asyncio.subprocess.PIPE,
                 env=env,
             )
+            # A full 39-page chapter (image gen + QA + self-correct) runs ~30-40
+            # min — the old 900s ceiling killed it around page 17 EVERY time, and
+            # because the text sync only ran on a clean exit, the Writer's natural
+            # text was silently discarded on every "Gen chapter". 60 min covers a
+            # large chapter; the subprocess is a background task so this only ties
+            # up the (always-on, min-instances=1) worker, not an HTTP request.
+            timed_out = False
             try:
-                _stdout, _stderr = await _asyncio.wait_for(proc.communicate(), timeout=900)
+                _stdout, _stderr = await _asyncio.wait_for(proc.communicate(), timeout=3600)
             except _asyncio.TimeoutError:
                 proc.kill()
                 await proc.communicate()
+                timed_out = True
                 logger.error("Chapter generation timed out for %s ch%02d", book_id, ch_idx)
-                progress_file.write_text(json.dumps({"status": "failed", "progress": 100, "current_step": "Generation timed out", "total_pages": 0, "completed_pages": 0}))
+            # Apply the text sync REGARDLESS of how the run ended. The Writer
+            # writes its payload right after simplifying (before the slow Artist
+            # loop), so even a timeout/crash keeps the natural text — text is
+            # cheap and must not depend on every image finishing.
+            try:
+                await _apply_deferred_text_sync(book_id, ch_idx)
+            except Exception:
+                logger.exception("Deferred text sync failed for %s ch%02d", book_id, ch_idx)
+            if timed_out:
+                progress_file.write_text(json.dumps({"status": "failed", "progress": 100, "current_step": "Generation timed out (text saved; some images may be missing)", "total_pages": 0, "completed_pages": 0}))
                 return
             if proc.returncode == 0:
-                try:
-                    await _apply_deferred_text_sync(book_id, ch_idx)
-                except Exception:
-                    logger.exception("Deferred text sync failed for %s ch%02d", book_id, ch_idx)
                 progress_file.write_text(json.dumps({"status": "complete", "progress": 100, "current_step": "Done", "total_pages": 0, "completed_pages": 0}))
             else:
                 err_tail = (_stderr or b"").decode("utf-8", errors="replace")[-800:]

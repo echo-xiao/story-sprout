@@ -226,6 +226,14 @@ class WriterStage(_Stage):
         log_event(c.book_id, c.chapter_idx, "writer", "simplify_text",
                   f"Simplified {len(fresh)} pages, kept {len(kept)}", status="done")
 
+        # Hand the natural text to the parent NOW, before the slow Artist loop.
+        # The chapter reliably runs past the subprocess timeout (~30-40 min for
+        # 39 images), so an end-of-run sync never happened — the Writer's text
+        # was discarded on every "Gen chapter". Writing the payload here (text is
+        # done) means a timeout/crash mid-illustration still keeps the text.
+        if c.defer_text_sync:
+            IllustrateQAStage._write_text_sync_payload(c)
+
         _update_progress(c.book_id, c.chapter_idx, agent="writer", current_step="Building illustration prompts...", progress=35)
         log_event(c.book_id, c.chapter_idx, "writer", "build_prompts", f"Building {len(c.simplified)} illustration prompts")
         c.page_prompts = writer.build_prompts(c.simplified)
@@ -273,9 +281,10 @@ class IllustrateQAStage(_Stage):
         log_event(c.book_id, c.chapter_idx, "qa", "summarize", "Quality summary complete", status="done")
 
         c.chapter_data = self._save_chapter_data(c)
-        if c.defer_text_sync:
-            self._write_text_sync_payload(c)
-        else:
+        # The defer path already wrote its payload right after the Writer stage
+        # (so a timeout can't lose the text). Only the CLI (non-defer) path needs
+        # to write analysis.json directly, here at the end.
+        if not c.defer_text_sync:
             self._sync_text_to_analysis(c)
 
         if not c.page_filter:
