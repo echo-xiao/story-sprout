@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import AsyncGenerator
 
 from google.adk.agents import BaseAgent, SequentialAgent
@@ -182,8 +183,15 @@ class WriterStage(_Stage):
         # Re-simplifying everything overwrote user edits and — because the
         # Artist skips pages whose image already exists — left the new text
         # permanently out of sync with the text painted into the cached image.
-        to_write = [s for s in c.scenes if not s.get("simplified_text")]
-        kept = [
+        # Force-regen (web "Gen chapter" sets PBG_FORCE_REGEN) re-runs the warm
+        # simplifier on EVERY page so the whole chapter's text is rewritten
+        # naturally (the old text was the preprocess annotation's robotic, full-
+        # name version). The Artist also redraws every page under force, so text
+        # and images stay in sync. Without force, pages keep their text (protects
+        # user edits + stays in sync with cached images).
+        force = os.getenv("PBG_FORCE_REGEN") == "1"
+        to_write = list(c.scenes) if force else [s for s in c.scenes if not s.get("simplified_text")]
+        kept = [] if force else [
             {**s, "page_text": s["simplified_text"]}
             for s in c.scenes if s.get("simplified_text")
         ]

@@ -355,21 +355,25 @@ For EACH scene, provide ALL of the following fields:
    - NEVER write "same as scene X" or "as before". Every scene must have its own unique, complete description.
    - Example: "Inside the Defarge wine shop. A long wooden counter with wine barrels behind it. Dim candlelight. Stone walls stained with age. A narrow door leads to a dark staircase."
 
-4. scene_summary: One sentence summary using character FULL NAMES (no pronouns).
+4. scene_summary: One natural one-sentence summary of the scene. This is a human-readable description — use pronouns freely and write it the way a person would.
 
 5. sentiment: One of "positive", "negative", "neutral", "tense", "emotional"
 
-6. simplified_text: Rewrite this scene as a children's picture book page (age 4-6).
-   - Short sentences (max 10 words each), 3-6 sentences total.
-   - Use character full names, not pronouns.
-   - Keep key dialogue as direct speech.
-   - Simple vocabulary, vivid and concrete.
+6. simplified_text: Rewrite this scene as a warm, lively children's picture book page (age 4-6).
+   - 3-6 short sentences with natural RHYTHM — it should sing when read aloud.
+   - Write NATURALLY: once a character is named, use pronouns (he/she/they), and VARY how
+     sentences begin. Do NOT start every sentence with the character's full name.
+   - Keep key dialogue as direct speech; add warmth and the odd sound word. Never preachy.
+   - Simple, vivid, concrete vocabulary.
 
 7. is_key_event: true/false
 8. event_description: If key event, one sentence describing what happens (else null)
 
 CRITICAL RULES:
-- NEVER use pronouns (he/she/they/his/her) in ANY field. Always use the character's full canonical name.
+- In characters_in_scene, scene_background and event_description, NEVER use pronouns
+  (he/she/they/his/her) — always the full canonical name (these feed the ILLUSTRATOR, which
+  must know exactly who is who). scene_summary and simplified_text are HUMAN-readable: write
+  them naturally with pronouns and varied phrasing, NOT full names every sentence.
 - NEVER reference other scenes ("same as scene 6", "continues from before"). Each annotation must be self-contained.
 - EVERY character physically present MUST be listed with a specific action.
 
