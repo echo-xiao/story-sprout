@@ -42,8 +42,23 @@ def save_inline_image(response: object, save_path: Path) -> str:
             ext = ".jpg" if "jpeg" in mime or "jpg" in mime else ".png"
             final = save_path.with_suffix(ext)
             final.write_bytes(part.inline_data.data)
+            # One stem = one current file. If a previous render saved the OTHER
+            # extension (.png<->.jpg), drop it here — checkpoint/stale/PDF probes
+            # loop over both extensions, so a leftover twin can win the probe and
+            # be served as the "current" image (a page reported drawn/up-to-date
+            # while showing the stale art). Cleaned in the one image-saving exit
+            # so EVERY path benefits, and BEFORE the mirror so it also covers the
+            # local / no-GCS case (mirror_to_gcs early-returns without GCS and so
+            # never cleaned the local twin).
+            other = save_path.with_suffix(".jpg" if ext == ".png" else ".png")
+            if other != final:
+                try:
+                    other.unlink(missing_ok=True)
+                except OSError:
+                    pass
             # Mirror to durable storage (GCS) so chapter-generated pages/sheets/
             # covers survive a Cloud Run redeploy instead of being local-only.
+            # mirror_to_gcs also drops the other-extension OBJECT in GCS.
             try:
                 from src.core import storage
                 storage.mirror_to_gcs(final)

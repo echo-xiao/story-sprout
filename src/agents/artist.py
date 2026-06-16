@@ -115,7 +115,7 @@ class ArtistAgent:
             List of illustration dicts (page_number, image_path, prompt_used).
         """
         from src.generation.illustration import _get_client, _generate_single_page, _find_scene_sheet
-        from src.generation.special_pages import _find_book_cover
+        from src.generation.special_pages import get_style_ref
 
         pages_dir = chapter_dir / "pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
@@ -128,9 +128,12 @@ class ArtistAgent:
 
         # Same style-reference logic as illustration.generate_illustrations():
         # use the book cover (if present) so all pages share its visual style.
-        style_ref_path = _find_book_cover(self.book_id)
+        # Single style anchor for the WHOLE book: user-uploaded style reference
+        # if set, else the book cover (get_style_ref). Same source as single-page
+        # regen / character / scene generation, so every path anchors identically.
+        style_ref_path = get_style_ref(self.book_id)
         if style_ref_path:
-            logger.info("Using book cover as style reference: %s", style_ref_path)
+            logger.info("Using style reference: %s", style_ref_path)
 
         print(f"\n[Artist Agent] Generating {len(page_prompts)} illustrations...")
 

@@ -72,19 +72,22 @@ class BookOwnershipMiddleware(BaseHTTPMiddleware):
         if REQUIRE_USER_KEY and request.method in _WRITE_METHODS:
             m = _BOOK_WRITE_RE.match(request.url.path)
             if m:
-                from src.routes.helpers import book_owner_email
-                owner = book_owner_email(m.group(1))
-                caller = (request.headers.get("x-user-email") or "").strip().lower()
-                # owner == "" → unowned (a public sample, or a legacy book with no
-                # recorded creator): no caller can match, so it is locked against
-                # mutation rather than open to all. The owner must present the
-                # email the book was created with.
-                if not owner or caller != owner:
-                    return JSONResponse(
-                        {"detail": "This book belongs to another account — open it "
-                                   "from the email/device that created it."},
-                        status_code=403,
-                    )
+                from src.routes.helpers import book_owner_email, is_admin_token
+                # Admin bypasses ownership — it's how the operator edits the
+                # unowned public sample books (owner == "") without a flip.
+                if not is_admin_token(request.headers.get("x-admin-token")):
+                    owner = book_owner_email(m.group(1))
+                    caller = (request.headers.get("x-user-email") or "").strip().lower()
+                    # owner == "" → unowned (a public sample, or a legacy book with no
+                    # recorded creator): no caller can match, so it is locked against
+                    # mutation rather than open to all. The owner must present the
+                    # email the book was created with.
+                    if not owner or caller != owner:
+                        return JSONResponse(
+                            {"detail": "This book belongs to another account — open it "
+                                       "from the email/device that created it."},
+                            status_code=403,
+                        )
         return await call_next(request)
 
 
@@ -140,10 +143,12 @@ class BYOKMiddleware(BaseHTTPMiddleware):
         from src.gemini_backend import set_user_api_key, reset_user_api_key
         from src.config import REQUIRE_USER_KEY
 
+        from src.routes.helpers import is_admin_token
         key = request.headers.get("x-gemini-key")
+        is_admin = is_admin_token(request.headers.get("x-admin-token"))
         path = request.url.path
         is_gen = request.method == "POST" and any(path.endswith(s) for s in _GEN_SUFFIXES)
-        if is_gen and REQUIRE_USER_KEY and not key:
+        if is_gen and REQUIRE_USER_KEY and not key and not is_admin:
             return JSONResponse(
                 {"detail": "A Gemini API key with BILLING ENABLED (paid tier) is required to "
                            "generate — free keys have zero image quota. Add yours on the Create page."},
@@ -153,7 +158,9 @@ class BYOKMiddleware(BaseHTTPMiddleware):
         # With the gate off, a browser-saved free-tier key would otherwise
         # hijack image generation (free tier has 0 quota for the image model)
         # and every regen 429'd while the project backend worked fine.
-        token = set_user_api_key(key) if (key and REQUIRE_USER_KEY) else None
+        # Admin runs on the project backend (Vertex): never inject a user key,
+        # even if one was sent.
+        token = set_user_api_key(key) if (key and REQUIRE_USER_KEY and not is_admin) else None
         try:
             return await call_next(request)
         finally:

@@ -28,6 +28,13 @@ GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
 # open.
 REQUIRE_USER_KEY = os.getenv("REQUIRE_USER_KEY", "true").lower() != "false"
 
+# Admin token — a request carrying X-Admin-Token == this value bypasses the BYOK
+# gate AND book-ownership, running generation on the project's Vertex backend (no
+# user key). Lets the operator regenerate sample books without flipping the global
+# REQUIRE_USER_KEY switch (which would open generation to everyone). Unset → no
+# admin backdoor (every admin check fails safe).
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip()
+
 # MongoDB
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB = os.getenv("MONGODB_DB", "picture_book_generator")

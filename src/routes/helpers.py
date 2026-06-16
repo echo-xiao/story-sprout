@@ -64,7 +64,24 @@ def book_owner_email(book_id: str) -> str:
         return ""
 
 
-def _require_user_key(x_gemini_key: str | None = Header(default=None)) -> str | None:
+def is_admin_token(token: str | None) -> bool:
+    """Constant-time check that `token` matches ADMIN_TOKEN.
+
+    A valid admin token bypasses the BYOK gate AND book-ownership, and runs
+    generation on the PROJECT backend (Vertex) — no user key is injected. Lets
+    the operator regenerate sample books without flipping the global
+    REQUIRE_USER_KEY switch (which would open generation to everyone). The SINGLE
+    admin predicate, reused by both middlewares and the route dependency. Unset
+    ADMIN_TOKEN → always False (no backdoor by default)."""
+    import secrets
+    from src.config import ADMIN_TOKEN
+    return bool(ADMIN_TOKEN and token and secrets.compare_digest(token, ADMIN_TOKEN))
+
+
+def _require_user_key(
+    x_gemini_key: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None),
+) -> str | None:
     """BYOK gate (only enforced when REQUIRE_USER_KEY=true).
 
     Enforced: generating/regenerating needs the caller's own Gemini key (403
@@ -73,8 +90,13 @@ def _require_user_key(x_gemini_key: str | None = Header(default=None)) -> str | 
     optional key here used to silently route image generation to free-tier AI
     Studio keys, which have ZERO quota for the image model — every regen 429'd
     while the project backend would have worked fine.
+
+    Admin override: a valid X-Admin-Token bypasses the gate and returns None, so
+    the call runs on the project Vertex backend (no user key injected).
     """
     from src.config import REQUIRE_USER_KEY
+    if is_admin_token(x_admin_token):
+        return None
     if not REQUIRE_USER_KEY:
         return None
     if not x_gemini_key:

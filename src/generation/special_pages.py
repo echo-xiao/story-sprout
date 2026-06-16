@@ -220,7 +220,7 @@ def generate_chapter_cover(
 ) -> str:
     """Generate a chapter title page illustration, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
-    style_ref = _find_book_cover(book_id)
+    style_ref = get_style_ref(book_id)
 
     char_desc = ""
     for c in characters[:3]:
@@ -270,7 +270,7 @@ def generate_back_cover(
 ) -> str:
     """Generate an illustrated back cover, referencing book cover for style."""
     active_style = style or DEFAULT_STYLE
-    style_ref = _find_book_cover(book_id)
+    style_ref = get_style_ref(book_id)
 
     title_spelled = "-".join(title_text.upper())
 
