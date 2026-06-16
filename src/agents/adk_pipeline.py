@@ -26,6 +26,7 @@ from google.genai import types
 
 from src.config import GENERATED_DIR
 from src.core.provenance import (
+    TEXT_SOURCE_PREPROCESS,
     TEXT_SOURCE_WRITER,
     is_user_edited,
     keeps_existing_text,
@@ -216,12 +217,27 @@ class WriterStage(_Stage):
         log_event(c.book_id, c.chapter_idx, "writer", "simplify_text",
                   f"Simplifying {len(to_write)} scenes"
                   + (f" ({len(kept)} pages keep their existing text)" if kept else ""))
-        fresh = writer.simplify(to_write, characters=chapter_chars,
-                                character_sheets=c.character_sheets) if to_write else []
+        # Defense in depth: simplify_text already isolates per-page failures, but
+        # the Writer must NEVER crash the whole chapter — a total failure here
+        # leaves pages with their existing text (replaceable) so the Artist still
+        # runs and images + (kept) text still land.
+        try:
+            fresh = writer.simplify(to_write, characters=chapter_chars,
+                                    character_sheets=c.character_sheets) if to_write else []
+        except Exception as e:
+            logger.exception("Writer.simplify failed for %s ch%02d", c.book_id, c.chapter_idx)
+            log_event(c.book_id, c.chapter_idx, "writer", "simplify_text",
+                      f"Simplify failed ({e}); keeping existing text", status="warn")
+            fresh = [{**s, "page_text": s.get("simplified_text") or s.get("scene_summary", ""),
+                      "scene_direction": s.get("scene_direction", ""), "simplify_failed": True}
+                     for s in to_write]
         # Tag the Writer's natural text so the analysis merge knows it may
-        # replace robotic preprocess text (but never a user edit).
+        # replace robotic preprocess text (but never a user edit). A page the
+        # simplifier couldn't rewrite (bad-JSON fallback) stays replaceable so a
+        # later re-gen retries it instead of freezing the fallback as "final".
         for s in fresh:
-            s["text_source"] = TEXT_SOURCE_WRITER
+            s["text_source"] = (TEXT_SOURCE_PREPROCESS if s.get("simplify_failed")
+                                else TEXT_SOURCE_WRITER)
         c.simplified = sorted(kept + fresh, key=lambda s: s.get("page_number", 0))
         log_event(c.book_id, c.chapter_idx, "writer", "simplify_text",
                   f"Simplified {len(fresh)} pages, kept {len(kept)}", status="done")

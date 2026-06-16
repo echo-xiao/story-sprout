@@ -123,13 +123,30 @@ def simplify_text(
                 scene = {**scene, "previous_page_text": prev_text}
             # Pass character_sheets through — omitting it dropped every VISUAL:
             # line from the per-page prompt in real (multi-page) generation.
-            result = simplify_text([scene], original_text, language, characters, character_sheets)
-            if result:
-                # Keep the scene's real page number — sequential renumbering
-                # breaks partial runs (e.g. --pages 13,29 became pages 4,5)
-                result[0]["page_number"] = scene.get("page_number", i + 1)
-                all_results.append(result[0])
-                prev_text = result[0].get("page_text", "")
+            # ISOLATE per-page failures: the LLM occasionally returns invalid
+            # JSON (markdown wrapper, truncation, refusal). Before this, that
+            # single raise propagated all the way up and crashed the ENTIRE
+            # chapter at the Writer stage — so the text never updated. Retry the
+            # page once, then fall back to a summary (marked simplify_failed so a
+            # later re-gen can retry it) and KEEP GOING.
+            result = None
+            for attempt in range(2):
+                try:
+                    result = simplify_text([scene], original_text, language, characters, character_sheets)
+                    break
+                except Exception as e:
+                    logger.warning("Page %d simplify attempt %d failed: %s", i + 1, attempt + 1, e)
+            if not result:
+                fallback_text = (scene.get("scene_summary")
+                                 or scene.get("original_text", scene.get("text", "")))[:300]
+                result = [{**scene, "page_text": fallback_text,
+                           "scene_direction": scene.get("scene_summary", ""),
+                           "simplify_failed": True}]
+            # Keep the scene's real page number — sequential renumbering
+            # breaks partial runs (e.g. --pages 13,29 became pages 4,5)
+            result[0]["page_number"] = scene.get("page_number", i + 1)
+            all_results.append(result[0])
+            prev_text = result[0].get("page_text", "")
         return all_results
 
     # Language instruction
