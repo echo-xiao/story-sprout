@@ -484,11 +484,16 @@ async def usage_digest(token: str = "", hours: int = 24) -> dict[str, Any]:
 
 
 @router.get("/api/book/{book_id}/pdf")
-async def download_book_pdf(book_id: str) -> FileResponse:
+async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
     """Build the book PDF on demand from chapter_data + special pages — the
     single source of truth the editors already maintain — so it can never go
     stale. No pre-generated book.pdf to keep in sync across N edit endpoints;
     the PDF is derived per request and streamed back.
+
+    inline=1 serves it with `Content-Disposition: inline` so the reader can
+    embed the whole book in an <iframe> (browser-native PDF viewer) instead of
+    triggering a download — the "show as PDF" reading mode. Default attachment
+    keeps the Download button's save-to-file behaviour.
     """
     import re as _re
     import tempfile
@@ -531,6 +536,7 @@ async def download_book_pdf(book_id: str) -> FileResponse:
     safe = _re.sub(r"[^\w.-]", "_", title)[:60] or "book"
     return FileResponse(
         tmp_path, media_type="application/pdf", filename=f"{safe}.pdf",
+        content_disposition_type="inline" if inline else "attachment",
         background=BackgroundTask(lambda: os.path.exists(tmp_path) and os.unlink(tmp_path)),
     )
 

@@ -24,6 +24,9 @@ export default function BookViewerPage() {
   const [title, setTitle] = useState("");
   const [pages, setPages] = useState<PageInfo[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
+  // "flip" = page-by-page image viewer; "pdf" = whole-book PDF embedded in an
+  // iframe (browser-native viewer, continuous scroll) — the "show as PDF" mode.
+  const [viewMode, setViewMode] = useState<"flip" | "pdf">("flip");
   const [loading, setLoading] = useState(true);
   // Bust the image cache once per page-load so edits made in the editor show up
   // here instead of a stale browser-cached image (filenames are reused).
@@ -132,9 +135,26 @@ export default function BookViewerPage() {
           <h1 className="text-white font-bold text-sm truncate max-w-xs">{title}</h1>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-white/50 text-xs">
-            {currentPage + 1} / {pages.length}
-          </span>
+          {viewMode === "flip" && (
+            <span className="text-white/50 text-xs">
+              {currentPage + 1} / {pages.length}
+            </span>
+          )}
+          {/* View switch: page-by-page flip vs whole-book PDF */}
+          <div className="flex rounded-lg overflow-hidden border border-white/10">
+            <button
+              onClick={() => setViewMode("flip")}
+              className={`text-xs px-3 py-1.5 transition-colors ${viewMode === "flip" ? "bg-white/20 text-white" : "bg-white/5 text-white/50 hover:text-white"}`}
+            >
+              翻页
+            </button>
+            <button
+              onClick={() => setViewMode("pdf")}
+              className={`text-xs px-3 py-1.5 transition-colors ${viewMode === "pdf" ? "bg-white/20 text-white" : "bg-white/5 text-white/50 hover:text-white"}`}
+            >
+              整本 PDF
+            </button>
+          </div>
           {/* Built on demand from chapter_data — always current. */}
           <a
             href={`${API_BASE}/api/book/${bookId}/pdf`}
@@ -153,8 +173,18 @@ export default function BookViewerPage() {
         </div>
       </header>
 
+      {/* Whole-book PDF view: browser-native viewer, continuous scroll. Only
+          mounted in pdf mode so flip mode doesn't prefetch the (heavy) PDF. */}
+      {viewMode === "pdf" && (
+        <iframe
+          src={`${API_BASE}/api/book/${bookId}/pdf?inline=1`}
+          className="flex-1 w-full border-0 bg-white"
+          title={`${title} — full book PDF`}
+        />
+      )}
+
       {/* Page viewer */}
-      <div className="flex-1 flex items-center justify-center relative px-4 py-4">
+      <div className={`flex-1 flex items-center justify-center relative px-4 py-4 ${viewMode === "pdf" ? "hidden" : ""}`}>
         {/* Previous button */}
         <button
           onClick={() => setCurrentPage((p) => Math.max(p - 1, 0))}
@@ -206,7 +236,7 @@ export default function BookViewerPage() {
       </div>
 
       {/* Page thumbnails */}
-      <div className="bg-black/30 px-4 py-3 shrink-0">
+      <div className={`bg-black/30 px-4 py-3 shrink-0 ${viewMode === "pdf" ? "hidden" : ""}`}>
         <div className="flex gap-2 overflow-x-auto justify-center max-w-4xl mx-auto">
           {pages.map((p, idx) => (
             <button
