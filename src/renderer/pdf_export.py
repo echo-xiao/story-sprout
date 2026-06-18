@@ -25,13 +25,49 @@ def _register_fonts() -> str:
     return "Helvetica"
 
 
+# The PDF page is 8.5" square; at ~130 DPI that's ~1100px — past that the extra
+# pixels don't show. Embedding the raw 2-3MB 1024²+ PNGs made reportlab take
+# >30s for a 39-page book, and Next's reverse proxy cut the request off at 30s
+# (→ 500, never a usable PDF). Downscale + JPEG-compress to the display size in
+# the ONE image-drawing exit so every page/cover benefits: ~10x faster build,
+# ~15x smaller file.
+_PDF_MAX_PX = 1100
+
+
+def _downscaled_reader(image_path: str):
+    """A reportlab ImageReader over a downscaled, white-flattened JPEG of the
+    source image. Keeps the on-demand PDF build well under the proxy timeout and
+    the file small, with no visible quality loss at the page's print size."""
+    from io import BytesIO
+
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+
+    im = Image.open(image_path)
+    # JPEG has no alpha channel — flatten any transparency onto white so PNGs
+    # with alpha don't come out black.
+    if im.mode in ("RGBA", "LA", "P"):
+        im = im.convert("RGBA")
+        bg = Image.new("RGB", im.size, "white")
+        bg.paste(im, mask=im.split()[-1])
+        im = bg
+    else:
+        im = im.convert("RGB")
+    if max(im.size) > _PDF_MAX_PX:
+        im.thumbnail((_PDF_MAX_PX, _PDF_MAX_PX), Image.LANCZOS)
+    buf = BytesIO()
+    im.save(buf, format="JPEG", quality=85, optimize=True)
+    buf.seek(0)
+    return ImageReader(buf)
+
+
 def _draw_full_image_page(c: canvas.Canvas, image_path: str, width: float, height: float) -> bool:
-    """Draw a full-page image. Returns True if successful."""
+    """Draw a full-page image (downscaled for speed). Returns True if successful."""
     if not image_path or not os.path.exists(image_path):
         return False
     try:
         c.drawImage(
-            image_path, 0, 0,
+            _downscaled_reader(image_path), 0, 0,
             width=width, height=height,
             preserveAspectRatio=True, anchor="c",
         )
