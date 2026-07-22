@@ -25,7 +25,6 @@ import {
   getSpecialPages,
   regenerateSpecialPage,
   getStalePages,
-  getConfig,
   getPreprocessProgress,
   type SpecialPageData,
 } from "@/lib/api";
@@ -134,18 +133,6 @@ export default function EditorPage() {
 
   // Agent Activity Panel (open by default so the live agent log is always visible)
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
-
-  // BYOK: the editor is read-only unless the visitor supplied their own Gemini
-  // key (generation endpoints also enforce this server-side with a 403).
-  const [hasKey] = useState(() => typeof window !== "undefined" && !!localStorage.getItem("pbg_api_key"));
-  const [keyInput, setKeyInput] = useState("");
-  // The BYOK gate is only enforced when the backend says so (REQUIRE_USER_KEY).
-  // Default off → editor is fully usable without a key (project/Vertex billing).
-  const [requireKey, setRequireKey] = useState(false);
-  useEffect(() => {
-    getConfig().then(c => setRequireKey(!!c.require_user_key)).catch(() => {});
-  }, []);
-  const canEdit = hasKey || !requireKey;
 
   // Expand/collapse state for the read-only LLM Prompt Preview (AIChatPanel).
   const [chatOpen, setChatOpen] = useState(false);
@@ -516,7 +503,7 @@ export default function EditorPage() {
   // for A while the first is still running.
   const simplifyInFlight = useRef<Set<number>>(new Set());
   useEffect(() => {
-    if (selectedSegId < 0 || !selectedSegment || selectedSegment.simplified_text || !canEdit) return;
+    if (selectedSegId < 0 || !selectedSegment || selectedSegment.simplified_text) return;
     const segId = selectedSegId;
     if (simplifyInFlight.current.has(segId)) return;
     simplifyInFlight.current.add(segId);
@@ -531,7 +518,7 @@ export default function EditorPage() {
       })
       .catch(() => {})
       .finally(() => { simplifyInFlight.current.delete(segId); });
-  }, [selectedSegId, canEdit]);
+  }, [selectedSegId]);
 
   // Load history when segment changes
   useEffect(() => {
@@ -974,7 +961,7 @@ export default function EditorPage() {
             </button>
           </div>
           {/* Book-wide style reference — anchors all generation */}
-          <StyleReferenceWidget bookId={bookId} canEdit={canEdit} />
+          <StyleReferenceWidget bookId={bookId} canEdit={true} />
           {/* Agent Activity Indicator */}
           <button
             onClick={() => setAgentPanelOpen(!agentPanelOpen)}
@@ -1014,33 +1001,6 @@ export default function EditorPage() {
         </div>
       </header>
 
-      {requireKey && !hasKey && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-xs text-amber-800 flex items-center justify-center gap-2 shrink-0 flex-wrap">
-          <span>👁 View-only — paste your Gemini API key to edit:</span>
-          <input
-            type="password"
-            name="gemini_key"
-            aria-label="Gemini API key"
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            placeholder="AIza..."
-            className="px-2 py-1 rounded border border-amber-300 text-gray-700 w-52 bg-white focus:outline-none focus:ring-2 focus:ring-amber-300"
-          />
-          <button
-            onClick={() => {
-              const k = keyInput.trim();
-              if (k) { localStorage.setItem("pbg_api_key", k); window.location.reload(); }
-            }}
-            disabled={!keyInput.trim()}
-            className="px-2.5 py-1 rounded bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"
-          >
-            Save &amp; enable
-          </button>
-          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="underline">create a key</a>
-          <span className="text-amber-700">(must have billing enabled — free-tier keys can&apos;t generate images)</span>
-        </div>
-      )}
-
       {/* Body: tab content + persistent live Agent Activity column side by side */}
       <div className="flex flex-1 overflow-hidden">
       {/* Tab content area */}
@@ -1049,7 +1009,7 @@ export default function EditorPage() {
       {activeTab === "characters" && (
         <CharacterManagement
           bookId={bookId}
-          canGenerate={canEdit}
+          canGenerate={true}
           characters={characters}
           sheets={sheets}
           aliasMap={aliasMap}
@@ -1092,7 +1052,7 @@ export default function EditorPage() {
       {activeTab === "scenes" && (
         <SceneManagement
           bookId={bookId}
-          canGenerate={canEdit}
+          canGenerate={true}
           initialScene={sceneNav || initialScene}
           onSelectScene={(name) => {
             setSelectedSceneName(name);
@@ -1131,7 +1091,7 @@ export default function EditorPage() {
               )}
               <button
                 onClick={handleGenAllChapters}
-                disabled={genAllChapters || generatingChapter !== null || !canEdit}
+                disabled={genAllChapters || generatingChapter !== null}
                 className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
               >
                 {genAllChapters ? "Running..." : "Gen All"}
@@ -1217,7 +1177,7 @@ export default function EditorPage() {
                           alert(`Chapter generation failed: ${err?.response?.data?.detail || err?.message || err}`);
                         }
                       }}
-                      disabled={generatingChapter !== null || !canEdit}
+                      disabled={generatingChapter !== null}
                       className="w-8 h-6 mr-1 text-[9px] bg-coral/80 text-white rounded hover:bg-coral transition-colors disabled:opacity-50 shrink-0"
                       title="Generate illustrations for this chapter"
                     >
@@ -1318,7 +1278,7 @@ export default function EditorPage() {
         <div className="flex-1 flex overflow-hidden">
           {selectedSpecial ? (
             <SpecialPageView
-              canGenerate={canEdit}
+              canGenerate={true}
               special={selectedSpecial}
               meta={meta}
               bookId={bookId}
@@ -1561,7 +1521,7 @@ export default function EditorPage() {
                   </button>
                   <button
                     onClick={handleRegenerate}
-                    disabled={regenerating || saving || !canEdit}
+                    disabled={regenerating || saving}
                     className="btn-primary text-xs !px-3 !py-1.5 flex items-center gap-1"
                   >
                     <RefreshCw size={12} className={regenerating ? "animate-spin" : ""} />
