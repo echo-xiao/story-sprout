@@ -7,8 +7,6 @@ import logging
 import re
 from pathlib import Path
 
-import os
-
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,12 +14,11 @@ from fastapi.responses import RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from src.config import GENERATED_DIR
+from src.config import GENERATED_DIR, GCS_BUCKET
 from src.access_gate import AccessCodeMiddleware
 
 logger = logging.getLogger("picture_book")
 
-GCS_BUCKET = os.getenv("GCS_BUCKET", "picture-book-gen-assets")
 from src.routes import books, editor, generation  # noqa: E402 — needs GCS_BUCKET set first
 
 # ---------------------------------------------------------------------------

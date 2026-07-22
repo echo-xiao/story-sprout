@@ -206,7 +206,7 @@ export default function BookViewerPage() {
         >
           <div className="relative">
             <img
-              src={`${API_BASE}${page.image_url}${page.image_url.includes("?") ? "&" : "?"}v=${cacheBust}`}
+              src={`${API_BASE}${page.image_url}${page.image_url.includes("?") ? "&" : "?"}cb=${cacheBust}`}
               alt={`Page ${currentPage + 1}`}
               className="w-full rounded-2xl shadow-2xl"
             />
@@ -247,7 +247,7 @@ export default function BookViewerPage() {
               }`}
             >
               <img
-                src={`${API_BASE}${p.image_url}${p.image_url.includes("?") ? "&" : "?"}v=${cacheBust}`}
+                src={`${API_BASE}${p.image_url}${p.image_url.includes("?") ? "&" : "?"}cb=${cacheBust}`}
                 alt={`Page ${idx + 1}`}
                 className="w-full h-full object-cover"
               />
