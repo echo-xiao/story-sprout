@@ -38,7 +38,15 @@ def _bucket():
     with _client_lock:
         if _client is None:
             from google.cloud import storage
-            _client = storage.Client()
+            from src.config import GCS_SA_JSON
+            if GCS_SA_JSON:
+                import json
+                from google.oauth2 import service_account
+                info = json.loads(GCS_SA_JSON)
+                creds = service_account.Credentials.from_service_account_info(info)
+                _client = storage.Client(project=info.get("project_id"), credentials=creds)
+            else:
+                _client = storage.Client()
     return _client.bucket(GCS_BUCKET)
 
 
