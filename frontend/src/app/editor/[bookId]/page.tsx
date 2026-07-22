@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 
-import { RefreshCw, Save, Users, MapPin, Smile, BookOpen, Image, Activity } from "lucide-react";
+import { RefreshCw, Save, Users, MapPin, Smile, BookOpen, Image } from "lucide-react";
 import {
   getChapters,
   getCharacters,
@@ -12,8 +12,6 @@ import {
   regenerateSegment,
   restoreSegmentVersion,
   regenerateCharacterSheet,
-  generateChapter,
-  getChapterProgress,
   generateSimplifiedText,
   generateSceneBackground,
   generateSummary,
@@ -30,7 +28,7 @@ import {
 } from "@/lib/api";
 import type { Segment, ChapterInfo, CharacterInfo } from "@/types";
 import { setActionField, addAction, removeAction } from "@/lib/segment";
-import { isSegmentPageStep } from "@/lib/progress";
+import { generateOnePage, generatePagesSequential, type PageGenIO } from "@/lib/pageGen";
 
 import IllustrationPanel from "@/components/editor/IllustrationPanel";
 import QualityCheckPanel from "@/components/editor/QualityCheckPanel";
@@ -41,10 +39,8 @@ import StyleReferenceWidget from "@/components/editor/StyleReferenceWidget";
 import CharacterManagement from "@/components/editor/CharacterManagement";
 import SceneManagement from "@/components/editor/SceneManagement";
 import AutoTextarea from "@/components/editor/AutoTextarea";
-import AgentActivityPanel from "@/components/editor/AgentActivityPanel";
 import SpecialPageView from "@/components/editor/SpecialPageView";
 import PreprocessLoadingScreen from "@/components/editor/PreprocessLoadingScreen";
-import { AGENT_META } from "@/lib/agents";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 const SENTIMENTS = ["positive", "negative", "neutral", "tense", "emotional"];
@@ -114,10 +110,11 @@ export default function EditorPage() {
   const [regenerating, setRegenerating] = useState(false);
   const [showCharPanel, setShowCharPanel] = useState(true);
   const [historyImages, setHistoryImages] = useState<Array<{ url: string; version: string; timestamp: number; quality?: any }>>([]);
-  const [generatingChapter, setGeneratingChapter] = useState<number | null>(null);
-  const [chapterProgress, setChapterProgress] = useState<{ progress: number; current_step: string } | null>(null);
-  const [genAllChapters, setGenAllChapters] = useState(false);
-  const genAllChaptersRef = useRef(false);
+  // Batch (whole-chapter / whole-book) generation drives the single-page
+  // regenerate endpoint in a sequential loop (replaces the chapter subprocess).
+  const [genRunning, setGenRunning] = useState(false);
+  const [genProgress, setGenProgress] = useState<{ done: number; total: number; segId: number; chIdx: number } | null>(null);
+  const genCancelRef = useRef(false);
   const [qualityResult, setQualityResult] = useState<{
     overall_score: number | null;
     segment_id: number;
@@ -130,9 +127,6 @@ export default function EditorPage() {
     regeneration_feedback: string;
   } | null>(null);
   const [checkingQuality, setCheckingQuality] = useState(false);
-
-  // Agent Activity Panel (open by default so the live agent log is always visible)
-  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
 
   // Expand/collapse state for the read-only LLM Prompt Preview (AIChatPanel).
   const [chatOpen, setChatOpen] = useState(false);
@@ -150,11 +144,6 @@ export default function EditorPage() {
   useEffect(() => {
     segmentsRef.current = segments;
   }, [segments]);
-
-  // How many pages the chapter generation has finished so far — so the poll can
-  // stream completed images into the editor LIVE (re-fetch only when it climbs),
-  // instead of leaving the user staring at stale pages for the whole 40-min run.
-  const lastCompletedPagesRef = useRef(0);
 
   // Keep a ref of the selected chapter too — the long Gen-All loop captures it
   // once and would otherwise refresh/compare against the chapter that was
@@ -176,10 +165,8 @@ export default function EditorPage() {
     unmountedRef.current = false;
     return () => {
       unmountedRef.current = true;
-      // Stop the Gen All LOOP too, not just its polls — otherwise after the
-      // user navigates away each poll resolves early and the loop fires
-      // generateChapter for every remaining chapter in quick succession.
-      genAllChaptersRef.current = false;
+      // Stop any running batch generation loop on unmount.
+      genCancelRef.current = true;
       // A pending scene-background debounce would otherwise still fire its
       // updateSegment + paid LLM call after the user has left the page.
       if (sceneRegenTimer.current) clearTimeout(sceneRegenTimer.current);
@@ -235,144 +222,84 @@ export default function EditorPage() {
     }
   };
 
-  // Poll progress when generating
-  useEffect(() => {
-    if (generatingChapter === null) return;
-    // In Gen-All mode the loop runs its OWN poll and transitions; a second poll
-    // here just doubles the requests and makes the progress bar flicker between
-    // the two responses. Let the loop own it.
-    if (genAllChapters) return;
-    // New run for this chapter — reset the live-stream watermark.
-    lastCompletedPagesRef.current = 0;
-    const interval = setInterval(async () => {
-      try {
-        const prog = await getChapterProgress(bookId, generatingChapter).catch(() => null);
-        if (!prog) return;
-        setChapterProgress(prog);
-        // Stream finished pages into the editor as the Artist completes them —
-        // re-fetch only when the completed-page count climbs (cheap, ~once per
-        // page), so a finished illustration shows up within ~5s instead of only
-        // after the whole chapter is done. Versioned URLs make the image refresh.
-        if (prog.status === "generating" && selectedChapterRef.current === generatingChapter) {
-          const done = (prog as any).completed_pages ?? 0;
-          if (done > lastCompletedPagesRef.current) {
-            lastCompletedPagesRef.current = done;
-            const data = await getChapterSegments(bookId, generatingChapter).catch(() => null);
-            if (data && selectedChapterRef.current === generatingChapter) {
-              applyServerSegments(data.segments || []);
-            }
-          }
-        }
-        if (prog.status === "failed") {
-          setGeneratingChapter(null);
-          setChapterProgress(null);
-          alert(`Chapter generation failed: ${(prog as any).error || prog.current_step || "unknown error"}`);
-          return;
-        }
-        if (prog.status === "complete" && !genAllChaptersRef.current) {
-          // Only auto-clear when NOT in Gen All mode (Gen All handles its own transitions)
-          setGeneratingChapter(null);
-          setChapterProgress(null);
-          if (selectedChapter === generatingChapter) {
-            const data = await getChapterSegments(bookId, generatingChapter);
-            // Re-check after the await — the user may have switched chapters
-            // meanwhile, and these would overwrite the new chapter's segments.
-            if (selectedChapterRef.current === generatingChapter) {
-              applyServerSegments(data.segments || []);
-            }
-          }
-          // Chapter generation also creates covers server-side — refresh the
-          // special pages list (fetched only once on mount otherwise).
-          getSpecialPages(bookId).then(d => setSpecialPages(d.pages || [])).catch(() => {});
-          refreshStale(generatingChapter);  // pages regenerated → clear stale red dots
-        }
-      } catch {}
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [generatingChapter, bookId, selectedChapter, genAllChapters]);
+  // Build the injected IO for the page-generation orchestrator. isCancelled
+  // covers both the "Stop" button and unmount.
+  const makeIO = (): PageGenIO => ({
+    regenerate: (segId) => regenerateSegment(bookId, segId),
+    pollStatus: (segId) => getRegenStatus(bookId, segId),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    isCancelled: () => genCancelRef.current || unmountedRef.current,
+  });
 
-  // Auto-open the agent activity panel the moment a chapter generation starts,
-  // so the user can watch the agent interactions live.
-  useEffect(() => {
-    if (generatingChapter !== null) setAgentPanelOpen(true);
-  }, [generatingChapter]);
-
-  // Gen All Chapters: generate all chapters sequentially
-  const handleGenAllChapters = async () => {
-    const chapterIndices = Object.keys(chapters).map(Number).sort((a, b) => a - b);
-    setGenAllChapters(true);
-    genAllChaptersRef.current = true;
-    setAgentPanelOpen(true);
-
-    for (const chIdx of chapterIndices) {
-      if (!genAllChaptersRef.current) break; // allow cancel
-
-      // Skip chapters that are already fully generated
-      try {
-        const prog = await getChapterProgress(bookId, chIdx).catch(() => null);
-        if (prog && prog.status === "complete") {
-          continue;
-        }
-      } catch {}
-
-      setGeneratingChapter(chIdx);
-      try {
-        await generateChapter(bookId, chIdx);
-        // Wait for completion by polling progress
-        await new Promise<void>((resolve) => {
-          const poll = setInterval(async () => {
-            if (unmountedRef.current) { clearInterval(poll); resolve(); return; }
-            try {
-              const prog = await getChapterProgress(bookId, chIdx).catch(() => null);
-              if (!prog) return;
-              setChapterProgress(prog);
-              if (prog.status === "complete" || prog.status === "failed") {
-                // On success refresh segments (green dots); on failure just move
-                // on instead of waiting out the 16-min per-chapter timeout.
-                if (prog.status === "complete" && selectedChapterRef.current === chIdx) {
-                  getChapterSegments(bookId, chIdx)
-                    .then(data => {
-                      // Re-check after the fetch — the user may have switched
-                      // chapters while it was in flight.
-                      if (selectedChapterRef.current !== chIdx) return;
-                      applyServerSegments(data.segments || []);
-                    })
-                    .catch(() => {});
-                }
-                clearInterval(poll);
-                resolve();
-              }
-            } catch {}
-          }, 5000);
-          // Must exceed the backend subprocess timeout (900s) — if the frontend
-          // gave up first it would start the next chapter while the previous
-          // subprocess was still running, double-hitting Gemini and racing on
-          // progress.json / agent_log.json.
-          setTimeout(() => { clearInterval(poll); resolve(); }, 960000); // 16 min > backend 15 min
-        });
-      } catch (e) {
-        console.error(`Gen chapter ${chIdx} failed:`, e);
-      }
-    }
-
-    setGeneratingChapter(null);
-    setChapterProgress(null);
-    setGenAllChapters(false);
-    genAllChaptersRef.current = false;
-
-    // Refresh character sheets (may have been generated)
-    try {
-      const charData = await getCharacters(bookId);
-      setSheets(charData.sheets || {});
-    } catch {}
-
-    // Chapter generation also creates covers server-side — refresh the
-    // special pages list (fetched only once on mount otherwise).
-    getSpecialPages(bookId).then(d => setSpecialPages(d.pages || [])).catch(() => {});
-
-    // Pages were regenerated — refresh stale indicators
-    refreshStale(selectedChapterRef.current);
+  // Generate every missing/stale page in one chapter, sequentially, streaming
+  // each finished image in as it completes. Shared by the per-chapter "Gen"
+  // button and "Gen All".
+  const runChapterGeneration = async (chIdx: number): Promise<void> => {
+    const data = await getChapterSegments(bookId, chIdx).catch(() => null);
+    const segs: Segment[] = data?.segments || [];
+    // Only fill pages with no illustration + ones flagged stale — re-running
+    // never re-burns money on pages that are already good.
+    const targets = segs
+      .filter((s) => !s.illustration_url || staleSegIds.has(s.id))
+      .map((s) => s.id);
+    if (targets.length === 0) return;
+    await generatePagesSequential(
+      targets,
+      makeIO(),
+      {
+        onProgress: (p) => setGenProgress({ done: p.done, total: p.total, segId: p.segId, chIdx }),
+        onPageDone: async () => {
+          if (selectedChapterRef.current !== chIdx) return;
+          const fresh = await getChapterSegments(bookId, chIdx).catch(() => null);
+          if (fresh && selectedChapterRef.current === chIdx) applyServerSegments(fresh.segments || []);
+        },
+      },
+    );
+    if (selectedChapterRef.current === chIdx) refreshStale(chIdx);
   };
+
+  // Per-chapter "Gen" button.
+  const handleGenChapter = async (chIdx: number) => {
+    if (genRunning) return;
+    genCancelRef.current = false;
+    setGenRunning(true);
+    setGenProgress({ done: 0, total: 0, segId: -1, chIdx });
+    try {
+      await runChapterGeneration(chIdx);
+    } catch (e: any) {
+      if (!unmountedRef.current) alert(`Generation failed: ${e?.response?.data?.detail || e?.message || e}`);
+    } finally {
+      setGenRunning(false);
+      setGenProgress(null);
+      // Character sheets may have been generated on demand — refresh them.
+      getCharacters(bookId).then((d) => setSheets(d.sheets || {})).catch(() => {});
+    }
+  };
+
+  // "Gen All" button — every chapter, in order.
+  const handleGenAll = async () => {
+    if (genRunning) return;
+    genCancelRef.current = false;
+    setGenRunning(true);
+    const chapterIndices = Object.keys(chapters).map(Number).sort((a, b) => a - b);
+    try {
+      for (const chIdx of chapterIndices) {
+        if (genCancelRef.current || unmountedRef.current) break;
+        await runChapterGeneration(chIdx);
+      }
+    } catch (e: any) {
+      if (!unmountedRef.current) alert(`Generation failed: ${e?.response?.data?.detail || e?.message || e}`);
+    } finally {
+      setGenRunning(false);
+      setGenProgress(null);
+      getCharacters(bookId).then((d) => setSheets(d.sheets || {})).catch(() => {});
+      getSpecialPages(bookId).then((d) => setSpecialPages(d.pages || [])).catch(() => {});
+      refreshStale(selectedChapterRef.current);
+    }
+  };
+
+  // Stop button — cooperative cancel; the loop checks genCancelRef between pages.
+  const handleStopGen = () => { genCancelRef.current = true; };
 
   // Load chapters + characters on mount (retry until preprocess is done)
   useEffect(() => {
@@ -585,15 +512,15 @@ export default function EditorPage() {
     }
   }, [bookId, selectedSegment]);
 
-  // Regenerate illustration
+  // Regenerate the currently-selected illustration (Save & Regen). Same
+  // single-page path the batch loop uses; the backend runs QA + self-correction.
   const handleRegenerate = async () => {
     if (!selectedSegment || selectedChapter === null) return;
-    // Capture IDs at call time to avoid stale closures
     const segId = selectedSegment.id;
     const chIdx = selectedChapter;
     setRegenerating(true);
     try {
-      // Save first
+      // Persist edits first so the illustration embeds them.
       await updateSegment(bookId, segId, {
         simplified_text: selectedSegment.simplified_text,
         characters_in_scene: selectedSegment.characters_in_scene,
@@ -602,61 +529,20 @@ export default function EditorPage() {
         scene_summary: selectedSegment.scene_summary,
         sentiment: selectedSegment.sentiment,
       });
-      // The PUT above just persisted this segment — it's no longer dirty
-      // (otherwise a false "unsaved changes" confirm appears later).
       dirtySegIds.current.delete(segId);
-      // Trigger regeneration. The BACKEND runs the QA check + bounded
-      // self-correction (shared page service, same policy as the pipeline);
-      // the frontend only triggers and waits — no client-side retry loop.
-      await regenerateSegment(bookId, segId);
-      await new Promise<void>((resolve) => {
-        let done = false;
-        const poll = setInterval(async () => {
-          if (done) return;
-          if (unmountedRef.current) { done = true; clearInterval(poll); resolve(); return; }
-          try {
-            const status = await getRegenStatus(bookId, segId);
-            if (status.status === "complete" || status.status === "error") {
-              done = true;
-              clearInterval(poll);
-              if (status.status === "error") {
-                alert(`Regenerate failed: ${(status as any).error || "unknown error"}`);
-              } else if (selectedChapterRef.current === chIdx) {
-                // Only apply if the user is still viewing the chapter that was
-                // selected at click time — otherwise we'd overwrite the
-                // currently-selected chapter's segments with another chapter's.
-                const data = await getChapterSegments(bookId, chIdx);
-                // Re-check after the await: the user may have switched
-                // chapters while the fetch was in flight.
-                if (selectedChapterRef.current === chIdx) {
-                  applyServerSegments(data.segments || []);
-                }
-              }
-              resolve();
-            }
-          } catch {}
-        }, 5000);
-        // The backend moves the old image to history before regenerating, so
-        // bailing out silently leaves a broken <img>. Match the backend's
-        // 600s request ceiling and tell the user if it's still running.
-        setTimeout(() => {
-          if (!done) {
-            done = true;
-            clearInterval(poll);
-            if (!unmountedRef.current) {
-              alert("Still generating in the background — reload the page in a minute to see the result.");
-            }
-            resolve();
-          }
-        }, 600000);
-      });
-      // Page regenerated — refresh stale flags. The history/quality effect
-      // (keyed on `regenerating`) reloads the backend's QA result for display.
+
+      const result = await generateOnePage(segId, makeIO());
+      if (result.status === "error") {
+        alert(`Regenerate failed: ${result.error || "unknown error"}`);
+      } else if (result.status === "timeout") {
+        if (!unmountedRef.current) alert("Still generating in the background — reload the page in a minute to see the result.");
+      } else if (result.status === "complete" && selectedChapterRef.current === chIdx) {
+        const data = await getChapterSegments(bookId, chIdx);
+        if (selectedChapterRef.current === chIdx) applyServerSegments(data.segments || []);
+      }
       if (selectedChapterRef.current === chIdx) refreshStale(chIdx);
     } catch (e: any) {
       console.error("Regenerate failed:", e);
-      // Surface the backend's detail (e.g. "already regenerating" 409) over
-      // axios's generic status-code message.
       alert(`Regenerate failed: ${e?.response?.data?.detail || e?.message || e}`);
     } finally {
       setRegenerating(false);
@@ -962,36 +848,6 @@ export default function EditorPage() {
           </div>
           {/* Book-wide style reference — anchors all generation */}
           <StyleReferenceWidget bookId={bookId} canEdit={true} />
-          {/* Agent Activity Indicator */}
-          <button
-            onClick={() => setAgentPanelOpen(!agentPanelOpen)}
-            className={`px-3 py-1.5 text-xs rounded-lg transition-colors flex items-center gap-1.5 font-semibold border ${
-              generatingChapter !== null
-                ? "bg-gradient-to-r from-blue-50 to-purple-50 border-purple-200 text-purple-700"
-                : agentPanelOpen
-                ? "bg-gray-100 border-gray-300 text-gray-700"
-                : "border-gray-200 text-gray-500 hover:bg-gray-50"
-            }`}
-          >
-            {generatingChapter !== null ? (
-              <>
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
-                </span>
-                {(() => {
-                  const agent = (chapterProgress as any)?.agent;
-                  const info = agent ? AGENT_META[agent] : null;
-                  return info ? `${info.icon} ${info.name}` : "Agents";
-                })()}
-              </>
-            ) : (
-              <>
-                <Activity size={12} />
-                Agents
-              </>
-            )}
-          </button>
           <a
             href={`/book/${bookId}`}
             className="px-3 py-1.5 text-xs rounded-lg bg-coral text-white hover:bg-coral/80 transition-colors flex items-center gap-1 font-semibold"
@@ -1001,7 +857,7 @@ export default function EditorPage() {
         </div>
       </header>
 
-      {/* Body: tab content + persistent live Agent Activity column side by side */}
+      {/* Body: tab content */}
       <div className="flex flex-1 overflow-hidden">
       {/* Tab content area */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
@@ -1084,18 +940,27 @@ export default function EditorPage() {
           <div className="px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-cream/50 flex items-center justify-between">
             <span>Chapters ({Object.keys(chapters).length})</span>
             <div className="flex items-center gap-1">
-              {genAllChapters && (
+              {genRunning && genProgress && (
                 <span className="text-[9px] text-amber-600 animate-pulse">
-                  Ch {(generatingChapter ?? 0) + 1}/{Object.keys(chapters).length}
+                  {genProgress.done + 1}/{genProgress.total || "?"}
                 </span>
               )}
-              <button
-                onClick={handleGenAllChapters}
-                disabled={genAllChapters || generatingChapter !== null}
-                className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
-              >
-                {genAllChapters ? "Running..." : "Gen All"}
-              </button>
+              {genRunning ? (
+                <button
+                  onClick={handleStopGen}
+                  className="text-[9px] bg-gray-400 text-white px-2 py-0.5 rounded hover:bg-gray-500 transition-colors"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button
+                  onClick={handleGenAll}
+                  disabled={regenerating}
+                  className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
+                >
+                  Gen All
+                </button>
+              )}
             </div>
           </div>
           {/* Book Cover */}
@@ -1120,7 +985,7 @@ export default function EditorPage() {
               <div key={chIdx}>
                 <div
                   className={`flex items-center border-b border-gray-100 transition-colors ${
-                    generatingChapter === +chIdx
+                    genRunning && genProgress?.chIdx === +chIdx
                       ? "bg-amber-50 border-l-2 border-l-amber-400"
                       : selectedChapter === +chIdx
                       ? "bg-coral/10"
@@ -1145,39 +1010,25 @@ export default function EditorPage() {
                     <span className="truncate flex-1">{info.chapter_title}</span>
                     <span className="text-[10px] text-gray-400 shrink-0 ml-1">{info.num_segments}</span>
                   </button>
-                  {generatingChapter === +chIdx ? (
+                  {genRunning && genProgress?.chIdx === +chIdx ? (
                     <div className="mr-2 w-28">
                       <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-amber-400 rounded-full transition-all duration-500"
-                          style={{ width: `${chapterProgress?.progress ?? 0}%` }}
+                          style={{ width: `${genProgress.total ? ((genProgress.done + 1) / genProgress.total) * 100 : 0}%` }}
                         />
                       </div>
                       <p className="text-[8px] text-amber-600 text-center mt-0.5 animate-pulse">
-                        {(() => {
-                          const agent = (chapterProgress as any)?.agent;
-                          const agentInfo = agent ? AGENT_META[agent] : null;
-                          const step = chapterProgress?.current_step || "Starting...";
-                          return agentInfo ? `${agentInfo.icon} ${step}` : step;
-                        })()}
+                        Page {genProgress.done + 1}/{genProgress.total}
                       </p>
                     </div>
                   ) : (
                     <button
-                      onClick={async (e) => {
+                      onClick={(e) => {
                         e.stopPropagation();
-                        setGeneratingChapter(+chIdx);
-                        setAgentPanelOpen(true);
-                        try {
-                          await generateChapter(bookId, +chIdx);
-                        } catch (err: any) {
-                          console.error(err);
-                          // Reset so the Gen buttons don't stay disabled forever
-                          setGeneratingChapter(null);
-                          alert(`Chapter generation failed: ${err?.response?.data?.detail || err?.message || err}`);
-                        }
+                        handleGenChapter(+chIdx);
                       }}
-                      disabled={generatingChapter !== null}
+                      disabled={genRunning || regenerating}
                       className="w-8 h-6 mr-1 text-[9px] bg-coral/80 text-white rounded hover:bg-coral transition-colors disabled:opacity-50 shrink-0"
                       title="Generate illustrations for this chapter"
                     >
@@ -1205,7 +1056,7 @@ export default function EditorPage() {
                   })()}
 
                   {segments.map((seg, idx) => {
-                    const isGenerating = generatingChapter === +chIdx && isSegmentPageStep(chapterProgress?.current_step, idx);
+                    const isGenerating = genRunning && genProgress?.chIdx === +chIdx && genProgress?.segId === seg.id;
                     const hasIllustration = !!seg.illustration_url;
                     return (
                     <button
@@ -1223,11 +1074,11 @@ export default function EditorPage() {
                         <span
                           className={`w-2 h-2 rounded-full shrink-0 ${
                             isGenerating
-                              ? (idx < ((chapterProgress as any)?.completed_pages ?? 0) ? "bg-green-400" : "bg-amber-400 animate-pulse")
+                              ? "bg-amber-400 animate-pulse"
                               : staleSegIds.has(seg.id) ? "bg-red-500" : hasIllustration ? "bg-green-400" : "bg-gray-300"
                           }`}
                           title={isGenerating
-                            ? (idx < ((chapterProgress as any)?.completed_pages ?? 0) ? "Done" : "Generating…")
+                            ? "Generating…"
                             : staleSegIds.has(seg.id) ? `Stale — ${staleReasons[seg.id] || "a character/scene changed"}; regenerate` : undefined}
                         />
                         <span className="font-mono text-[10px] text-gray-400">
@@ -1569,21 +1420,6 @@ export default function EditorPage() {
       </div>
       )}
       </div>
-
-      {/* Persistent live Agent Activity column (sits alongside tab content) */}
-      {agentPanelOpen && (
-        <AgentActivityPanel
-          bookId={bookId}
-          chapterIdx={generatingChapter ?? selectedChapter}
-          isGenerating={generatingChapter !== null}
-          currentAgent={(chapterProgress as any)?.agent || null}
-          currentStep={chapterProgress?.current_step}
-          progress={chapterProgress?.progress}
-          completedPages={(chapterProgress as any)?.completed_pages}
-          totalPages={(chapterProgress as any)?.total_pages}
-          onClose={() => setAgentPanelOpen(false)}
-        />
-      )}
       </div>
     </div>
   );

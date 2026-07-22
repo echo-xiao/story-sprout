@@ -259,28 +259,6 @@ export async function regenerateSceneSheet(bookId: string, sceneName: string) {
   return data;
 }
 
-export async function generateChapter(bookId: string, chapterIdx: number) {
-  const { data } = await api.post(`/book/${bookId}/chapter/${chapterIdx}/generate`);
-  return data;
-}
-
-export async function getChapterProgress(bookId: string, chapterIdx: number) {
-  const { data } = await api.get(`/book/${bookId}/chapter/${chapterIdx}/progress`);
-  return data;
-}
-
-export async function getAgentLog(bookId: string, chapterIdx: number) {
-  const { data } = await api.get(`/book/${bookId}/chapter/${chapterIdx}/agent-log`);
-  return data as Array<{
-    ts: number;
-    agent: string;
-    action: string;
-    detail: string;
-    result: string;
-    status: string;
-  }>;
-}
-
 export async function checkSegmentQuality(bookId: string, segId: number) {
   const { data } = await api.post(`/book/${bookId}/segment/${segId}/quality`);
   return data;
