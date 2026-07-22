@@ -28,6 +28,9 @@ def _gate_off_by_default(monkeypatch):
     patching the module attribute is authoritative. (The default *value* itself
     is verified in test_require_user_key_default.py, which reloads the module.)"""
     monkeypatch.setattr("src.config.REQUIRE_USER_KEY", False)
+    # Single shared-passcode gate off by default too — tests hitting generation
+    # endpoints shouldn't 403; test_access_code_gate exercises the gate explicitly.
+    monkeypatch.setattr("src.config.ACCESS_CODE", "", raising=False)
 
 
 @pytest.fixture(autouse=True)

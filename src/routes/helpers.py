@@ -82,30 +82,12 @@ def _require_user_key(
     x_gemini_key: str | None = Header(default=None),
     x_admin_token: str | None = Header(default=None),
 ) -> str | None:
-    """BYOK gate (only enforced when REQUIRE_USER_KEY=true).
-
-    Enforced: generating/regenerating needs the caller's own Gemini key (403
-    otherwise) so public users can't bill the project. Not enforced: the key is
-    IGNORED and everything runs on the project backend (Vertex). Honoring an
-    optional key here used to silently route image generation to free-tier AI
-    Studio keys, which have ZERO quota for the image model — every regen 429'd
-    while the project backend would have worked fine.
-
-    Admin override: a valid X-Admin-Token bypasses the gate and returns None, so
-    the call runs on the project Vertex backend (no user key injected).
-    """
-    from src.config import REQUIRE_USER_KEY
-    if is_admin_token(x_admin_token):
-        return None
-    if not REQUIRE_USER_KEY:
-        return None
-    if not x_gemini_key:
-        raise HTTPException(
-            status_code=403,
-            detail="A Gemini API key with BILLING ENABLED (paid tier) is required to "
-                   "generate — free keys have zero image quota. Add yours on the Create page.",
-        )
-    return x_gemini_key
+    """No-op gate. The single shared-passcode AccessCodeMiddleware
+    (src/access_gate.py) is now the ONLY auth, so BYOK/admin gating is gone.
+    Kept as a FastAPI dependency purely so the ~17 endpoints wiring
+    Depends(_require_user_key) don't each need editing; it never blocks and never
+    injects a per-user key — all generation runs on the project backend."""
+    return None
 
 def write_json_atomic(path, data: Any) -> None:
     """Write JSON via temp file + rename so a concurrent reader (e.g. a status
