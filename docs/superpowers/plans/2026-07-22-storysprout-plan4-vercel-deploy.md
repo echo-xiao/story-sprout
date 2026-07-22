@@ -21,7 +21,7 @@
 ### Locked decisions / scope
 1. **FastAPI on Vercel = one ASGI serverless function** (`api/index.py` exposing `src.app:app`), not a split-per-route design. Each request is already short.
 2. **config env cleanup is minimal:** delete only `MONGODB_URI` / `MONGODB_DB` (Mongo fully removed). KEEP `REQUIRE_USER_KEY` / `ADMIN_TOKEN` for now — they are still read by inert BYOK helpers; full BYOK removal is a separate cleanup, out of scope here.
-3. **Gemini image auth is an open unknown resolved in Task 1** before the rest depends on it (whether `gemini-3-pro-image` is reachable via the AI Studio `api_key` endpoint or is Vertex-only). The chosen auth path (env-only vs a code change to `make_genai_client`) is decided by Task 1's finding.
+3. **DELETE ALL VERTEX — Gemini runs on the AI Studio `api_key` path only.** Confirmed via Google's docs: `gemini-3-pro-image` (Nano Banana Pro) is generally available on the Google AI Studio / Gemini Developer API (api_key), not Vertex-only ([ai.google.dev/gemini-api/docs/models/gemini-3-pro-image](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image), [aistudio.google.com/models/gemini-3-pro-image](https://aistudio.google.com/models/gemini-3-pro-image)). So there is no GCP-identity dependency for Gemini on Vercel: remove `GEMINI_BACKEND`, `GCP_PROJECT`, `GCP_LOCATION`, the `vertexai=True` branch in `make_genai_client`, and the `google-cloud-aiplatform` dependency. `make_genai_client` becomes api_key-only (BYOK user-key override unchanged). Task 1 does this deletion; there is no conditional Vertex-wiring task.
 4. **Covers, per-page QA, PDF** are unchanged from Plan 3 — this plan only changes where files live and how images are authed/served.
 
 ---
@@ -35,62 +35,60 @@
 - **Modify** `src/app.py` — guard the import-time `GENERATED_DIR.mkdir`; skip/adjust the frontend `StaticFiles` mount on serverless (Next.js is served by Vercel, not FastAPI).
 - **Modify** the illustration/regenerate path (`src/routes/generation.py` + `src/generation/illustration.py` and/or `character_sheet.py`) — localize dependency sheets/style-ref from GCS before reading local paths.
 - **Modify** `src/routes/editor.py` (+ any `versioned_static_url`/`_special_image_url` helpers) — emit GCS public URLs instead of `/static/...` when `GCS_BUCKET` is set.
-- **Modify** `src/gemini_backend.py` — ONLY IF Task 1 finds `gemini-3-pro-image` is Vertex-only: wire `GCS_SA_JSON` into the `vertexai=True` client.
+- **Modify** `src/gemini_backend.py` + `src/config.py` + `src/routes/books.py` — delete the Vertex path; Gemini is api_key-only (Task 1).
 - **Delete** `Dockerfile`, `cloudbuild.yaml`, `.dockerignore`, `start.sh`.
 - **Modify** `requirements.txt` — remove `pymongo`, `pymongo[srv]`, `dnspython`, `motor`, `mcp`; fix the stale ADK header comment.
 - **Modify** `docs/superpowers/HANDOFF.md` — Plan 4 status.
 
 ---
 
-## Task 1: De-risk Gemini image auth on Vercel (investigation + decision)
+## Task 1: Delete all Vertex — Gemini runs on the api_key path only
 
-Vercel has no ambient GCP identity. `src/gemini_backend.py:make_genai_client()` uses `genai.Client(vertexai=True, project, location)` for `GEMINI_BACKEND=vertex` (needs ADC — absent on Vercel) or `genai.Client(api_key=GEMINI_API_KEY)` for `api_key`. The open question: **is `gemini-3-pro-image` (Nano Banana Pro) reachable via the AI Studio `api_key` endpoint, or Vertex-only?** The answer picks the deploy auth path.
+Vercel has no ambient GCP identity, and `gemini-3-pro-image` is confirmed available on the AI Studio / Gemini Developer API (api_key) — so the entire Vertex path is dead weight. Remove it: `make_genai_client` keeps only the api_key path (BYOK user-key override unchanged), and the Vertex config/deps go.
 
-**Files:** none changed in this task (investigation + a report + a decision recorded in the plan/HANDOFF).
+**Files:** Modify `src/gemini_backend.py`, `src/config.py`, `src/routes/books.py`. (`google-cloud-aiplatform` removal is in Task 7.)
 
-- [ ] **Step 1: Confirm the two client paths** in `src/gemini_backend.py:make_genai_client()` (read it) — note that `vertexai=True` takes no credentials arg today (so SA-JSON-on-Vertex is NOT currently supported).
-
-- [ ] **Step 2: Probe model availability (needs the user's Gemini key/credential).**
-
-Hand the user this probe to run locally with their AI Studio key:
-```bash
-# AI Studio api_key path — does gemini-3-pro-image answer an image request?
-GEMINI_BACKEND=api_key GEMINI_API_KEY=<their key> \
-/Users/echoooooo/miniconda3/envs/picture_book_generator/bin/python - <<'PY'
-from google import genai
-c = genai.Client(api_key=__import__("os").environ["GEMINI_API_KEY"])
-r = c.models.generate_content(model="gemini-3-pro-image",
-    contents="a simple red circle on white, children's book style")
-print("OK:", type(r), bool(getattr(r, "candidates", None)))
-PY
-```
-Expected outcomes:
-- **Works** → auth path = env-only: set `GEMINI_BACKEND=api_key` + `GEMINI_API_KEY` in Vercel. No code change. Skip Task 1b.
-- **404 / model-not-found / permission** → the model is Vertex-only → do Task 1b (wire SA JSON into the Vertex client).
-
-- [ ] **Step 3: Record the decision** in `docs/superpowers/HANDOFF.md` (Plan 4 notes): which auth path, and whether Task 1b is needed. This gates the env list in Task 8.
-
-### Task 1b (CONDITIONAL — only if Step 2 shows Vertex-only): wire GCS_SA_JSON into the Vertex client
-
-**Files:** Modify `src/gemini_backend.py`.
-
-- [ ] **Step 1:** In `make_genai_client()`, when `GEMINI_BACKEND == "vertex"`, build credentials from `GCS_SA_JSON` (reuse the same SA if it has Vertex AI User role, or a separate `GEMINI_SA_JSON`). Pattern (mirrors `store.py`):
+- [ ] **Step 1: `make_genai_client()` → api_key only.** In `src/gemini_backend.py`, replace the vertex/api_key branch (currently `if GEMINI_BACKEND == "vertex": ... return genai.Client(vertexai=True, ...)` / the api_key path) so the function is:
 ```python
-if GEMINI_BACKEND == "vertex":
-    if not GCP_PROJECT:
-        raise ValueError("GEMINI_BACKEND=vertex but no GCP project is set ...")
-    from src.config import GCS_SA_JSON
-    if GCS_SA_JSON:
-        import json
-        from google.oauth2 import service_account
-        info = json.loads(GCS_SA_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
-        return genai.Client(vertexai=True, project=GCP_PROJECT, location=GCP_LOCATION, credentials=creds)
-    return genai.Client(vertexai=True, project=GCP_PROJECT, location=GCP_LOCATION)
+def make_genai_client():
+    # BYOK user key wins if set (inert path, kept for now); otherwise the app's
+    # own AI Studio key. No Vertex — gemini-3-pro-image is on the Developer API.
+    user_key = _user_api_key.get()
+    if user_key:
+        return genai.Client(api_key=user_key)
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY is not set.")
+    return genai.Client(api_key=GEMINI_API_KEY)
 ```
-- [ ] **Step 2:** `pytest -q` → 237 passed (the QA tests stub the client, so this is import-safe).
-- [ ] **Step 3:** Commit `feat(gemini): support GCS_SA_JSON credentials on the Vertex path (Vercel)`.
+Remove the now-unused imports `GCP_LOCATION`, `GCP_PROJECT`, `GEMINI_BACKEND` from the `from src.config import (...)` block, and update the module docstring (lines ~6–18) to drop the "Backends (GEMINI_BACKEND) / Vertex AI / Cloud Run / GCP_PROJECT" description — it's api_key only now.
+
+- [ ] **Step 2: `config.py` — drop the Vertex config.** Delete:
+```python
+# Gemini — runs on Vertex AI / "Agent Platform" by default (GEMINI_BACKEND=vertex,
+# uses ADC locally and the attached service account on Cloud Run). Set
+# GEMINI_BACKEND=api_key to use the AI Studio key path instead.
+```
+and
+```python
+GEMINI_BACKEND = os.getenv("GEMINI_BACKEND", "vertex").lower()  # "vertex" | "api_key"
+GCP_PROJECT = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT", "picture-book-gen")
+GCP_LOCATION = os.getenv("GCP_LOCATION", "global")
+```
+Keep `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `GEMINI_VISION_MODEL`. Add a one-line comment above `GEMINI_API_KEY`: `# Gemini (images + Vision QA) — AI Studio Developer API key.`
+
+- [ ] **Step 3: `books.py` — drop the redundant backend env.** In `_run_preprocess`, inside the `if gemini_api_key:` block, delete `env["GEMINI_BACKEND"] = "api_key"` and simplify its comment to just note the key routes preprocessing to the user's billing (no more "Vertex first" explanation).
+
+- [ ] **Step 4: Confirm nothing else references the removed names.** Run:
+```bash
+grep -rn "GEMINI_BACKEND\|GCP_PROJECT\|GCP_LOCATION\|vertexai" src/
+```
+Expect: **no output**. Then `pytest -q` → **237 passed** (the Gemini client is stubbed in tests; this is import-safe).
+
+- [ ] **Step 5:** Commit `refactor(gemini): drop Vertex path — api_key only (gemini-3-pro-image is on the Developer API)`.
+
+> Optional belt-and-suspenders: the user can confirm their own key reaches the model before deploy —
+> `GEMINI_API_KEY=<key> python -c "from google import genai; print(bool(genai.Client(api_key=__import__('os').environ['GEMINI_API_KEY']).models.generate_content(model='gemini-3-pro-image', contents='a red circle, picture-book style').candidates))"`
+> — but the deploy smoke test (Task 8) already covers it, so this is not a gate.
 
 ---
 
@@ -276,8 +274,9 @@ from src.app import app  # noqa: F401  (Vercel's ASGI adapter imports `app`)
 git rm Dockerfile cloudbuild.yaml .dockerignore start.sh
 ```
 
-- [ ] **Step 2: Clean `requirements.txt`** — remove the Mongo/MCP deps and fix the stale header. Delete these lines:
+- [ ] **Step 2: Clean `requirements.txt`** — remove the Mongo/MCP deps AND the Vertex SDK (no Vertex after Task 1), and fix the stale header. Delete these lines:
 ```
+google-cloud-aiplatform>=1.95.0
 pymongo>=4.6.0
 pymongo[srv]>=4.6.0
 dnspython>=2.6.0
@@ -288,9 +287,9 @@ and
 # MCP integration — client for MongoDB's official MCP server (partner integration)
 mcp>=1.0.0
 ```
-and change the top comment `# Gemini Agent — pipeline orchestrated with Google ADK (Agent Builder)` to `# StorySprout — DeepSeek (text) + Gemini (images/QA) + GCS`. Keep: `google-genai`, `google-cloud-aiplatform` (Vertex client), `google-cloud-storage`, `Pillow`, `reportlab`, `fastapi`, `uvicorn`, `python-multipart`, `pydantic`, `python-dotenv`, `httpx`, `tqdm`.
+and change the top comment `# Gemini Agent — pipeline orchestrated with Google ADK (Agent Builder)` to `# StorySprout — DeepSeek (text) + Gemini (images/QA) + GCS`. Keep: `google-genai` (the api_key Gemini client — does NOT need aiplatform), `google-cloud-storage`, `Pillow`, `reportlab`, `fastapi`, `uvicorn`, `python-multipart`, `pydantic`, `python-dotenv`, `httpx`, `tqdm`.
 
-- [ ] **Step 3: Confirm no residual imports** of the removed deps: `grep -rn "import pymongo\|import motor\|from motor\|import mcp\|import dns" src/` → expect nothing. `pytest -q` → 237 passed (the removed deps are already uninstalled per the environment, so a green run proves nothing imports them).
+- [ ] **Step 3: Confirm no residual imports** of the removed deps: `grep -rn "import pymongo\|import motor\|from motor\|import mcp\|import dns\|aiplatform\|vertexai" src/` → expect nothing. `pytest -q` → 237 passed (the removed deps are already uninstalled per the environment, so a green run proves nothing imports them). Smaller deps also help the 250MB serverless limit (spec §8 risk 2).
 
 - [ ] **Step 4:** Commit `chore: remove Docker/Cloud Run infra + Mongo/MCP deps from requirements`.
 
@@ -308,7 +307,7 @@ This task cannot run in-session — it needs the user's Vercel account, a GCS se
   - `GENERATED_DIR=/tmp/pbg`
   - `ACCESS_CODE=<your passcode>` (default `Caput Draconis`)
   - `DEEPSEEK_API_KEY=<key>`
-  - Gemini auth per Task 1: EITHER `GEMINI_BACKEND=api_key` + `GEMINI_API_KEY=<key>` (if the probe worked) OR `GEMINI_BACKEND=vertex` + `GCP_PROJECT` + `GCS_SA_JSON` with Vertex AI User role (if Task 1b was needed).
+  - `GEMINI_API_KEY=<AI Studio key>` (no `GEMINI_BACKEND`/`GCP_PROJECT` — Vertex was deleted in Task 1; the key must be from a project with image-model access, i.e. billing enabled).
   - `NEXT_PUBLIC_API_URL=` (empty — same origin).
 
 - [ ] **Step 3: Deploy.** `vercel` (preview) then `vercel --prod`. If the frontend build wiring in `vercel.json` fights the auto-detection, set the Vercel project root to the repo root and let it detect Next.js under `frontend/` (or move `vercel.json` settings accordingly) — iterate with the preview URL.
@@ -333,10 +332,11 @@ This task cannot run in-session — it needs the user's Vercel account, a GCS se
 - §3/§4 GCS-only, browser-direct images → Task 3 (auth) + Task 5 (GCS URLs). ✅
 - §5 per-page short requests on serverless → Task 6 (`maxDuration`) + Plan 3 already did the per-page model. ✅
 - §7 delete Docker/Cloud Run + Mongo/MCP deps + Mongo env → Task 7 + Task 2. ✅
-- §8 risk 1 (GCS auth on Vercel) → Task 3 + Task 1b. ✅
-- §8 risk 2 (250MB deps) → Task 8 Step 4 watch item (can't verify pre-deploy). ✅ flagged
+- §8 risk 1 (GCS auth on Vercel) → Task 3 (image layer SA JSON; store.py already did the JSON layer). ✅
+- §8 risk 2 (250MB deps) → Task 7 drops google-cloud-aiplatform + Mongo/MCP deps; Task 8 Step 4 watch item (final size only verifiable on deploy). ✅
 - §8 risk 3 (single-page time limit) → Task 6 `maxDuration`. ✅
-- §8 risk 4 (Vision QA is Gemini) → unchanged; Task 1 confirms Gemini auth covers it. ✅
+- §8 risk 4 (Vision QA is Gemini) → unchanged; Vision QA uses `make_genai_client`, now api_key-only (Task 1), so the same key covers images + QA. ✅
+- Gemini image auth on Vercel → Task 1 deletes Vertex entirely; api_key is the only path (`gemini-3-pro-image` confirmed on the Developer API). No GCP identity needed for Gemini. ✅
 - §8 risk 5 (`GENERATED_DIR` → `/tmp` + localize deps) → Task 2 + Task 4 (the biggest, riskiest block, exactly as the spec warns). ✅
 - HANDOFF "core 4 步保留" → generation logic unchanged; only file location/auth/URLs move. ✅
 
@@ -344,7 +344,7 @@ This task cannot run in-session — it needs the user's Vercel account, a GCS se
 - "代码已支持 from_service_account_info" was only true for `store.py`; `storage.py` (image layer) needed Task 3. ✅
 - `GENERATED_DIR.mkdir()` at import (config.py + app.py) crashes on read-only serverless FS → Task 2 + Task 5 Step 3. ✅
 - Image URLs are `/static/…` in many `editor.py` sites, not GCS → Task 5. ✅
-- Gemini image auth on Vercel is a real unknown (Vertex needs identity; api_key model availability unconfirmed) → Task 1 de-risks it first. ✅
+- Gemini image auth on Vercel: `gemini-3-pro-image` is confirmed on the AI Studio Developer API (api_key), so Vertex is pure dead weight on serverless → Task 1 deletes it wholesale (config + client + deps). ✅
 
 **Placeholder scan:** config/auth/infra tasks (2, 3, 6, 7) carry complete verbatim code. The two pipeline tasks (4, 5) give the exact target sites + the transform + a worked example + a read-first step, because the surrounding code is best matched fresh (giving stale verbatim code across 6+ scattered sites would risk mismatch) — each has a concrete verification grep/command. Tasks 1 and 8 are investigation/handoff by nature and say so.
 
