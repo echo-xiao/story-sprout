@@ -64,7 +64,6 @@ def book(monkeypatch, tmp_path):
     monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
-    monkeypatch.setattr("src.core.db.is_available", lambda: False, raising=False)
     pre = tmp_path / "b1" / "preprocess"
     pre.mkdir(parents=True)
     (pre / "analysis.json").write_text(json.dumps({"segments": _segments()}))
@@ -91,7 +90,7 @@ def test_get_merges_records_and_put_persists(book, client):
     saved = json.loads((book / "b1" / "preprocess" / "special_pages.json").read_text())
     assert saved["pages"]["book_cover"]["scene_background"] == "Green light across the bay"
     assert saved["pages"]["book_cover"]["characters_in_scene"] == ["Gatsby"]
-    assert "chapter_cover:0" in saved["pages"]  # bootstrap persisted siblings too
+    assert "chapter_cover:0" not in saved["pages"]  # only the edited record is stored, not derived siblings
 
     # GET now serves the edited record, others untouched
     pages = {p.get("key"): p for p in client.get("/api/book/b1/special-pages").json()["pages"]}

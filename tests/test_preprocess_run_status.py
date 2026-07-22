@@ -26,16 +26,6 @@ def gen_dir(monkeypatch, tmp_path):
     return tmp_path
 
 
-@pytest.fixture(autouse=True)
-def _reset_rate_limit():
-    """The POST tests here would otherwise drain the shared 5/min
-    /api/generate budget — for themselves AND for later test files."""
-    from src.app import _rate_buckets
-    _rate_buckets.clear()
-    yield
-    _rate_buckets.clear()
-
-
 def _run_status(gen_dir, book_id="somebook"):
     return json.loads((gen_dir / book_id / "preprocess" / "run_status.json").read_text())
 

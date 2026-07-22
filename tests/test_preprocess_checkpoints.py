@@ -36,8 +36,8 @@ CHAPTERS = [{"title": "Ch 1", "text": "Alice fell down the rabbit hole."}]
 def l2(monkeypatch, tmp_path):
     calls = {"chars": 0, "locs": 0}
     monkeypatch.setattr(pipeline, "GENERATED_DIR", tmp_path)
-    # _save mirrors to Mongo best-effort — no network in tests.
-    monkeypatch.setattr("src.core.db.save_preprocess_file", lambda *a, **k: True)
+    # _save mirrors to the GCS-JSON store best-effort — no network in tests.
+    monkeypatch.setattr("src.core.store.save_preprocess_file", lambda *a, **k: True)
 
     def fake_chars(title, chapters):
         calls["chars"] += 1

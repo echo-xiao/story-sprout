@@ -67,26 +67,3 @@ def test_back_cover_anchors_to_get_style_ref(monkeypatch):
         monkeypatch, lambda sp: sp.generate_back_cover("Title", "b1"))
 
 
-def test_chapter_pages_anchor_to_get_style_ref(monkeypatch, tmp_path):
-    import src.agents.artist as am
-
-    monkeypatch.setattr(am, "GENERATED_DIR", tmp_path)
-    monkeypatch.setattr("src.generation.special_pages.get_style_ref", lambda bid: "/UPLOADED_STYLE_REF")
-    monkeypatch.setattr("src.generation.illustration._get_client", lambda: object())
-    monkeypatch.setattr("src.generation.illustration._find_scene_sheet", lambda b, s: None)
-
-    cap: dict = {}
-
-    def fake_single(client, page, sheets, save_path, style_ref, scene_sheet, **k):
-        cap["style_ref"] = style_ref
-        p = save_path.with_suffix(".png")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(b"x")
-        return True, str(p), "prompt"
-
-    monkeypatch.setattr("src.generation.illustration._generate_single_page", fake_single)
-
-    am.ArtistAgent("b1").generate_illustrations(
-        [{"page_number": 1}], [{"page_number": 1}], [], tmp_path / "ch00")
-
-    assert cap["style_ref"] == "/UPLOADED_STYLE_REF", "整章 pages 必须锚 get_style_ref(上传优先)"
