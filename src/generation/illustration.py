@@ -252,25 +252,19 @@ def _generate_single_page(
 
 def _find_scene_sheet(book_id: str, scene_background: str) -> str | None:
     """Find the best matching scene sheet for a given scene_background description."""
-    import json
     import re
 
     from src.core import storage
+    from src.core import store
+
+    # Locations live in the durable JSON store (GCS) \u2014 reading the local
+    # preprocess file broke on a cold serverless /tmp.
+    locs = store.load_preprocess_file(book_id, "llm_locations.json")
+    locations = (locs or {}).get("locations", [])
+    if not locations:
+        return None
 
     scenes_dir = GENERATED_DIR / book_id / "scenes"
-    if not scenes_dir.exists():
-        return None
-
-    # Load locations
-    locs_path = GENERATED_DIR / book_id / "preprocess" / "llm_locations.json"
-    if not locs_path.exists():
-        return None
-
-    try:
-        locations = json.loads(locs_path.read_text(encoding="utf-8")).get("locations", [])
-    except Exception:
-        return None
-
     bg_lower = scene_background.lower()
 
     # Match location by name or aliases appearing in the scene_background

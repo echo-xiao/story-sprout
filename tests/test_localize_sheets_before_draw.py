@@ -47,29 +47,24 @@ def test_sheets_for_localizes_missing_character_sheet(monkeypatch, tmp_path):
 
 
 def test_find_scene_sheet_localizes_missing_scene_sheet(monkeypatch, tmp_path):
-    from src.core import storage
+    from src.core import storage, store
     from src.generation import illustration
 
     book_id = "b1"
     monkeypatch.setattr(storage, "GENERATED_DIR", tmp_path)
     monkeypatch.setattr(illustration, "GENERATED_DIR", tmp_path)
 
-    # The dir-exists / llm_locations guards short-circuit BEFORE the localize on a
-    # fully-cold /tmp, so seed only those two metadata prerequisites locally and
-    # leave the scene IMAGE itself durable-only — exactly the case localize fixes.
-    scenes_dir = tmp_path / book_id / "scenes"
-    scenes_dir.mkdir(parents=True)
-    locs_path = tmp_path / book_id / "preprocess" / "llm_locations.json"
-    locs_path.parent.mkdir(parents=True)
-    locs_path.write_text(
-        json.dumps({"locations": [{"name": "Garden", "aliases": []}]}),
-        encoding="utf-8",
-    )
+    # Seed location metadata into the durable store (GCS-backed) so that the
+    # cold-/tmp fix — reading from store instead of a local file — is exercised.
+    # Leave the scene IMAGE itself durable-only (storage.get_image) to verify
+    # that storage.localize actually pulls it down on a cold /tmp.
+    store.save_preprocess_file(book_id, "llm_locations.json", {"locations": [{"name": "Garden", "aliases": []}]})
 
     durable = {f"{book_id}/scenes/garden_scene.png": b"SCENE-BYTES"}
     monkeypatch.setattr(storage, "get_image", lambda key: durable.get(key))
 
-    assert not (scenes_dir / "garden_scene.png").exists()
+    scenes_dir = tmp_path / book_id / "scenes"
+    assert not scenes_dir.exists() or not (scenes_dir / "garden_scene.png").exists()
 
     found = illustration._find_scene_sheet(book_id, "a walk in the Garden")
 
