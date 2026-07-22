@@ -5,10 +5,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / "data"
-GENERATED_DIR = DATA_DIR / "generated"
-
-GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+# Per-invocation scratch. On serverless (Vercel) the repo dir is read-only —
+# only /tmp is writable — so both are env-overridable (set GENERATED_DIR=/tmp/pbg
+# on Vercel). GCS is the durable source of truth; this dir is just where files
+# get localized/generated for the duration of one request.
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
+GENERATED_DIR = Path(os.getenv("GENERATED_DIR", str(DATA_DIR / "generated")))
+try:
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # Read-only FS at import (serverless cold start) — writers create it lazily.
+    pass
 
 # Gemini (images + Vision QA) — AI Studio Developer API key.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -29,10 +36,6 @@ REQUIRE_USER_KEY = os.getenv("REQUIRE_USER_KEY", "true").lower() != "false"
 # REQUIRE_USER_KEY switch (which would open generation to everyone). Unset → no
 # admin backdoor (every admin check fails safe).
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "").strip()
-
-# MongoDB
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-MONGODB_DB = os.getenv("MONGODB_DB", "picture_book_generator")
 
 # Durable image storage. When GCS_BUCKET is set, image bytes (current + every
 # version) live in that GCS bucket; only metadata/version pointers stay in Mongo.
