@@ -41,18 +41,32 @@
 ### Create 页 BYOK 清理（Plan 3 后段，小）
 - `UploadForm.tsx` 删「填你自己的 Gemini key」UI + `requireKey`/`getConfig` 用法；随后从 `lib/api.ts` 删 `getConfig`（spec §7）。
 
-### Plan 4 · 部署（Vercel + /tmp）
-- `vercel.json`（Next.js 前端 + Python 短函数）
-- **`/tmp` 物化**（spec §8 风险5 / 原 2b）：`GENERATED_DIR`→`/tmp`（改可配 env）；`artist`/`illustration` 读依赖图前用 `storage.localize` 从 GCS 拉（`special_pages.get_style_ref` 是范本）。注：`artist.py` 已删，逐页路径用 `illustration.generate_illustrations` —— 给它加 `localize`
-- GCS 服务账号 JSON → Vercel env `GCS_SA_JSON`（代码已支持 `from_service_account_info`）
-- 删 `Dockerfile`、`cloudbuild.yaml`、`.dockerignore`、`start.sh`
-- `requirements.txt` 已去 google-adk；再核对 pymongo/motor/mcp 等是否残留
+## ✅ Plan 4 · 部署代码就绪 [2026-07-22]（部署本身待你跑）
+
+计划：`docs/superpowers/plans/2026-07-22-storysprout-plan4-vercel-deploy.md`（subagent-driven，逐任务评审 + 全分支终审**零 Critical/Important**，判定「代码即部署就绪」）。全程后端 `pytest` 239 绿（+2 个 localize 变异测试）。
+
+**代码已完成（7 commits，`61c66f7..dde1a88`）：**
+- **全删 Vertex** → Gemini 只走 `api_key`（gemini-3-pro-image 确认在 AI Studio Developer API）；删 `GEMINI_BACKEND/GCP_PROJECT/GCP_LOCATION` + `google-cloud-aiplatform`
+- `config.py`：`GENERATED_DIR`/`DATA_DIR` 可配 env + 默认可覆盖成 `/tmp`；import 时 mkdir 加 try/except（只读 FS 不崩）；删 Mongo env
+- `storage.py`：图片层接 `GCS_SA_JSON`（`from_service_account_info`，镜像 store.py）—— **注：原 HANDOFF 说「代码已支持」只对 store.py 成立，storage.py 本轮才补上**
+- **localize-before-generate**：角色 sheet 逐 ext 在 `.exists()` 前 `storage.localize`（`_sheets_for` + `_regen`），变异测试验证
+- `editor.py`/`helpers.py`：图片 URL 全走 `storage.image_url()`（GCS 公开 URL，浏览器直连），不再硬编码 `/static`
+- `api/index.py`（ASGI 入口）+ `vercel.json`；删 Docker 四件套 + 清 requirements（Mongo/MCP/Vertex）
+
+**⚠️ 已知 gap（终审确认「就一处、不更宽」，留给部署冒烟）：**
+`illustration._find_scene_sheet` 在**完全冷** `/tmp` 上会在 `scenes/` 目录守卫 + 本地读 `preprocess/llm_locations.json` 处提前 bail，导致场景 sheet 不物化 → 冷启动首图**场景背景**可能没 scene-sheet 条件化。**角色一致性（命脉）不受影响**。终审已核实其它 `*.json` 读走 GCS-first 的 `_load_json`、或是请求级缓存，不受影响。修法（若部署冒烟发现场景背景缺）：把那处 `llm_locations.json` 改走 `store.get_json` / 预 localize。
+
+**⬜ 剩 Task 8 = 你手动部署（需你的 Vercel + GCS SA + Gemini key）：** 见计划 Task 8 清单 —— 建 bucket-only 权限的 GCS 服务账号 + 公开读；Vercel 设 env（`GCS_BUCKET`/`GCS_SA_JSON`/`GENERATED_DIR=/tmp/pbg`/`ACCESS_CODE`/`DEEPSEEK_API_KEY`/`GEMINI_API_KEY`）；`vercel --prod`；按清单跑线上冒烟（尤其看**场景背景**是否出、函数<250MB、`maxDuration` 是否够）。
+
+### Plan 4 小遗留（终审 Minor，可选）
+- `GCS_BUCKET` 默认值在 config.py + app.py 各写一遍（值一致，无影响，可让 app.py 从 config 导入）
+- 前端对绝对 GCS URL 会再追加一个 `&v=` cache-buster（GCS 忽略未知参数，无害）
 
 ## 小遗留（可选清理）
 - **BYOK 死管线**（inert，不影响运行）：`gemini_backend.py` 的 `set_user_api_key`/`get_user_api_key`、`generation.py` 5 处 BYOK 包裹块、`image_utils._get_client` 的 `get_user_api_key`、`helpers._require_user_key`(已 no-op)/`is_admin_token`/`book_owner_email`(已无用)
 - `books.py` 里 feedback/usage 端点删了，但 `_send_owner_email`/`_format_usage_digest`/`FeedbackRequest` 等死辅助还在
 
 ## 续做建议顺序
-Plan 3 editor 重写 ✅ 已完成 → 下一步：Create 页 BYOK 清理（小）→ Plan 4 部署（/tmp 物化是最险的一块）。每步 `pytest`（237）+ `tsc --noEmit` 验证。
+Plan 3 editor 重写 ✅ + Plan 4 部署代码 ✅（均已完成、评审通过）→ 下一步：**你手动跑 Task 8 部署**（Vercel + GCS SA + Gemini key）→ 部署冒烟若场景背景缺则补那处 JSON localize → 有空再做 Create 页 BYOK 清理（小）。每步 `pytest`（239）+ 前端 `tsc --noEmit` 验证。
 
 > 手动冒烟（本轮**未跑**，因需 DEEPSEEK/GCS 密钥且会产生真实付费调用）：开编辑器 → 章节 Gen 逐页填充、Stop 可中断、重跑跳过已好页；改角色 → Save & Regen 重画；Library → 下载 PDF。编排器已单测覆盖，接线经 tsc + 评审验证；付费端到端留给你手动 QA。
