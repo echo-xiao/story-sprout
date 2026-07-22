@@ -18,16 +18,28 @@
 6. 精简 ✅（后端已删：Mongo/MCP/ADK 批量/artist/qa/progress/agent_log/门禁4中间件/motor/google-adk）
 - **app 端到端可 import、46 端点注册、237 测试全绿**
 
+## ✅ Plan 3 · 前端（editor 重写）已完成 [2026-07-22]
+
+计划：`docs/superpowers/plans/2026-07-22-storysprout-plan3-editor-rewrite.md`（subagent-driven 执行，逐任务评审通过）。
+验证：前端 `tsc --noEmit` 干净 + `npm test` 21/21；后端 `pytest` 237 passed。
+
+1. **editor 重写**（`app/editor/[bookId]/page.tsx`，净减 ~680 行）：
+   - "Gen 整章 / Gen All" → **逐页循环**：新增 `lib/pageGen.ts` 编排器（`generateOnePage`/`generatePagesSequential`，8 单测），loop `POST /segment/{id}/regenerate` → 轮询 `regen-status`；批量**只补缺失 + 重画 stale**（跳过已好的页，省钱），带协作式 **Stop**；`handleRegenerate` 复用同一编排器（DRY）
+   - 删 **AgentActivityPanel** 组件 + 测试 + 编辑器用法；删死 api 函数 `generateChapter`/`getChapterProgress`/`getAgentLog`；删 `lib/progress.ts` + 测试
+   - 删 **BYOK 横幅** + `requireKey/canEdit/hasKey/keyInput` → 编辑器永远可编辑
+   - 删 **场景背景 2s 防抖自动重画**（`triggerSceneBackgroundRegen` 那套）；**保留**用户手动点的「Generate 场景描述」按钮（+ `generateSceneBackground` api/后端路由）
+   - stale 联动保留（每次重画后 `refreshStale`；出图→版本→QA 由后端单页端点完成）
+2. **Library 每本书「下载 PDF」按钮** → `<a download>` 直连 `/api/book/{id}/pdf`（read，不过口令门禁，无需 header）
+
+### ⚠️ 对原 HANDOFF 的两处修正（实现时验证发现）
+- **`lib/agents.ts` 未删**（原 HANDOFF 说删）：`AGENT_META`/`PREPROCESS_STEPS` 仍被 live 的 preprocess UI（`GenerationProgress.tsx`、`PreprocessLoadingScreen.tsx`）使用。只删了编辑器里的 `AGENT_META` 用法。
+- **`getConfig` 未删、Create 页 BYOK 未清**：`getConfig` 仍被 `UploadForm.tsx`（Create 页 BYOK）使用，非死代码。**推迟**到后续 Create-页任务里一起清（删 getConfig + Create 页那块 Gemini-key UI + `requireKey`）。
+- 批量循环**只出页、不出封面**：单页端点不产封面；封面仍走现有单项 regenerate（`handleRegenSpecial`，未动）。
+
 ## ⬜ 剩余工作
 
-### Plan 3 · 前端（editor 重写是大头）
-1. **`frontend/src/app/editor/[bookId]/page.tsx`（1631 行）重写生成逻辑**：
-   - "Gen 整章 / Gen All" → **逐页循环**：改调 `regenerateSegment(bookId, segId)` 逐段生成（后端 `POST /segment/{id}/regenerate` 能从零生成一页，含 QA+自纠+追加版本），替代**已删的** `chapter/generate` + 进度轮询
-   - 删 **AgentActivityPanel**（后端 `agent-log` 已删）：删组件用法 + `frontend/src/components/editor/AgentActivityPanel.tsx` + `__tests__/AgentActivityPanel.test.tsx` + `lib/agents.ts`(AGENT_META)
-   - 删 **BYOK 横幅**（约 line 1017-1042）+ `requireKey/canEdit/hasKey/keyInput` 逻辑 → 编辑器永远可编辑（`canEdit=true`）
-2. **`frontend/src/lib/api.ts` 删死函数**：`generateChapter`、`getChapterProgress`、`getAgentLog`（对应端点已删）；`getConfig` 也可删（BYOK 没了；删后要清编辑器里的 `requireKey` 用法）
-3. **Library 每本书加「下载 PDF」按钮**（`components/BookLibrary.tsx` → 链到 `/api/book/{id}/pdf`）
-4. 依赖联动（spec §11.2 两条硬性规则）：stale 标红 + 重画=换图+版本+自动QA —— **后端已具备**（`stale-pages` 端点、`page_service.qa_and_self_correct`、`record_image_version`）；前端编辑器现有轮播/stale 逻辑基本可用，逐页重写时保留即可
+### Create 页 BYOK 清理（Plan 3 后段，小）
+- `UploadForm.tsx` 删「填你自己的 Gemini key」UI + `requireKey`/`getConfig` 用法；随后从 `lib/api.ts` 删 `getConfig`（spec §7）。
 
 ### Plan 4 · 部署（Vercel + /tmp）
 - `vercel.json`（Next.js 前端 + Python 短函数）
@@ -41,4 +53,6 @@
 - `books.py` 里 feedback/usage 端点删了，但 `_send_owner_email`/`_format_usage_digest`/`FeedbackRequest` 等死辅助还在
 
 ## 续做建议顺序
-Plan 3.1 editor 重写（先删 AgentPanel+BYOK 横幅让它变简单，再改 Gen→逐页）→ 3.2 api.ts 清理 → 3.3 Library PDF → Plan 4 部署。每步 `pytest` + `tsc --noEmit` 验证。
+Plan 3 editor 重写 ✅ 已完成 → 下一步：Create 页 BYOK 清理（小）→ Plan 4 部署（/tmp 物化是最险的一块）。每步 `pytest`（237）+ `tsc --noEmit` 验证。
+
+> 手动冒烟（本轮**未跑**，因需 DEEPSEEK/GCS 密钥且会产生真实付费调用）：开编辑器 → 章节 Gen 逐页填充、Stop 可中断、重跑跳过已好页；改角色 → Save & Regen 重画；Library → 下载 PDF。编排器已单测覆盖，接线经 tsc + 评审验证；付费端到端留给你手动 QA。
