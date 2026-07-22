@@ -1,56 +1,35 @@
-"""Main pipeline: delegates to the Gemini Agent orchestrator.
+"""Book deletion helper for the FastAPI app, backed by the GCS-JSON store.
 
-Also provides MongoDB helpers for the FastAPI app to use.
+(The old MongoDB helpers were removed with the Mongo layer; the live generation
+pipeline runs via src/agents/ — Analyzer→Writer→Artist→QA.)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
-import motor.motor_asyncio
-
-from src.config import GENERATED_DIR, MONGODB_DB, MONGODB_URI
+from src.config import GENERATED_DIR
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# MongoDB helpers (used by FastAPI for the book library and deletion)
-# ---------------------------------------------------------------------------
-
-_mongo_client: Optional[motor.motor_asyncio.AsyncIOMotorClient] = None
-
-
-def _get_db() -> motor.motor_asyncio.AsyncIOMotorDatabase:
-    global _mongo_client
-    if _mongo_client is None:
-        _mongo_client = motor.motor_asyncio.AsyncIOMotorClient(
-            MONGODB_URI, serverSelectionTimeoutMS=5000
-        )
-    return _mongo_client[MONGODB_DB]
-
 
 async def delete_book(book_id: str) -> bool:
-    db = _get_db()
-    # One book-level doc in books + per-chapter docs in book_chapters; clear
-    # the consistency collections too (characters/segments) instead of
-    # orphaning them.
-    res = await db.books.delete_many({"book_id": book_id})
-    await db.statuses.delete_one({"book_id": book_id})
-    for coll in ("book_chapters", "characters", "segments", "preprocess_files", "illustrations"):
-        try:
-            await db[coll].delete_many({"book_id": book_id})
-        except Exception:
-            pass
-    # A preprocess-only book has a generated dir but no chapter docs yet — treat
-    # that as deletable too, so the endpoint proceeds to rmtree instead of 404.
-    has_dir = (GENERATED_DIR / book_id).exists()
-    return res.deleted_count > 0 or has_dir
+    """Delete a book's durable data — every GCS object under its `{book_id}/`
+    prefix (meta, characters, chapters, assets, images, preprocess).
 
+    Returns True if the book existed (a store meta doc or a local generated
+    dir), so the route can 404 an unknown id instead of reporting a phantom
+    delete. The route still rmtree's the local dir separately.
+    """
+    from src.core import storage, store
 
-# ---------------------------------------------------------------------------
-# NOTE: The Gemini function-calling orchestrator path (generate_picture_book →
-# run_agent) was removed. The live pipeline runs via scripts/generate_chapter.py
-# + src/agents/ (Analyzer→Writer→Artist→QA). This module now only provides the
-# MongoDB status/book helpers above.
-# ---------------------------------------------------------------------------
+    existed = (GENERATED_DIR / book_id).exists()
+    try:
+        existed = existed or store.get_book(book_id) is not None
+    except Exception:
+        pass  # store unconfigured (no GCS) — rely on the local dir check
+    try:
+        storage.delete_prefix(f"{book_id}/")
+    except Exception as e:
+        logger.warning("delete_prefix failed for %s: %s", book_id, e)
+    return existed
