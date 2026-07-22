@@ -181,7 +181,7 @@ def record_image_version(book_id: str, asset_type: str, asset_key: str,
     """
     import hashlib
     import re as _re
-    from src.core.db import add_asset_version
+    from src.core.store import add_asset_version
 
     digest = hashlib.sha256(data).hexdigest()
     ext = "png" if "png" in content_type else "jpg"
