@@ -264,11 +264,8 @@ async def _run_preprocess(book_id: str, dest: Path, gemini_api_key: str | None =
     import sys
     env = os.environ.copy()
     if gemini_api_key:
-        # Route preprocessing to the USER's key (their billing). Setting the key
-        # alone is not enough — make_genai_client() picks Vertex first unless the
-        # backend is also switched, so the key was previously ignored.
+        # Route preprocessing to the USER's key (their billing).
         env["GEMINI_API_KEY"] = gemini_api_key
-        env["GEMINI_BACKEND"] = "api_key"
     # Clear any stale error.json from a previous attempt, else the frontend shows
     # this fresh run as already-failed. (The POST handler clears it too, before
     # this task is even scheduled; kept here for direct callers.)

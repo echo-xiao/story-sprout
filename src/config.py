@@ -10,13 +10,8 @@ GENERATED_DIR = DATA_DIR / "generated"
 
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
-# Gemini — runs on Vertex AI / "Agent Platform" by default (GEMINI_BACKEND=vertex,
-# uses ADC locally and the attached service account on Cloud Run). Set
-# GEMINI_BACKEND=api_key to use the AI Studio key path instead.
+# Gemini (images + Vision QA) — AI Studio Developer API key.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_BACKEND = os.getenv("GEMINI_BACKEND", "vertex").lower()  # "vertex" | "api_key"
-GCP_PROJECT = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT", "picture-book-gen")
-GCP_LOCATION = os.getenv("GCP_LOCATION", "global")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3-pro-image")
 
