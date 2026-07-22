@@ -117,3 +117,83 @@ def save_preprocess_file(book_id: str, filename: str, data: Any) -> None:
 
 def load_preprocess_file(book_id: str, filename: str) -> Optional[Any]:
     return get_json(f"{book_id}/preprocess/{filename}")
+
+
+# ── Asset versions (image version pointers; bytes live in storage.py/GCS) ───
+import uuid
+from datetime import datetime, timezone
+
+_MAX_ASSET_VERSIONS = 12
+
+
+def _assets_key(book_id: str) -> str:
+    return f"{book_id}/assets.json"
+
+
+def _load_assets(book_id: str) -> dict:
+    return get_json(_assets_key(book_id)) or {}
+
+
+def _rec_key(asset_type: str, asset_key: str) -> str:
+    return f"{asset_type}:{asset_key}"
+
+
+def add_asset_version(book_id: str, asset_type: str, asset_key: str, url: str,
+                      image_hash: str | None = None,
+                      storage_key: str | None = None) -> str:
+    assets = _load_assets(book_id)
+    k = _rec_key(asset_type, asset_key)
+    rec = assets.get(k) or {"versions": [], "selected_version_id": None}
+    versions = rec["versions"]
+
+    if image_hash:
+        for v in versions:
+            if v.get("hash") == image_hash:
+                rec["selected_version_id"] = v["id"]
+                assets[k] = rec
+                put_json(_assets_key(book_id), assets)
+                return v["id"]
+
+    vid = uuid.uuid4().hex[:12]
+    versions.append({"id": vid, "url": url, "hash": image_hash,
+                     "storage_key": storage_key,
+                     "created_at": datetime.now(timezone.utc).isoformat()})
+    if len(versions) > _MAX_ASSET_VERSIONS:
+        rec["versions"] = versions[-_MAX_ASSET_VERSIONS:]
+    rec["selected_version_id"] = vid
+    assets[k] = rec
+    put_json(_assets_key(book_id), assets)
+    return vid
+
+
+def set_selected_version(book_id: str, asset_type: str, asset_key: str,
+                         version_id: str) -> bool:
+    assets = _load_assets(book_id)
+    rec = assets.get(_rec_key(asset_type, asset_key))
+    if not rec or not any(v["id"] == version_id for v in rec["versions"]):
+        return False
+    rec["selected_version_id"] = version_id
+    assets[_rec_key(asset_type, asset_key)] = rec
+    put_json(_assets_key(book_id), assets)
+    return True
+
+
+def get_selected_version(book_id: str, asset_type: str, asset_key: str) -> Optional[dict]:
+    rec = _load_assets(book_id).get(_rec_key(asset_type, asset_key))
+    if not rec:
+        return None
+    sel = rec.get("selected_version_id")
+    versions = rec.get("versions", [])
+    return next((v for v in versions if v["id"] == sel), versions[-1] if versions else None)
+
+
+def list_asset_versions(book_id: str, asset_type: str, asset_key: str) -> dict:
+    rec = _load_assets(book_id).get(_rec_key(asset_type, asset_key))
+    if not rec:
+        return {"versions": [], "selected_version_id": None}
+    return {"versions": rec.get("versions", []),
+            "selected_version_id": rec.get("selected_version_id")}
+
+
+def delete_asset_versions(book_id: str) -> None:
+    put_json(_assets_key(book_id), {})
