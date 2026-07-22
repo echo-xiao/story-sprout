@@ -38,3 +38,45 @@ def test_generate_json_missing_key_raises(monkeypatch):
     import src.deepseek_client as dc
     with pytest.raises(ValueError):
         dc.generate_json("hi")
+
+
+# ── JSON repair chain (ported from the old llm_client repair tests) ─────────
+@pytest.fixture()
+def raw(monkeypatch):
+    """Stub the raw DeepSeek call; only the parse/repair chain is under test."""
+    monkeypatch.setattr("src.config.DEEPSEEK_API_KEY", "test-key", raising=False)
+    import src.deepseek_client as dc
+    holder = {"raw": "{}"}
+    monkeypatch.setattr(dc, "_call_deepseek", lambda *a, **k: holder["raw"])
+    return holder
+
+
+def test_repair_markdown_fenced_nested_braces(raw):
+    import src.deepseek_client as dc
+    raw["raw"] = '```json\n{"outer": {"inner": 1}}\n```'
+    assert dc.generate_json("p") == {"outer": {"inner": 1}}
+
+
+def test_repair_trailing_commas(raw):
+    import src.deepseek_client as dc
+    raw["raw"] = '{"a": [1, 2,], "b": {"c": 3,},}'
+    assert dc.generate_json("p") == {"a": [1, 2], "b": {"c": 3}}
+
+
+def test_repair_prose_around_object(raw):
+    import src.deepseek_client as dc
+    raw["raw"] = 'Sure! The result is {"ok": true} — let me know.'
+    assert dc.generate_json("p") == {"ok": True}
+
+
+def test_repair_prose_plus_trailing_comma(raw):
+    import src.deepseek_client as dc
+    raw["raw"] = 'Result: {"items": [1, 2,],} thanks'
+    assert dc.generate_json("p") == {"items": [1, 2]}
+
+
+def test_repair_garbage_raises_value_error(raw):
+    import src.deepseek_client as dc
+    raw["raw"] = "I could not produce JSON, sorry."
+    with pytest.raises(ValueError):
+        dc.generate_json("p")

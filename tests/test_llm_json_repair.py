@@ -1,64 +1,29 @@
-"""generate_json repair chain (src/llm_client.py).
+"""llm_client.generate_json is now a thin facade over the DeepSeek client.
 
-The raw LLM call is stubbed out; only the parse/repair pipeline is under test.
+The JSON repair chain itself lives in (and is tested by) deepseek_client; here
+we only verify the facade delegates and that a repaired result flows back.
 """
 
 from __future__ import annotations
 
-import pytest
-
 import src.llm_client as llm_client
+import src.deepseek_client as deepseek_client
 
 
-@pytest.fixture()
-def gemini_raw(monkeypatch):
-    """Route generate_json to a canned Gemini response."""
-    holder = {"raw": "{}"}
-    monkeypatch.setattr(llm_client, "GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(llm_client, "_call_gemini", lambda *a, **k: holder["raw"])
-    return holder
+def test_generate_json_delegates_to_deepseek(monkeypatch):
+    seen = {}
+
+    def fake(prompt, system="", max_retries=3):
+        seen["args"] = (prompt, system, max_retries)
+        return {"ok": True}
+
+    monkeypatch.setattr(deepseek_client, "generate_json", fake)
+    assert llm_client.generate_json("hi", system="s", max_retries=2) == {"ok": True}
+    assert seen["args"] == ("hi", "s", 2)
 
 
-def test_clean_json(gemini_raw):
-    gemini_raw["raw"] = '{"a": 1, "b": [2, 3]}'
-    assert llm_client.generate_json("p") == {"a": 1, "b": [2, 3]}
-
-
-def test_markdown_fenced_json(gemini_raw):
-    gemini_raw["raw"] = 'Here you go:\n```json\n{"pages": [1]}\n```\nDone.'
-    assert llm_client.generate_json("p") == {"pages": [1]}
-
-
-def test_markdown_fenced_nested_braces(gemini_raw):
-    # The non-greedy fence regex can't span nested braces; the later greedy
-    # {.*} fallback must still recover this.
-    gemini_raw["raw"] = '```json\n{"outer": {"inner": 1}}\n```'
-    assert llm_client.generate_json("p") == {"outer": {"inner": 1}}
-
-
-def test_trailing_commas(gemini_raw):
-    gemini_raw["raw"] = '{"a": [1, 2,], "b": {"c": 3,},}'
-    assert llm_client.generate_json("p") == {"a": [1, 2], "b": {"c": 3}}
-
-
-def test_prose_around_object(gemini_raw):
-    gemini_raw["raw"] = 'Sure! The result is {"ok": true} — let me know.'
-    assert llm_client.generate_json("p") == {"ok": True}
-
-
-def test_prose_plus_trailing_comma(gemini_raw):
-    gemini_raw["raw"] = 'Result: {"items": [1, 2,],} thanks'
-    assert llm_client.generate_json("p") == {"items": [1, 2]}
-
-
-def test_garbage_raises_value_error(gemini_raw):
-    gemini_raw["raw"] = "I could not produce JSON, sorry."
-    with pytest.raises(ValueError):
-        llm_client.generate_json("p")
-
-
-def test_missing_key_raises(monkeypatch):
-    monkeypatch.setattr(llm_client, "GEMINI_BACKEND", "api_key")
-    monkeypatch.setattr(llm_client, "GEMINI_API_KEY", "")
-    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
-        llm_client.generate_json("p")
+def test_repair_chain_reached_through_facade(monkeypatch):
+    # A dirty raw response repaired by the DeepSeek client is returned via the facade.
+    monkeypatch.setattr("src.config.DEEPSEEK_API_KEY", "test-key", raising=False)
+    monkeypatch.setattr(deepseek_client, "_call_deepseek", lambda *a, **k: '```json\n{"a": 1,}\n```')
+    assert llm_client.generate_json("p") == {"a": 1}
