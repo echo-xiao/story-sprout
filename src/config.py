@@ -18,7 +18,7 @@ GEMINI_BACKEND = os.getenv("GEMINI_BACKEND", "vertex").lower()  # "vertex" | "ap
 GCP_PROJECT = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT", "picture-book-gen")
 GCP_LOCATION = os.getenv("GCP_LOCATION", "global")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3-pro-image")
 
 # BYOK gate. When true (the SECURE DEFAULT), generation endpoints require the
 # caller's own Gemini key (403 otherwise) so public visitors can't bill the
@@ -59,5 +59,21 @@ DEFAULT_STYLE = (
     "warm and cozy feeling, NOT scary, NOT realistic"
 )
 NEGATIVE_PROMPT = "scary, violent, dark, photorealistic, 3D render, adult content, blood, weapons"
+
+
+# ── DeepSeek (text engine) ─────────────────────────────────────────────────
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+# ── Access gate (single shared passcode) ───────────────────────────────────
+ACCESS_CODE = os.getenv("ACCESS_CODE", "Caput Draconis")
+
+# ── GCS auth on Vercel (no ambient GCP identity) ───────────────────────────
+# Service-account JSON as a string; empty -> fall back to ADC (local dev).
+GCS_SA_JSON = os.getenv("GCS_SA_JSON", "")
+
+# Gemini vision model used ONLY by Vision QA (text gen now goes to DeepSeek).
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", GEMINI_MODEL)
 
 
