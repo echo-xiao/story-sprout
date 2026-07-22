@@ -167,9 +167,6 @@ export default function EditorPage() {
       unmountedRef.current = true;
       // Stop any running batch generation loop on unmount.
       genCancelRef.current = true;
-      // A pending scene-background debounce would otherwise still fire its
-      // updateSegment + paid LLM call after the user has left the page.
-      if (sceneRegenTimer.current) clearTimeout(sceneRegenTimer.current);
     };
   }, []);
 
@@ -554,54 +551,11 @@ export default function EditorPage() {
     if (!selectedSegment) return;
     const segId = selectedSegment.id;
     dirtySegIds.current.add(segId);
-    // The user is hand-editing the scene background → cancel any pending
-    // auto-regen, otherwise the debounce (armed when they changed a character)
-    // would fire 2s later and silently overwrite what they just typed.
-    if (field === "scene_background" && sceneRegenTimer.current) {
-      clearTimeout(sceneRegenTimer.current);
-      sceneRegenTimer.current = null;
-    }
     // Functional updates: two field edits in the same tick must not clobber
     // each other via a stale `selectedSegment` closure.
     setSelectedSegment((prev) => (prev && prev.id === segId ? { ...prev, [field]: value } : prev));
     setSegments((prev) => prev.map((s) => (s.id === segId ? { ...s, [field]: value } : s)));
   };
-
-  // Debounce timer for auto-regenerating scene_background after character changes
-  const sceneRegenTimer = useRef<NodeJS.Timeout | null>(null);
-  const [regenningBg, setRegenningBg] = useState(false);
-
-  const triggerSceneBackgroundRegen = useCallback((segId: number) => {
-    if (sceneRegenTimer.current) clearTimeout(sceneRegenTimer.current);
-    sceneRegenTimer.current = setTimeout(async () => {
-      if (unmountedRef.current) return;
-      try {
-        setRegenningBg(true);
-        // Read the LATEST segments via the ref — the closed-over `segments`
-        // is from the render that scheduled this timer and is missing the edit
-        // the user just typed, which would persist a stale character list.
-        const seg = segmentsRef.current.find(s => s.id === segId);
-        if (!seg) {
-          // Chapter switched before the debounce fired: the edit was never
-          // saved, so generating a background from it would use stale data.
-          return;
-        }
-        await updateSegment(bookId, segId, {
-          characters_in_scene: seg.characters_in_scene,
-          character_actions: seg.character_actions,
-        });
-        const res = await generateSceneBackground(bookId, segId);
-        // Update local state with new background
-        const newBg = res.scene_background;
-        setSelectedSegment(prev => prev && prev.id === segId ? { ...prev, scene_background: newBg } : prev);
-        setSegments(prev => prev.map(s => s.id === segId ? { ...s, scene_background: newBg } : s));
-      } catch (e) {
-        console.error("Auto scene_background regen failed:", e);
-      } finally {
-        setRegenningBg(false);
-      }
-    }, 2000);
-  }, [bookId]);
 
   // Apply a pure transform to the selected segment in BOTH state copies using
   // functional updates, so two edits in one tick can't clobber each other via a
@@ -617,10 +571,6 @@ export default function EditorPage() {
     if (!selectedSegment) return;
     const segId = selectedSegment.id;
     mutateSegment(segId, (seg) => setActionField(seg, idx, field, value));
-    // Auto-regenerate scene_background after character changes
-    if (field === "name" && value.trim()) {
-      triggerSceneBackgroundRegen(segId);
-    }
   };
 
   const addCharacterAction = () => {
@@ -632,8 +582,6 @@ export default function EditorPage() {
     if (!selectedSegment) return;
     const segId = selectedSegment.id;
     mutateSegment(segId, (seg) => removeAction(seg, idx));
-    // Auto-regenerate scene_background after removing character
-    triggerSceneBackgroundRegen(segId);
   };
 
   // Handle quality check
@@ -1234,7 +1182,6 @@ export default function EditorPage() {
                 <div className="card !p-3">
                   <h3 className="font-display font-bold text-gray-700 mb-2 text-xs flex items-center gap-1">
                     <Users size={12} /> Characters & Actions
-                    {regenningBg && <span className="text-[9px] text-gray-400 ml-1 animate-pulse">updating scene...</span>}
                   </h3>
                   <div className="space-y-1.5">
                     {(selectedSegment.character_actions || []).map((ca, idx) => (
@@ -1281,7 +1228,6 @@ export default function EditorPage() {
                           const name = e.target.value;
                           const segId = selectedSegment.id;
                           mutateSegment(segId, (seg) => addAction(seg, name));
-                          triggerSceneBackgroundRegen(segId);
                         }}
                         className="text-xs text-coral font-semibold bg-transparent border border-peach/30 rounded-md px-1 py-0.5 outline-none cursor-pointer"
                       >
