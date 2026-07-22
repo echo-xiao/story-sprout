@@ -465,24 +465,6 @@ def _format_usage_digest(data: dict, hours: int) -> str:
     return "\n".join(lines)
 
 
-@router.get("/api/admin/usage-digest")
-async def usage_digest(token: str = "", hours: int = 24) -> dict[str, Any]:
-    """Owner-only usage digest: books + feedback in the last `hours`, emailed to
-    the owner and returned as JSON. Token-gated via ADMIN_TOKEN (unset → always
-    403, so it can't be triggered until the owner sets a secret). Trigger daily
-    with Cloud Scheduler; or hit it manually with ?token=…."""
-    admin = os.getenv("ADMIN_TOKEN", "").strip()
-    if not admin or token != admin:
-        raise HTTPException(status_code=403, detail="Forbidden.")
-    hours = max(1, min(hours, 720))
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    from src.core.db import usage_since
-    data = usage_since(cutoff)
-    emailed = _send_owner_email(f"📊 Story Sprout usage — last {hours}h",
-                                _format_usage_digest(data, hours))
-    return {"emailed": emailed, **data}
-
-
 @router.get("/api/book/{book_id}/pdf")
 async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
     """Build the book PDF on demand from chapter_data + special pages — the
@@ -539,34 +521,6 @@ async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
         content_disposition_type="inline" if inline else "attachment",
         background=BackgroundTask(lambda: os.path.exists(tmp_path) and os.unlink(tmp_path)),
     )
-
-
-@router.post("/api/feedback")
-async def submit_feedback(req: FeedbackRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
-    """Collect a user feedback note. No Gemini cost, so no BYOK gate; bounded
-    in size to limit spam. Persists to MongoDB (file fallback) and, when SMTP is
-    configured, emails the owner — both best-effort so the user always succeeds."""
-    msg = (req.message or "").strip()
-    if not msg:
-        raise HTTPException(status_code=400, detail="Feedback message is required.")
-    if len(msg) > 5000:
-        raise HTTPException(status_code=400, detail="Feedback is too long (max 5000 chars).")
-    email = (req.email or "").strip()[:200] or None
-    context = (req.context or "").strip()[:300] or None
-
-    from src.core.db import save_feedback
-    if not save_feedback(msg, email, context):
-        # MongoDB unavailable — persist to a local file so nothing is lost.
-        import time as _time
-        fb_dir = GENERATED_DIR / "feedback"
-        fb_dir.mkdir(parents=True, exist_ok=True)
-        (fb_dir / f"{int(_time.time() * 1000)}.json").write_text(
-            json.dumps({"message": msg, "email": email, "context": context}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    # Push to the owner's inbox after responding (no-op until SMTP is set).
-    background_tasks.add_task(_email_feedback_to_owner, msg, email, context)
-    return {"status": "received"}
 
 
 @router.post("/api/generate")
@@ -809,19 +763,18 @@ async def list_preprocessed_books(email: str | None = None) -> list[dict[str, An
     UNION of MongoDB and the disk scan, deduped by book_id (Mongo record wins
     when both exist).
     """
-    from src.core.db import list_preprocess_books
+    from src.core.store import list_books
     from src.routes.helpers import _load_json
 
     samples = _sample_book_ids()
-    viewer = (email or "").strip().lower()
     books_by_id: dict[str, dict[str, Any]] = {}
 
     try:
-        mongo_books = list_preprocess_books()
+        store_books = list_books()
     except Exception as e:
-        logger.warning("Mongo library listing failed (%s); serving disk scan only", e)
-        mongo_books = []
-    for b in mongo_books:
+        logger.warning("Store library listing failed (%s); serving disk scan only", e)
+        store_books = []
+    for b in store_books:
         # Per-book guard: one bad record must not kill the whole listing.
         try:
             book_id = b["book_id"]
@@ -838,7 +791,7 @@ async def list_preprocessed_books(email: str | None = None) -> list[dict[str, An
                 "status": _book_status(book_id, generated_chapters),
             }
         except Exception as e:
-            logger.warning("Skipping bad Mongo library record %r: %s", b, e)
+            logger.warning("Skipping bad store library record %r: %s", b, e)
 
     # Disk scan — adds books Mongo doesn't know about (doc never created, or
     # Mongo down). Per-book guard so one corrupt meta.json doesn't kill it.
@@ -873,13 +826,11 @@ async def list_preprocessed_books(email: str | None = None) -> list[dict[str, An
             except Exception as e:
                 logger.warning("Skipping unreadable book dir %s: %s", d, e)
 
-    # Isolation: keep the public samples + this viewer's own books.
+    # Public product: show every book (no per-owner isolation).
     out = []
     for bid, rec in books_by_id.items():
-        is_sample = bid in samples
-        rec["is_sample"] = is_sample
-        if is_sample or (viewer and book_owner_email(bid) == viewer):
-            out.append(rec)
+        rec["is_sample"] = bid in samples
+        out.append(rec)
     return out
 
 
