@@ -38,23 +38,10 @@ class AnalyzerAgent:
         """
         names = ["meta", "chapters", "full_text", "analysis", "chapter_segments"]
 
-        # MongoDB MCP batch prefetch (partner integration) — best-effort; an
-        # alternate transport to the SAME preprocess_files docs. Passed to the
-        # accessor below as a fallback, never as an override.
-        mcp_data: dict = {}
-        try:
-            from src.core.mcp_client import load_preprocess_files_via_mcp
-            mcp_data = load_preprocess_files_via_mcp(self.book_id, names) or {}
-            if mcp_data:
-                logger.info("load_preprocess: %d/%d docs prefetched via MongoDB MCP server for %s",
-                            len(mcp_data), len(names), self.book_id)
-        except Exception as e:
-            logger.warning("load_preprocess: MCP path unavailable (%s)", e)
-
         from src.routes.helpers import _load_json
         data: dict = {}
         for name in names:
-            val = _load_json(self.book_id, f"{name}.json", prefetched=mcp_data.get(name))
+            val = _load_json(self.book_id, f"{name}.json")
             if val is not None:
                 data[name] = val
 

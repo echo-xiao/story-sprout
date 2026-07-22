@@ -460,14 +460,14 @@ def _save(preprocess_dir, name, data, subdir=None):
     _write_text_atomic(path, json.dumps(data, indent=2, default=str, ensure_ascii=False))
     print(f"  → {path.relative_to(GENERATED_DIR)}")
 
-    # Also save to MongoDB (extract book_id from preprocess_dir path)
+    # Also persist to the GCS-JSON store (extract book_id from the path).
     if not subdir:
         try:
-            from src.core.db import save_preprocess_file
+            from src.core.store import save_preprocess_file
             bid = preprocess_dir.parent.name  # data/generated/<book_id>/preprocess -> <book_id>
             save_preprocess_file(bid, f"{name}.json", data)
         except Exception:
-            pass  # graceful fallback
+            pass  # store unconfigured (local dev) — the local file above suffices
 
 
 def _strip_book_metadata(text: str) -> str:
@@ -739,38 +739,6 @@ def _generate_character_sheets(book_id, preprocess_dir, characters, skip_sheets)
     # Doing it here was a no-op: on a first run the characters collection is
     # still empty (update-many matches nothing), and save_preprocess's
     # delete+insert wiped the fields on re-runs anyway.
-
-
-def _sync_sheet_hub_to_mongo(book_id, preprocess_dir):
-    """Consistency data hub: persist each sheet's visual identity + reference
-    image path into the characters collection via the MongoDB MCP server,
-    making MongoDB the single source of truth for cross-page consistency.
-
-    Must run AFTER save_preprocess: that call rebuilds the characters
-    collection with delete+insert (which would wipe these fields), and on a
-    first run there are no docs to match before it. Reads character_sheets.json
-    so it also works when this run skipped sheet generation (--skip-sheets)
-    but a previous run left valid sheets behind.
-    """
-    sheets_file = preprocess_dir / "character_sheets.json"
-    if not sheets_file.exists():
-        return
-    try:
-        sheets = json.loads(sheets_file.read_text(encoding="utf-8"))
-        from src.core.mcp_client import update_characters_via_mcp
-        items = [
-            (s["character_name"], {
-                "sheet_path": s.get("sheet_path", ""),
-                "portrait_path": s.get("portrait_path", ""),
-                "visual_identity": s.get("visual_identity", ""),
-                "visual_colors": s.get("visual_colors", ""),
-            })
-            for s in sheets if s.get("character_name")
-        ]
-        n = update_characters_via_mcp(book_id, items)
-        print(f"  → synced {n} character sheets to MongoDB via MCP (consistency hub)")
-    except Exception as e:
-        print(f"  → MCP consistency sync skipped: {e}")
 
 
 def _layer4_replace_aliases(book_id, preprocess_dir, chapters, full_text, alias_map):
@@ -1121,20 +1089,17 @@ def main():
     final_segments, final_characters, all_events = _layer6_annotate(
         book_id, preprocess_dir, chapters, characters, title, ch_seg_groups, args.skip_sheets)
 
-    # Save to MongoDB. All files are already written at this point, so a Mongo
-    # failure must NOT fail the run — a non-zero exit makes the web flow write
-    # error.json and show a fully-successful preprocess as failed.
+    # Persist book-level metadata + characters to the GCS-JSON store. All files
+    # are already written, so a store failure must NOT fail the run — a non-zero
+    # exit makes the web flow write error.json and show a good preprocess as failed.
     try:
-        from src.core.db import save_preprocess, is_available as mongo_available
-        if mongo_available():
-            save_preprocess(book_id, title, characters, final_segments, alias_map, gender_map)
-            print(f"\n  MongoDB: saved ({len(characters)} characters, {len(final_segments)} segments)")
-            # Sheet consistency hub — must follow save_preprocess (see helper).
-            _sync_sheet_hub_to_mongo(book_id, preprocess_dir)
-        else:
-            print("\n  MongoDB: not available (data saved to files only)")
+        from src.core import store
+        num_chapters = len({s.get("chapter_idx", 0) for s in final_segments})
+        store.save_book(book_id, title, num_chapters, alias_map=alias_map, gender_map=gender_map)
+        store.save_characters(book_id, characters)
+        print(f"\n  Store: saved ({len(characters)} characters, {len(final_segments)} segments)")
     except Exception as e:
-        print(f"\n  MongoDB: save failed ({e}); data saved to files only", file=sys.stderr)
+        print(f"\n  Store: save failed ({e}); data saved to files only", file=sys.stderr)
 
     # Summary
     print(f"\n{'='*50}")

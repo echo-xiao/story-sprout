@@ -436,9 +436,8 @@ class IllustrateQAStage(_Stage):
     @staticmethod
     def _save_to_mongo(c: PipelineContext) -> None:
         try:
-            # Chapter docs go to book_chapters — writing them into books used to
-            # mix two schemas in one collection and create duplicate cards.
-            from src.core.db import save_book_chapter
+            # One JSON per chapter in the GCS-JSON store (keyed book_id+chapter).
+            from src.core.store import save_chapter as save_book_chapter
             ok = save_book_chapter(c.book_id, c.chapter_idx, {
                 "title": c.title,
                 "chapter_title": c.ch_title,
