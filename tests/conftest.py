@@ -42,6 +42,43 @@ def _no_real_gcs(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fake_store_bucket(monkeypatch):
+    """Point the GCS-JSON store at an in-memory bucket for every test, so no test
+    ever reaches real GCS (the store has no local fallback — GCS-only by design).
+    Per-test fresh. Unit tests that inspect the bucket monkeypatch store._bucket
+    themselves; that runs after this autouse fixture, so it wins."""
+    class _Blob:
+        def __init__(self, s, k):
+            self._s, self._k = s, k
+
+        @property
+        def name(self):
+            return self._k
+
+        def exists(self):
+            return self._k in self._s
+
+        def download_as_text(self):
+            return self._s[self._k]
+
+        def upload_from_string(self, data, content_type="application/json"):
+            self._s[self._k] = data
+
+    class _Bucket:
+        def __init__(self):
+            self._s = {}
+
+        def blob(self, key):
+            return _Blob(self._s, key)
+
+        def list_blobs(self, prefix=""):
+            return [_Blob(self._s, k) for k in self._s if k.startswith(prefix)]
+
+    bucket = _Bucket()
+    monkeypatch.setattr("src.core.store._bucket", lambda: bucket, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_email(monkeypatch):
     """Safety net: clear email-sender credentials that .env's load_dotenv may
     have pulled into the environment, so no test ever sends a real email.

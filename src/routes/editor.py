@@ -81,7 +81,7 @@ def _promote_selected(book_id: str, asset_type: str, asset_key: str) -> None:
     """Copy the selected version's bytes onto the asset's live 'current' image
     (local + GCS) so every existing reader uses the picked version with no
     read-path changes. The keystone of 'pick a version -> it's the one used'."""
-    from src.core.db import get_selected_version
+    from src.core.store import get_selected_version
     from src.core import storage
     sel = get_selected_version(book_id, asset_type, asset_key)
     if not sel or not sel.get("storage_key"):
@@ -123,7 +123,7 @@ def _backfill_versions(book_id: str, asset_type: str, asset_key: str) -> None:
     after a Cloud Run redeploy wiped the local disk — are still listed and
     pickable. Registers the existing GCS objects by reference (no re-upload).
     No-op once records exist."""
-    from src.core.db import list_asset_versions, add_asset_version
+    from src.core.store import list_asset_versions, add_asset_version
     from src.core import storage
 
     if list_asset_versions(book_id, asset_type, asset_key)["versions"]:
@@ -161,7 +161,7 @@ async def select_asset_version(
     canonical character name / 'page_type:chapter'."""
     if asset_type not in ("page", "scene", "character", "special"):
         raise HTTPException(status_code=400, detail="Invalid asset type.")
-    from src.core.db import set_selected_version
+    from src.core.store import set_selected_version
     ok = await run_in_threadpool(
         set_selected_version, book_id, asset_type, asset_key, req.version_id
     )
@@ -178,7 +178,7 @@ async def list_asset_versions_endpoint(
     """All versions + the selected id for an asset (read-only, open)."""
     if asset_type not in ("page", "scene", "character", "special"):
         raise HTTPException(status_code=400, detail="Invalid asset type.")
-    from src.core.db import list_asset_versions
+    from src.core.store import list_asset_versions
     await run_in_threadpool(_backfill_versions, book_id, asset_type, asset_key)
     return await run_in_threadpool(list_asset_versions, book_id, asset_type, asset_key)
 
@@ -323,7 +323,7 @@ async def get_characters(book_id: str) -> dict[str, Any]:
     """
     chars: list = []
     try:
-        from src.core.db import get_characters as _get_chars_db
+        from src.core.store import get_characters as _get_chars_db
         chars = _get_chars_db(book_id)
     except Exception:
         chars = []
@@ -471,7 +471,7 @@ async def update_character(book_id: str, char_name: str, update: CharacterUpdate
         existing = {c.get("canonical_name") for c in (llm_chars or {}).get("characters", [])}
         if not existing:
             try:
-                from src.core.db import get_characters as _db_chars
+                from src.core.store import get_characters as _db_chars
                 existing = {c.get("canonical_name") for c in _db_chars(book_id)}
             except Exception:
                 existing = set()
@@ -480,16 +480,16 @@ async def update_character(book_id: str, char_name: str, update: CharacterUpdate
 
     if target is None:
         # llm_characters.json is missing or blanked (e.g. after a failed re-preprocess).
-        # The canonical `characters` collection still has the character — update it there.
+        # The store's characters.json still has the character — update it there.
         try:
-            from src.core.db import update_character as db_update_char, is_available
-            if is_available() and db_update_char(book_id, char_name, update_dict):
+            from src.core.store import update_character as store_update_char
+            if store_update_char(book_id, char_name, update_dict):
                 if renamed:
                     _cascade_character_rename(book_id, char_name, new_name)
                 return {"status": "updated", "character": new_name,
                         "updated_fields": list(update_dict.keys())}
         except Exception as e:
-            logger.warning("MongoDB character update failed for %s: %s", char_name, e)
+            logger.warning("Store character update failed for %s: %s", char_name, e)
         raise HTTPException(status_code=404, detail=f"Character '{char_name}' not found.")
 
     for key, value in update_dict.items():
@@ -514,33 +514,18 @@ async def update_character(book_id: str, char_name: str, update: CharacterUpdate
                 alias_map[alias] = char_name
         _save_json(book_id, "alias_map.json", alias_map)
 
-    # Sync to the `characters` collection — the consistency hub that
-    # load_characters (and thus all generation) reads FIRST. If Mongo is
-    # reachable but THIS write fails, the hub keeps the old data while the file
-    # + analysis have the new: a silent divergence that makes generation use a
-    # stale character. Surface it instead of reporting an unqualified success.
-    # (A fully-down Mongo is fine — load_characters falls back to the file.)
-    hub_reachable = False
-    hub_ok = False
+    # Sync to the store's characters.json — the consistency source that
+    # load_characters (and thus all generation) reads FIRST.
     try:
-        from src.core.db import update_character as db_update_char, is_available
-        hub_reachable = is_available()
-        if hub_reachable:
-            hub_ok = db_update_char(book_id, char_name, update_dict)
+        from src.core.store import update_character as store_update_char
+        store_update_char(book_id, char_name, update_dict)
     except Exception as e:
-        logger.warning("Characters-hub write failed for %s: %s", char_name, e)
+        logger.warning("Characters store write failed for %s: %s", char_name, e)
 
     if renamed:
         _cascade_character_rename(book_id, char_name, new_name)
 
-    result = {"status": "updated", "character": new_name, "updated_fields": list(update_dict.keys())}
-    if hub_reachable and not hub_ok:
-        result["degraded"] = True
-        result["warning"] = (
-            "Saved locally, but the MongoDB consistency hub did not confirm the write — "
-            "generation may use stale character data until you retry."
-        )
-    return result
+    return {"status": "updated", "character": new_name, "updated_fields": list(update_dict.keys())}
 
 
 @router.post("/api/book/{book_id}/preprocess/characters/{char_name}/autofill")
@@ -614,7 +599,7 @@ Return JSON:
         # update_character) — every reader prefers it, so skipping this made
         # autofill results vanish on refresh and sheet regens use the OLD look.
         try:
-            from src.core.db import update_character as db_update_char
+            from src.core.store import update_character as db_update_char
             db_update_char(book_id, char_name, update_dict)
         except Exception as e:
             logger.debug("MongoDB sync skipped for autofill %s: %s", char_name, e)
