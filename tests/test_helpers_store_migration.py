@@ -41,3 +41,11 @@ def test_load_json_ignores_prefetched(wired):
 def test_heal_if_local_fresher_removed():
     import src.routes.helpers as helpers
     assert not hasattr(helpers, "heal_if_local_fresher")
+
+
+def test_save_json_writes_store_and_local(wired):
+    helpers, store, tmp = wired
+    helpers._save_json("b1", "meta.json", {"title": "Both"})
+    assert store.load_preprocess_file("b1", "meta.json") == {"title": "Both"}
+    local = tmp / "b1" / "preprocess" / "meta.json"
+    assert json.loads(local.read_text(encoding="utf-8")) == {"title": "Both"}

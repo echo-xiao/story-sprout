@@ -299,15 +299,14 @@ def invalidate_chapter_consistency(book_id: str, ch_idx: int) -> None:
 
 
 def _save_json(book_id: str, filename: str, data: Any) -> None:
-    """Save preprocess data to MongoDB and local disk."""
-    # Save to MongoDB
+    """Persist a preprocess file to the GCS-JSON store (authority) and a local
+    GENERATED_DIR copy (same-invocation fast path for the generators / PDF)."""
+    from src.core import store
     try:
-        from src.core.db import save_preprocess_file
-        save_preprocess_file(book_id, filename, data)
+        store.save_preprocess_file(book_id, filename, data)
     except Exception as e:
-        logger.warning("MongoDB save failed for %s/%s: %s", book_id, filename, e)
+        logger.warning("store save failed for %s/%s: %s", book_id, filename, e)
 
-    # Also save to local disk as backup
     path = GENERATED_DIR / book_id / "preprocess" / filename
     lock = _get_lock(f"{book_id}/{filename}")
     with lock:
