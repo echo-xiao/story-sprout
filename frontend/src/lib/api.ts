@@ -6,18 +6,13 @@ const api = axios.create({
   timeout: 300000,
 });
 
-// BYOK: attach the visitor's own Gemini key to every request from
-// localStorage. Generation endpoints require it server-side (403 otherwise) and
-// bill it to the user's quota; read-only endpoints simply ignore it.
+// Single shared passcode: attach the visitor's access code (entered once at the
+// gate, stored locally) to every request. Generation endpoints require it
+// server-side (403 otherwise); read-only endpoints ignore it.
 api.interceptors.request.use((config) => {
   if (typeof window !== "undefined") {
-    const key = localStorage.getItem("pbg_api_key");
-    if (key) config.headers["X-Gemini-Key"] = key;
-    // Tenant isolation: identify the caller so the server can verify they own
-    // the book they're mutating (any write to /api/book/{id} is owner-gated).
-    // Same email the library filter uses, so the owner of a book always matches.
-    const email = localStorage.getItem("pbg_email");
-    if (email) config.headers["X-User-Email"] = email;
+    const code = localStorage.getItem("pbg_access_code");
+    if (code) config.headers["X-Access-Code"] = code;
   }
   return config;
 });
@@ -35,22 +30,15 @@ export async function startGeneration(
   return data;
 }
 
-export async function submitFeedback(message: string, email?: string, context?: string) {
-  const { data } = await api.post("/feedback", { message, email, context });
-  return data as { status: string };
+export async function listPreprocessedBooks() {
+  // Public product: everyone sees every book (no per-owner isolation).
+  const { data } = await api.get("/books/preprocessed");
+  return data;
 }
 
 export async function getConfig() {
   const { data } = await api.get("/config");
   return data as { require_user_key: boolean };
-}
-
-export async function listPreprocessedBooks() {
-  // Soft per-user isolation: the email the user created books with decides which
-  // are theirs; everyone also sees the public samples.
-  const email = typeof window !== "undefined" ? localStorage.getItem("pbg_email") || "" : "";
-  const { data } = await api.get("/books/preprocessed", { params: email ? { email } : {} });
-  return data;
 }
 
 export async function getPreprocessProgress(bookId: string) {
