@@ -164,20 +164,16 @@ def _load_json(book_id: str, filename: str, prefetched=None) -> dict | list | No
 
 
 def load_characters(book_id: str) -> list[dict]:
-    """Character profiles from the canonical `characters` collection.
-
-    The `characters` collection (the consistency hub, kept in sync via the
-    MongoDB MCP integration) is the single source of truth. The
-    preprocess_files / llm_characters.json store can be left blank by a failed
-    re-preprocess, so it is only a last-resort fallback — never the primary read.
-    """
+    """Character profiles — the GCS-JSON store's characters.json is the single
+    source of truth; the preprocess llm_characters.json is a last-resort
+    fallback (a failed re-preprocess can leave it blank, so never primary)."""
+    from src.core import store
     try:
-        from src.core.db import get_characters as _get_chars_db
-        chars = _get_chars_db(book_id)
+        chars = store.get_characters(book_id)
         if chars:
             return chars
     except Exception as e:
-        logger.debug("get_characters failed for %s: %s", book_id, e)
+        logger.debug("store.get_characters failed for %s: %s", book_id, e)
     data = _load_json(book_id, "llm_characters.json")
     return data.get("characters", []) if isinstance(data, dict) else []
 

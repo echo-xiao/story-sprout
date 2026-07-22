@@ -49,3 +49,18 @@ def test_save_json_writes_store_and_local(wired):
     assert store.load_preprocess_file("b1", "meta.json") == {"title": "Both"}
     local = tmp / "b1" / "preprocess" / "meta.json"
     assert json.loads(local.read_text(encoding="utf-8")) == {"title": "Both"}
+
+
+def test_load_characters_from_store(wired):
+    helpers, store, _ = wired
+    store.save_characters("b1", [{"canonical_name": "Jay"}])
+    assert helpers.load_characters("b1")[0]["canonical_name"] == "Jay"
+
+
+def test_load_characters_file_fallback(wired):
+    helpers, store, _ = wired
+    # No characters.json -> store.get_characters returns []; fall back to the
+    # llm_characters.json preprocess file (also served through the store here).
+    store.save_preprocess_file("b1", "llm_characters.json",
+                               {"characters": [{"canonical_name": "Nick"}]})
+    assert helpers.load_characters("b1")[0]["canonical_name"] == "Nick"
