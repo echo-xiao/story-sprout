@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from src.config import GENERATED_DIR
+from src.core import storage
 from src.core.provenance import TEXT_SOURCE_WRITER, is_user_edited
 from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
@@ -34,6 +35,9 @@ def _sheets_for(book_id: str, names: list[str]) -> list[dict]:
     for name in names:
         safe = _safe_filename(name)
         for ext in (".png", ".jpg"):
+            # Materialize the durable (GCS) sheet to /tmp before the local read
+            # — on a cold serverless invocation nothing is on local disk yet.
+            storage.localize(f"{book_id}/characters/{safe}_sheet{ext}")
             p = chars_dir / f"{safe}_sheet{ext}"
             if p.exists():
                 out.append({"character_name": name, "sheet_path": str(p)})
@@ -238,6 +242,9 @@ async def regenerate_segment_illustration(
             safe = _safe_filename(name)
             found = False
             for ext in (".png", ".jpg"):
+                # Pull the sheet from GCS to /tmp before the local read — on a
+                # cold serverless invocation the durable copy lives only in GCS.
+                storage.localize(f"{book_id}/characters/{safe}_sheet{ext}")
                 sheet_path = chars_dir / f"{safe}_sheet{ext}"
                 if sheet_path.exists():
                     character_sheets.append({

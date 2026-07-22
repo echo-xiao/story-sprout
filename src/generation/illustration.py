@@ -255,6 +255,8 @@ def _find_scene_sheet(book_id: str, scene_background: str) -> str | None:
     import json
     import re
 
+    from src.core import storage
+
     scenes_dir = GENERATED_DIR / book_id / "scenes"
     if not scenes_dir.exists():
         return None
@@ -282,6 +284,10 @@ def _find_scene_sheet(book_id: str, scene_background: str) -> str | None:
                 safe = re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
                 safe = re.sub(r'\s+', '_', safe.strip()).lower()[:50]
                 for ext in (".png", ".jpg"):
+                    # Pull the durable (GCS) scene sheet down to /tmp before the
+                    # local read - on a cold serverless invocation the local disk
+                    # is empty and the sheet lives only in GCS.
+                    storage.localize(f"{book_id}/scenes/{safe}_scene{ext}")
                     path = scenes_dir / f"{safe}_scene{ext}"
                     if path.exists():
                         return str(path)
