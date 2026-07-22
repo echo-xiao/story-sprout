@@ -36,11 +36,6 @@ export async function listPreprocessedBooks() {
   return data;
 }
 
-export async function getConfig() {
-  const { data } = await api.get("/config");
-  return data as { require_user_key: boolean };
-}
-
 export async function getPreprocessProgress(bookId: string) {
   const { data } = await api.get(`/book/${bookId}/preprocess/progress`);
   return data;

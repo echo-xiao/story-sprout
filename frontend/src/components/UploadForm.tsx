@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { startGeneration, getConfig, fetchBookFromUrl } from "@/lib/api";
+import { useState } from "react";
+import { startGeneration, fetchBookFromUrl } from "@/lib/api";
 
 interface Props {
   onStartGeneration: (bookId: string) => void;
@@ -10,22 +10,12 @@ interface Props {
 export function UploadForm({ onStartGeneration }: Props) {
   const [url, setUrl] = useState("");
   const [email, setEmail] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pbg_email") || "" : "");
-  const [apiKey, setApiKey] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pbg_api_key") || "" : "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // Whether the backend enforces BYOK (REQUIRE_USER_KEY). Off by default → key optional.
-  const [requireKey, setRequireKey] = useState(false);
-  useEffect(() => {
-    getConfig().then(c => setRequireKey(!!c.require_user_key)).catch(() => {});
-  }, []);
 
   const handleSubmit = async () => {
     setError("");
 
-    if (requireKey && !apiKey.trim()) {
-      setError("Please enter your Gemini API key (required to generate).");
-      return;
-    }
     if (!url.trim()) {
       setError("Please provide a URL.");
       return;
@@ -33,19 +23,10 @@ export function UploadForm({ onStartGeneration }: Props) {
 
     // Persist for convenience (only what was provided)
     if (email.trim()) localStorage.setItem("pbg_email", email.trim());
-    if (apiKey.trim()) {
-      localStorage.setItem("pbg_api_key", apiKey.trim());
-    } else {
-      // The user cleared the field — stop sending the previously-stored key
-      // (the request interceptor reads it from localStorage forever otherwise).
-      localStorage.removeItem("pbg_api_key");
-    }
 
     setLoading(true);
 
     try {
-      // The Gemini key reaches the backend via the X-Gemini-Key header (added
-      // by the api interceptor from localStorage) — the body field was ignored.
       const finalConfig = {
         email: email.trim(),
       };
@@ -97,28 +78,6 @@ export function UploadForm({ onStartGeneration }: Props) {
                            focus:outline-none focus:ring-2 focus:ring-coral/30 focus:border-coral
                            font-body text-gray-700 bg-cream/50"
               />
-            </div>
-            <div>
-              <label className="text-sm font-semibold text-gray-600 mb-1 block">
-                Gemini API Key
-              </label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="AIza..."
-                className="w-full p-3 border border-peach/50 rounded-xl
-                           focus:outline-none focus:ring-2 focus:ring-coral/30 focus:border-coral
-                           font-body text-gray-700 bg-cream/50"
-              />
-              <p className="text-xs text-gray-400 mt-1">
-                Create a key at{" "}
-                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-coral hover:underline">
-                  aistudio.google.com/apikey
-                </a>
-                {" "}— it must be from a project with <strong>billing enabled</strong> (paid tier).
-                Free-tier keys have zero image-model quota and cannot generate illustrations.
-              </p>
             </div>
           </div>
         </div>
