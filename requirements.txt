@@ -1,6 +1,5 @@
-# Gemini Agent — pipeline orchestrated with Google ADK (Agent Builder)
+# StorySprout — DeepSeek (text) + Gemini (images/QA) + GCS
 google-genai>=1.0.0
-google-cloud-aiplatform>=1.95.0
 google-cloud-storage>=2.16.0
 
 # Image handling
@@ -14,13 +13,6 @@ fastapi>=0.110.0
 uvicorn>=0.27.0
 python-multipart>=0.0.9
 pydantic>=2.6.0
-pymongo>=4.6.0
-pymongo[srv]>=4.6.0
-dnspython>=2.6.0
-motor>=3.3.0
-
-# MCP integration — client for MongoDB's official MCP server (partner integration)
-mcp>=1.0.0
 
 # Utilities
 python-dotenv>=1.0.0
