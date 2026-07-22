@@ -98,7 +98,7 @@ export function BookLibrary() {
               )}
             </div>
 
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <span className="text-xs bg-sage/30 text-gray-600 px-2 py-1 rounded-lg">
                 Editor
               </span>
@@ -108,6 +108,15 @@ export function BookLibrary() {
                   className="relative z-10 text-xs bg-coral text-white px-2 py-1 rounded-lg hover:bg-coral/80 transition-colors"
                 >
                   View Book
+                </a>
+              )}
+              {book.generated_chapters > 0 && (
+                <a
+                  href={`/api/book/${book.book_id}/pdf`}
+                  download
+                  className="relative z-10 text-xs bg-sky/70 text-gray-800 px-2 py-1 rounded-lg hover:bg-sky transition-colors"
+                >
+                  Download PDF
                 </a>
               )}
             </div>
