@@ -28,7 +28,7 @@ import {
 } from "@/lib/api";
 import type { Segment, ChapterInfo, CharacterInfo } from "@/types";
 import { setActionField, addAction, removeAction } from "@/lib/segment";
-import { generateOnePage, generatePagesSequential, type PageGenIO } from "@/lib/pageGen";
+import { generateOnePage, generatePagesSequential, type PageGenIO, type BatchResult } from "@/lib/pageGen";
 
 import IllustrationPanel from "@/components/editor/IllustrationPanel";
 import QualityCheckPanel from "@/components/editor/QualityCheckPanel";
@@ -231,16 +231,19 @@ export default function EditorPage() {
   // Generate every missing/stale page in one chapter, sequentially, streaming
   // each finished image in as it completes. Shared by the per-chapter "Gen"
   // button and "Gen All".
-  const runChapterGeneration = async (chIdx: number): Promise<void> => {
+  const runChapterGeneration = async (chIdx: number): Promise<BatchResult> => {
     const data = await getChapterSegments(bookId, chIdx).catch(() => null);
     const segs: Segment[] = data?.segments || [];
-    // Only fill pages with no illustration + ones flagged stale — re-running
-    // never re-burns money on pages that are already good.
+    // Fetch this chapter's stale pages authoritatively — the staleSegIds state is
+    // only populated for the currently-selected chapter, so Gen All must not rely
+    // on it (it would skip stale pages in every non-selected chapter).
+    const staleData = await getStalePages(bookId, chIdx).catch(() => null);
+    const staleIds = new Set<number>((staleData?.stale || []).map((s) => s.segment_id));
     const targets = segs
-      .filter((s) => !s.illustration_url || staleSegIds.has(s.id))
+      .filter((s) => !s.illustration_url || staleIds.has(s.id))
       .map((s) => s.id);
-    if (targets.length === 0) return;
-    await generatePagesSequential(
+    if (targets.length === 0) return { completed: 0, failed: [], cancelled: false };
+    const result = await generatePagesSequential(
       targets,
       makeIO(),
       {
@@ -253,6 +256,7 @@ export default function EditorPage() {
       },
     );
     if (selectedChapterRef.current === chIdx) refreshStale(chIdx);
+    return result;
   };
 
   // Per-chapter "Gen" button.
@@ -262,7 +266,10 @@ export default function EditorPage() {
     setGenRunning(true);
     setGenProgress({ done: 0, total: 0, segId: -1, chIdx });
     try {
-      await runChapterGeneration(chIdx);
+      const r = await runChapterGeneration(chIdx);
+      if (r.failed.length && !unmountedRef.current) {
+        alert(`${r.failed.length} page(s) failed to generate — check the red/gray dots and retry.`);
+      }
     } catch (e: any) {
       if (!unmountedRef.current) alert(`Generation failed: ${e?.response?.data?.detail || e?.message || e}`);
     } finally {
@@ -280,9 +287,14 @@ export default function EditorPage() {
     setGenRunning(true);
     const chapterIndices = Object.keys(chapters).map(Number).sort((a, b) => a - b);
     try {
+      let totalFailed = 0;
       for (const chIdx of chapterIndices) {
         if (genCancelRef.current || unmountedRef.current) break;
-        await runChapterGeneration(chIdx);
+        const r = await runChapterGeneration(chIdx);
+        totalFailed += r.failed.length;
+      }
+      if (totalFailed && !unmountedRef.current) {
+        alert(`${totalFailed} page(s) failed to generate — check the red/gray dots and retry.`);
       }
     } catch (e: any) {
       if (!unmountedRef.current) alert(`Generation failed: ${e?.response?.data?.detail || e?.message || e}`);
@@ -421,8 +433,7 @@ export default function EditorPage() {
     window.history.replaceState(null, "", `/editor/${bookId}?${params.toString()}`);
   }, [bookId, loading, activeTab, selectedChapter, selectedSegment?.id, selectedCharName, selectedSceneName]);
 
-  // Auto-generate simplified text if empty — only when editing is enabled, so a
-  // view-only / no-key visitor doesn't silently trigger paid LLM calls.
+  // Auto-generate simplified text if empty.
   // In-flight segment ids: switching A→B→A must not fire a second (paid) call
   // for A while the first is still running.
   const simplifyInFlight = useRef<Set<number>>(new Set());
