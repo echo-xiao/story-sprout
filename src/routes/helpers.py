@@ -138,76 +138,23 @@ def _get_lock(key: str) -> threading.Lock:
         return _file_locks[key]
 
 
-def heal_if_local_fresher(book_id: str, filename: str, mongo_updated: str | None):
-    """Freshness heal, shared by EVERY preprocess read (web + the chapter
-    subprocess) so MongoDB stays the single authority.
-
-    _save_json dual-writes Mongo + file best-effort; a Mongo write that fails
-    during a save leaves the doc stale but the file fresh. When the local file
-    is clearly newer than the Mongo doc, return its data AND repair the doc —
-    so the next Mongo-first read is already correct. Returns None when the doc
-    is current or there is no local file (caller keeps the Mongo value).
-    """
-    path = GENERATED_DIR / book_id / "preprocess" / filename
-    if not (mongo_updated and path.exists()):
-        return None
-    try:
-        from datetime import datetime
-        doc_ts = datetime.fromisoformat(mongo_updated).timestamp()
-        # 2s epsilon: a normal dual write lands in both stores within moments —
-        # only a clearly newer file indicates divergence.
-        if path.stat().st_mtime <= doc_ts + 2:
-            return None
-        file_data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.debug("Freshness check failed for %s/%s: %s", book_id, filename, e)
-        return None
-    try:
-        from src.core.db import save_preprocess_file
-        save_preprocess_file(book_id, filename, file_data)
-        logger.info("Healed stale Mongo doc %s/%s from newer local file", book_id, filename)
-    except Exception:
-        pass  # heal is best-effort; the fresh file still wins
-    return file_data
-
-
 def _load_json(book_id: str, filename: str, prefetched=None) -> dict | list | None:
-    """THE single accessor for a preprocess file — every reader (web routes AND
-    the chapter subprocess) goes through here, so the read strategy lives in one
-    place and can't drift into two.
+    """THE single accessor for a preprocess file. The GCS-JSON store is the
+    authority; a local file under GENERATED_DIR is a same-invocation fast path
+    and offline fallback.
 
-    Both stores are deliberately kept: the local file is fast same-machine IPC
-    for the subprocess / PDF / status polling, MongoDB is the persistent,
-    cross-instance authority. Mongo is authoritative; heal_if_local_fresher
-    repairs a doc left stale by a failed Mongo write so a Mongo-first read never
-    shadows a fresher file.
-
-    `prefetched` is an already-fetched copy of this doc from another transport to
-    the SAME Mongo (the MongoDB-MCP batch read the subprocess does for the
-    partner integration). It is a same-tier fallback used ONLY when the pymongo
-    read returns nothing — it never overrides Mongo's authority or the heal, so
-    folding it in here keeps it from being a second strategy.
+    `prefetched` is accepted for backward compatibility (the old MongoDB-MCP
+    batch-read path) and IGNORED — MCP is gone.
     """
-    path = GENERATED_DIR / book_id / "preprocess" / filename
-
-    mongo_data = None
-    mongo_updated: str | None = None
+    from src.core import store
     try:
-        from src.core.db import load_preprocess_file_with_meta
-        result = load_preprocess_file_with_meta(book_id, filename)
-        if result is not None:
-            mongo_data, mongo_updated = result
-    except Exception as e:
-        logger.debug("MongoDB load failed for %s/%s: %s", book_id, filename, e)
-
-    if mongo_data is not None:
-        healed = heal_if_local_fresher(book_id, filename, mongo_updated)
-        return healed if healed is not None else mongo_data
-
-    # Mongo had no doc (or was unreachable): prefer an already-fetched copy from
-    # the alternate same-Mongo transport, else the local file.
-    if prefetched is not None:
-        return prefetched
+        data = store.load_preprocess_file(book_id, filename)
+    except Exception as e:  # store unconfigured (no GCS) or transient — fall back
+        logger.debug("store load failed for %s/%s: %s", book_id, filename, e)
+        data = None
+    if data is not None:
+        return data
+    path = GENERATED_DIR / book_id / "preprocess" / filename
     if not path.exists():
         return None
     try:
