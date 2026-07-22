@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import Header, HTTPException
 
 from src.config import GENERATED_DIR
+from src.core import storage
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +186,7 @@ def load_character_profiles(book_id: str) -> list[dict]:
 
 
 def versioned_static_url(rel_path: str, fs_path) -> str:
-    """A /static URL with a cache-busting ``?v=<mtime>`` derived from the file.
+    """A storage URL with a cache-busting ``?v=<mtime>`` derived from the file.
 
     Page images are written in place at a STABLE path (page_001.png), so a
     redraw never changes the URL — the browser kept serving the cached bytes
@@ -193,12 +194,15 @@ def versioned_static_url(rel_path: str, fs_path) -> str:
     means the URL changes whenever the file does, so every consumer (editor,
     page list, PDF preview, thumbnails) re-fetches without per-component
     ``?v=counter`` hacks. Falls back to no version when the file is missing.
+
+    Returns a GCS public URL when ``GCS_BUCKET`` is set, or a ``/static/``
+    path for local development (storage.image_url handles the switch).
     """
     try:
         v = int(fs_path.stat().st_mtime)
     except OSError:
-        return f"/static/{rel_path}"
-    return f"/static/{rel_path}?v={v}"
+        return storage.image_url(rel_path)
+    return f"{storage.image_url(rel_path)}?v={v}"
 
 
 def segment_page_num(segments: list[dict], ch_idx: int, seg_id: int) -> int:

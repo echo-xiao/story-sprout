@@ -12,6 +12,7 @@ from pydantic import BaseModel
 import asyncio
 
 from src.config import GENERATED_DIR
+from src.core import storage
 from src.core.provenance import TEXT_SOURCE_USER, TEXT_SOURCE_WRITER
 from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
@@ -749,7 +750,7 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
         ck = f"{book_id}/special/{base}{ext}"
         if storage.exists(ck):
             entry: dict[str, Any] = {
-                "url": f"/static/{ck}",
+                "url": storage.image_url(ck),
                 "version": "current",
                 "timestamp": 0,
             }
@@ -771,7 +772,7 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
     hkeys.sort(key=lambda k: int(_ver(k)), reverse=True)
     for k in hkeys:
         images.append({
-            "url": f"/static/{k}",
+            "url": storage.image_url(k),
             "version": _ver(k),
             "timestamp": int(_ver(k)),
         })
@@ -978,7 +979,7 @@ async def get_scene_sheet_history(book_id: str, scene_name: str) -> dict[str, An
                 # and float(version) would 500 the whole endpoint.
                 continue
             images.append({
-                "url": f"/static/{book_id}/scenes/history/{f.name}",
+                "url": storage.image_url(f"{book_id}/scenes/history/{f.name}"),
                 "version": version,
                 "timestamp": float(version),
             })
@@ -1016,7 +1017,7 @@ async def get_character_sheet_history(book_id: str, char_name: str) -> dict[str,
                 # endpoint for any character that ever self-corrected.
                 continue
             images.append({
-                "url": f"/static/{book_id}/characters/history/{f.name}",
+                "url": storage.image_url(f"{book_id}/characters/history/{f.name}"),
                 "version": version,
                 "timestamp": float(version),
             })
@@ -1139,7 +1140,7 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
         ck = f"{pdir}/page_{page_num:03d}{ext}"
         if storage.exists(ck):
             entry: dict[str, Any] = {
-                "url": f"/static/{ck}",
+                "url": storage.image_url(ck),
                 "version": "current",
                 "timestamp": 0,
             }
@@ -1162,7 +1163,7 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
     hkeys.sort(key=lambda k: int(_ver(k)), reverse=True)
     for k in hkeys:
         images.append({
-            "url": f"/static/{k}",
+            "url": storage.image_url(k),
             "version": _ver(k),
             "timestamp": int(_ver(k)),
         })

@@ -91,7 +91,11 @@ async def _log_unhandled_exception(request: Request, exc: Exception):
     return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 # Serve generated images / assets — local first, fallback to GCS
-GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # Read-only filesystem (e.g. Vercel serverless) — GCS serves images directly.
+    pass
 
 
 @app.get("/static/{file_path:path}")
