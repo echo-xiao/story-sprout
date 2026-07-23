@@ -498,7 +498,6 @@ async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
                 all_chapters.append(data)
     except Exception as e:
         logger.warning("GCS chapter_data enumeration failed for %s: %s", book_id, e)
-        ch_idxs = []
 
     # Local fallback: dev mode or when GCS has no chapter_data keys yet.
     if not all_chapters and chapters_root.exists():
@@ -527,7 +526,7 @@ async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
         try:
             key = str(Path(image_path).relative_to(GENERATED_DIR))
             storage.localize(key)
-        except (ValueError, Exception):
+        except Exception:
             # Not under GENERATED_DIR, or localize failed — export_pdf handles
             # a missing image by rendering a text-only page; do not crash.
             pass
