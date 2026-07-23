@@ -56,6 +56,50 @@ def put_json(key: str, data: Any) -> None:
     )
 
 
+def _mutate_json(key: str, mutator, retries: int = 8):
+    """Atomically read-modify-write a JSON object under GCS optimistic
+    concurrency, so parallel mutations of a SHARED blob never lose updates.
+
+    Reads the object with its GCS generation, lets `mutator(obj)` edit it in
+    place (obj is {} when the object is absent), then writes with
+    `if_generation_match`. A concurrent write (PreconditionFailed / 412) means
+    our snapshot is stale — re-read and re-apply. Without this, two requests that
+    both read `assets.json` and write it back would clobber each other (the bug
+    where a freshly-recorded version vanished when the editor's page-load fired
+    many /versions writes at once). Returns whatever `mutator` returns.
+
+    Falls back to a plain read-modify-write for stores whose bucket has no
+    `get_blob` (some unit-test fakes) — those tests don't exercise concurrency.
+    """
+    from google.api_core.exceptions import PreconditionFailed
+
+    b = _bucket()
+    get_blob = getattr(b, "get_blob", None)
+    if get_blob is None:  # test fake without generation support
+        obj = get_json(key) or {}
+        result = mutator(obj)
+        put_json(key, obj)
+        return result
+
+    for _ in range(retries):
+        blob = get_blob(key)
+        if blob is None:
+            obj, generation = {}, 0  # if_generation_match=0 => create-only
+        else:
+            obj, generation = json.loads(blob.download_as_text()), blob.generation
+        result = mutator(obj)
+        try:
+            b.blob(key).upload_from_string(
+                json.dumps(obj, ensure_ascii=False),
+                content_type="application/json",
+                if_generation_match=generation,
+            )
+            return result
+        except PreconditionFailed:
+            continue  # someone else wrote between our read and write — retry
+    raise RuntimeError(f"assets write contention on {key} after {retries} tries")
+
+
 # ── list helper (overridable in tests) ─────────────────────────────────────
 def _list_keys(suffix: str = "") -> list[str]:
     return [b.name for b in _bucket().list_blobs() if b.name.endswith(suffix)]
@@ -141,41 +185,48 @@ def _rec_key(asset_type: str, asset_key: str) -> str:
 def add_asset_version(book_id: str, asset_type: str, asset_key: str, url: str,
                       image_hash: str | None = None,
                       storage_key: str | None = None) -> str:
-    assets = _load_assets(book_id)
     k = _rec_key(asset_type, asset_key)
-    rec = assets.get(k) or {"versions": [], "selected_version_id": None}
-    versions = rec["versions"]
+    out: dict[str, str] = {}
 
-    if image_hash:
-        for v in versions:
-            if v.get("hash") == image_hash:
-                rec["selected_version_id"] = v["id"]
-                assets[k] = rec
-                put_json(_assets_key(book_id), assets)
-                return v["id"]
+    def _mut(assets: dict) -> None:
+        rec = assets.get(k) or {"versions": [], "selected_version_id": None}
+        versions = rec["versions"]
+        if image_hash:
+            for v in versions:
+                if v.get("hash") == image_hash:
+                    rec["selected_version_id"] = v["id"]
+                    assets[k] = rec
+                    out["id"] = v["id"]
+                    return
+        vid = uuid.uuid4().hex[:12]
+        versions.append({"id": vid, "url": url, "hash": image_hash,
+                         "storage_key": storage_key,
+                         "created_at": datetime.now(timezone.utc).isoformat()})
+        if len(versions) > _MAX_ASSET_VERSIONS:
+            rec["versions"] = versions[-_MAX_ASSET_VERSIONS:]
+        rec["selected_version_id"] = vid
+        assets[k] = rec
+        out["id"] = vid
 
-    vid = uuid.uuid4().hex[:12]
-    versions.append({"id": vid, "url": url, "hash": image_hash,
-                     "storage_key": storage_key,
-                     "created_at": datetime.now(timezone.utc).isoformat()})
-    if len(versions) > _MAX_ASSET_VERSIONS:
-        rec["versions"] = versions[-_MAX_ASSET_VERSIONS:]
-    rec["selected_version_id"] = vid
-    assets[k] = rec
-    put_json(_assets_key(book_id), assets)
-    return vid
+    _mutate_json(_assets_key(book_id), _mut)
+    return out["id"]
 
 
 def set_selected_version(book_id: str, asset_type: str, asset_key: str,
                          version_id: str) -> bool:
-    assets = _load_assets(book_id)
-    rec = assets.get(_rec_key(asset_type, asset_key))
-    if not rec or not any(v["id"] == version_id for v in rec["versions"]):
-        return False
-    rec["selected_version_id"] = version_id
-    assets[_rec_key(asset_type, asset_key)] = rec
-    put_json(_assets_key(book_id), assets)
-    return True
+    k = _rec_key(asset_type, asset_key)
+    out: dict[str, bool] = {"ok": False}
+
+    def _mut(assets: dict) -> None:
+        rec = assets.get(k)
+        if not rec or not any(v["id"] == version_id for v in rec["versions"]):
+            return
+        rec["selected_version_id"] = version_id
+        assets[k] = rec
+        out["ok"] = True
+
+    _mutate_json(_assets_key(book_id), _mut)
+    return out["ok"]
 
 
 def get_selected_version(book_id: str, asset_type: str, asset_key: str) -> Optional[dict]:

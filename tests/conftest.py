@@ -48,12 +48,16 @@ def _fake_store_bucket(monkeypatch):
     Per-test fresh. Unit tests that inspect the bucket monkeypatch store._bucket
     themselves; that runs after this autouse fixture, so it wins."""
     class _Blob:
-        def __init__(self, s, k):
-            self._s, self._k = s, k
+        def __init__(self, s, gen, k):
+            self._s, self._gen, self._k = s, gen, k
 
         @property
         def name(self):
             return self._k
+
+        @property
+        def generation(self):
+            return self._gen.get(self._k, 0)
 
         def exists(self):
             return self._k in self._s
@@ -61,18 +65,32 @@ def _fake_store_bucket(monkeypatch):
         def download_as_text(self):
             return self._s[self._k]
 
-        def upload_from_string(self, data, content_type="application/json"):
+        def upload_from_string(self, data, content_type="application/json",
+                               if_generation_match=None):
+            # Optimistic-concurrency guard (mirrors GCS): reject a write whose
+            # expected generation no longer matches, so the store's retry loop
+            # re-reads and re-applies instead of losing a concurrent update.
+            if if_generation_match is not None:
+                cur = self._gen.get(self._k, 0)
+                if cur != if_generation_match:
+                    from google.api_core.exceptions import PreconditionFailed
+                    raise PreconditionFailed("generation mismatch")
             self._s[self._k] = data
+            self._gen[self._k] = self._gen.get(self._k, 0) + 1
 
     class _Bucket:
         def __init__(self):
             self._s = {}
+            self._gen = {}
 
         def blob(self, key):
-            return _Blob(self._s, key)
+            return _Blob(self._s, self._gen, key)
+
+        def get_blob(self, key):
+            return _Blob(self._s, self._gen, key) if key in self._s else None
 
         def list_blobs(self, prefix=""):
-            return [_Blob(self._s, k) for k in self._s if k.startswith(prefix)]
+            return [_Blob(self._s, self._gen, k) for k in self._s if k.startswith(prefix)]
 
     bucket = _Bucket()
     monkeypatch.setattr("src.core.store._bucket", lambda: bucket, raising=False)
