@@ -6,17 +6,6 @@ const api = axios.create({
   timeout: 300000,
 });
 
-// Single shared passcode: attach the visitor's access code (entered once at the
-// gate, stored locally) to every request. Generation endpoints require it
-// server-side (403 otherwise); read-only endpoints ignore it.
-api.interceptors.request.use((config) => {
-  if (typeof window !== "undefined") {
-    const code = localStorage.getItem("pbg_access_code");
-    if (code) config.headers["X-Access-Code"] = code;
-  }
-  return config;
-});
-
 export async function fetchBookFromUrl(url: string): Promise<{ text: string; title: string }> {
   const { data } = await api.post("/fetch-url", { url });
   return data;

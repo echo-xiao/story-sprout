@@ -15,7 +15,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from src.config import GENERATED_DIR, GCS_BUCKET
-from src.access_gate import AccessCodeMiddleware
 
 logger = logging.getLogger("picture_book")
 
@@ -73,11 +72,6 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(TimeoutMiddleware)
-
-
-# Access-code gate — the app's ONLY auth (see src/access_gate.py). A POST to a
-# generation endpoint must carry x-access-code == ACCESS_CODE, else 403.
-app.add_middleware(AccessCodeMiddleware)
 
 
 # Log any unhandled exception (with traceback) so failures are visible in Cloud

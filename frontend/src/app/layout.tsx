@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import AccessGate from "@/components/AccessGate";
 
 export const metadata: Metadata = {
   title: "StorySprout",
@@ -15,7 +14,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen">
-        <AccessGate>{children}</AccessGate>
+        {children}
       </body>
     </html>
   );

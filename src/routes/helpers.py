@@ -83,11 +83,11 @@ def _require_user_key(
     x_gemini_key: str | None = Header(default=None),
     x_admin_token: str | None = Header(default=None),
 ) -> str | None:
-    """No-op gate. The single shared-passcode AccessCodeMiddleware
-    (src/access_gate.py) is now the ONLY auth, so BYOK/admin gating is gone.
-    Kept as a FastAPI dependency purely so the ~17 endpoints wiring
-    Depends(_require_user_key) don't each need editing; it never blocks and never
-    injects a per-user key — all generation runs on the project backend."""
+    """No-op gate. The app has NO auth — the shared-passcode gate was removed,
+    so generation is open to anyone with the URL (all generation runs on the
+    project backend / its API keys). Kept as a FastAPI dependency purely so the
+    ~17 endpoints wiring Depends(_require_user_key) don't each need editing; it
+    never blocks and never injects a per-user key."""
     return None
 
 def write_json_atomic(path, data: Any) -> None:
