@@ -25,6 +25,42 @@ def _get_client() -> genai.Client:
     return _client
 
 
+def _diagnose_empty_image(response: object, save_path: Path) -> str:
+    """Best-effort one-line reason a Gemini response carried no image, so a
+    silent no-image 200 (the model returned text or was blocked) leaves a trace
+    instead of vanishing. Never raises."""
+    try:
+        bits: list[str] = []
+        pf = getattr(response, "prompt_feedback", None)
+        if pf is not None and getattr(pf, "block_reason", None):
+            bits.append(f"prompt_block={pf.block_reason}")
+        cands = getattr(response, "candidates", None) or []
+        if not cands:
+            bits.append("no_candidates")
+        else:
+            c0 = cands[0]
+            fr = getattr(c0, "finish_reason", None)
+            if fr:
+                bits.append(f"finish_reason={fr}")
+            content = getattr(c0, "content", None)
+            parts = getattr(content, "parts", None) or [] if content else []
+            kinds = []
+            for p in parts:
+                if getattr(p, "inline_data", None) is not None:
+                    kinds.append("image")
+                elif getattr(p, "text", None):
+                    kinds.append("text")
+                else:
+                    kinds.append("other")
+            bits.append(f"parts={kinds or 'none'}")
+            txt = next((getattr(p, "text", "") for p in parts if getattr(p, "text", None)), "")
+            if txt:
+                bits.append(f"text[:120]={txt[:120]!r}")
+        return ", ".join(bits) or "unknown"
+    except Exception as e:  # diagnostics must never mask the real failure
+        return f"diagnose-failed: {e}"
+
+
 def save_inline_image(response: object, save_path: Path) -> str:
     """Save the first inline image from a Gemini response.
 
@@ -34,6 +70,8 @@ def save_inline_image(response: object, save_path: Path) -> str:
     """
     candidates = getattr(response, "candidates", None)
     if not candidates:
+        logger.warning("save_inline_image: no image for %s — %s",
+                       save_path.name, _diagnose_empty_image(response, save_path))
         return ""
     for part in candidates[0].content.parts:
         if hasattr(part, "inline_data") and part.inline_data is not None:
@@ -65,6 +103,8 @@ def save_inline_image(response: object, save_path: Path) -> str:
             except Exception:
                 pass
             return str(final)
+    logger.warning("save_inline_image: no image for %s — %s",
+                   save_path.name, _diagnose_empty_image(response, save_path))
     return ""
 
 

@@ -167,7 +167,8 @@ def _safe_filename(name: str) -> str:
     return safe[:50] or "character"
 
 
-def _generate_portrait(client, profile: dict, output_dir: Path, style: str) -> str:
+def _generate_portrait(client, profile: dict, output_dir: Path, style: str,
+                       force: bool = False) -> str:
     """Generate a simple front-facing portrait (head + upper body).
 
     This is generated FIRST, then used as reference for the full character sheet.
@@ -177,11 +178,14 @@ def _generate_portrait(client, profile: dict, output_dir: Path, style: str) -> s
     safe_name = _safe_filename(name)
     portrait_path = output_dir / f"{safe_name}_portrait"
 
-    # Check if portrait already exists
-    for ext in (".png", ".jpg"):
-        if portrait_path.with_suffix(ext).exists():
-            logger.info("Portrait for '%s' already exists, skipping", name)
-            return str(portrait_path.with_suffix(ext))
+    # Reuse an existing portrait ONLY when not force-regenerating. On serverless,
+    # storage.localize re-materialises the current image into /tmp, so a
+    # user-initiated regen would otherwise "find" it and skip — reusing stale art.
+    if not force:
+        for ext in (".png", ".jpg"):
+            if portrait_path.with_suffix(ext).exists():
+                logger.info("Portrait for '%s' already exists, skipping", name)
+                return str(portrait_path.with_suffix(ext))
 
     gender = profile.get("gender", "unknown")
     visual_identity = profile.get("visual_identity", "")
@@ -244,6 +248,7 @@ def generate_character_sheets(
     style: str | None = None,
     max_characters: int = 0,
     correction_feedback: str = "",
+    force: bool = False,
 ) -> list[dict]:
     """Generate character portraits + reference sheets.
 
@@ -281,15 +286,16 @@ def generate_character_sheets(
         safe_name = _safe_filename(name)
 
         # Step 1: Generate portrait
-        portrait_path = _generate_portrait(client, profile, output_dir, active_style)
+        portrait_path = _generate_portrait(client, profile, output_dir, active_style, force=force)
 
         # Step 2: Generate full sheet (with portrait as reference)
         save_path = output_dir / f"{safe_name}_sheet"
         sheet_path = ""
 
-        # Check if sheet already exists — unless this is a quality-feedback
-        # retry, which must regenerate over the existing (failing) sheet.
-        if not correction_feedback:
+        # Reuse an existing sheet ONLY when neither force-regenerating nor
+        # running a quality-feedback retry (both must redraw over the existing
+        # sheet). force guards the serverless localize race (see _generate_portrait).
+        if not correction_feedback and not force:
             for ext in (".png", ".jpg"):
                 if save_path.with_suffix(ext).exists():
                     sheet_path = str(save_path.with_suffix(ext))

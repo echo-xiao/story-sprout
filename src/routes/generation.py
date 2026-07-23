@@ -1134,7 +1134,10 @@ async def regenerate_character_sheet(
                 break
 
         if profile:
-            await run_in_threadpool(generate_character_sheets, [profile], book_id)
+            # force=True: a user-initiated regen must ALWAYS redraw, never reuse a
+            # stale /tmp image that storage.localize left behind on a warm
+            # serverless instance (the "regen does nothing / no new version" bug).
+            await run_in_threadpool(generate_character_sheets, [profile], book_id, force=True)
 
             # Auto QA + bounded self-correction (shared sheet policy, lenient
             # threshold — only a truly broken sheet retries with the feedback).
