@@ -4,11 +4,12 @@ Tests the end-to-end interlocking of:
   1. Character coherence — selection/reference/_sheets_for/stale flip together
   2. Scene coherence — mirror of #1 via _find_scene_sheet + get_stale_pages
   3. QA travels with the version — per-version QA survives independently
-  4. History endpoint per-version QA — url-key lookup verification
+  4. History endpoint per-version QA — reads from selected version, not dead url-match
 """
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import src.core.store as store
@@ -207,28 +208,27 @@ def test_qa_travels_with_the_version():
 
 
 # ---------------------------------------------------------------------------
-# Test 4: History endpoint per-version QA — url-key lookup verification
+# Test 4: History endpoint per-version QA — reads from selected version
 # ---------------------------------------------------------------------------
 
 def test_history_endpoint_per_version_qa_attaches(monkeypatch, tmp_path):
     """Verify that the history endpoint (get_segment_illustration_history) attaches
-    per-version QA to carousel entries via the url-key lookup.
+    per-version QA to the CURRENT carousel entry from the selected version's stored
+    quality — NOT via the dead url-key lookup that could never match.
 
-    Strategy: register two page versions with URLs that exactly match what
-    storage.image_url() returns for the page's file key, set per-version quality
-    on each, then call the real endpoint and assert quality is present.
+    Real behavior after Fix 2:
+    - seed a page asset version, set it as selected, attach quality to it
+    - drive the /segment/{id}/history endpoint
+    - assert the 'current' entry carries that selected version's quality
 
-    The url-key lookup (_quality_by_url) maps v["url"] -> v["quality"].
-    The carousel entry url = storage.image_url(pdir + "/page_001.png").
-    For the lookup to succeed, the version URL must equal storage.image_url(storage_key).
-    Since GCS_BUCKET is "" (local mode), image_url(key) = f"/static/{key}".
-    We seed the version with url = /static/{ck} matching the current page key.
+    Historical entries do NOT carry per-version QA (accepted limitation:
+    history/ carousel files don't correspond to version records).
     """
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
 
-    b = "coh_hist"
+    b = "coh_hist2"
     ch_idx = 0
     page_num = 1
     asset_key = f"ch{ch_idx:02d}:p{page_num:03d}"
@@ -244,38 +244,24 @@ def test_history_endpoint_per_version_qa_attaches(monkeypatch, tmp_path):
         }]
     })
 
-    # The current page file key (what the endpoint checks for existence)
+    # Write the current page image file so storage.exists(current_ck) is True
     pdir = f"{b}/chapters/ch{ch_idx:02d}/pages"
     current_ck = f"{pdir}/page_{page_num:03d}.png"
-
-    # Write the current page image file so storage.exists(current_ck) is True
     page_file = tmp_path / current_ck
     page_file.parent.mkdir(parents=True, exist_ok=True)
     page_file.write_bytes(b"CURRENT-PAGE")
 
-    # The URL the endpoint will compute for the current page
-    current_url = storage.image_url(current_ck)  # "/static/{b}/chapters/ch00/pages/page_001.png"
+    # Seed a version record for this page and set it as selected with quality.
+    # The version URL is a content-addressed key (different from the page file URL)
+    # to confirm the fix doesn't rely on url matching.
+    content_addressed_url = "/static/fake/pages/page_001_abcdef123456.png"
+    vid = store.add_asset_version(b, "page", asset_key, content_addressed_url,
+                                  image_hash="abcdef123456" + "0" * 52,
+                                  storage_key="fake/pages/page_001_abcdef123456.png")
+    store.set_version_quality(b, "page", asset_key, vid, {"overall_score": 91})
+    # Explicitly set as selected (it should already be, but make it explicit)
+    store.set_selected_version(b, "page", asset_key, vid)
 
-    # Also seed a history image
-    hdir = f"{b}/chapters/ch{ch_idx:02d}/history"
-    hist_ts = "9999999999"
-    hist_ck = f"{hdir}/page_{page_num:03d}_{hist_ts}.png"
-    hist_file = tmp_path / hist_ck
-    hist_file.parent.mkdir(parents=True, exist_ok=True)
-    hist_file.write_bytes(b"HISTORY-PAGE")
-    hist_url = storage.image_url(hist_ck)
-
-    # Register both as versions with URLs matching what the endpoint will compute
-    v1 = store.add_asset_version(b, "page", asset_key, hist_url,
-                                 image_hash="histhash1", storage_key=hist_ck)
-    store.set_version_quality(b, "page", asset_key, v1, {"overall_score": 72})
-
-    v2 = store.add_asset_version(b, "page", asset_key, current_url,
-                                 image_hash="currhash2", storage_key=current_ck)
-    store.set_version_quality(b, "page", asset_key, v2, {"overall_score": 91})
-
-    # Patch _load_json for the endpoint (analysis.json already in store, but
-    # helpers._load_json falls through to store.load_preprocess_file which works)
     from src.app import app
     from fastapi.testclient import TestClient
     client = TestClient(app, raise_server_exceptions=True)
@@ -286,33 +272,107 @@ def test_history_endpoint_per_version_qa_attaches(monkeypatch, tmp_path):
     images = data["images"]
     assert len(images) >= 1, f"Expected at least one image in carousel; got {images}"
 
-    # Find the current image entry
+    # The current entry must carry QA from the selected version's stored quality.
     current_entries = [img for img in images if img.get("version") == "current"]
     assert len(current_entries) == 1, f"Expected exactly one 'current' entry; got {images}"
     current_entry = current_entries[0]
 
-    # The url-key lookup: current_url must be in _quality_by_url (built from version records)
     assert "quality" in current_entry, (
         f"Per-version QA did NOT attach to current carousel entry.\n"
-        f"current_url={current_url!r}\n"
-        f"Version records: {store.list_asset_versions(b, 'page', asset_key)['versions']}\n"
+        f"Selected version: {store.get_selected_version(b, 'page', asset_key)}\n"
         f"Entry: {current_entry}\n"
-        "BUG: The url-key lookup in get_segment_illustration_history misses because "
-        "the version URL (content-addressed storage key) differs from the page file URL."
+        "BUG: get_segment_illustration_history should read QA from selected version."
     )
     assert current_entry["quality"]["overall_score"] == 91, (
-        f"Expected score 91 for current entry; got {current_entry.get('quality')}"
+        f"Expected score 91 from selected version; got {current_entry.get('quality')}"
     )
 
-    # Historical image entries should also carry QA
-    hist_entries = [img for img in images if img.get("version") == hist_ts]
-    assert len(hist_entries) == 1, f"Expected history entry with version={hist_ts}; got {images}"
-    hist_entry = hist_entries[0]
-    assert "quality" in hist_entry, (
-        f"Per-version QA did NOT attach to history carousel entry.\n"
-        f"hist_url={hist_url!r}\n"
-        f"Entry: {hist_entry}"
+
+# ---------------------------------------------------------------------------
+# Test 5: Character regen attaches QA to its recorded version
+# ---------------------------------------------------------------------------
+
+def test_character_regen_attaches_qa_to_version(monkeypatch, tmp_path):
+    """After character regen, the recorded version must carry the QA score.
+
+    Mirrors test_character_regen_records_version.py's endpoint+background-task
+    pattern but additionally stubs _run_character_sheet_quality to return a real
+    QA dict, then asserts the recorded version carries quality.overall_score == 84.
+    This closes Fix 1's coverage: the regen path previously discarded the QA return.
+    """
+    monkeypatch.setattr("src.routes.generation.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GCS_BUCKET", "")
+
+    book_id = "coh_char_qa"
+    char_name = "Silver Fox"
+    safe_name = "Silver_Fox"
+
+    chars_dir = tmp_path / book_id / "characters"
+    chars_dir.mkdir(parents=True)
+
+    characters = [{
+        "canonical_name": char_name,
+        "role": "protagonist",
+        "gender": "female",
+        "appearance": "silver fur",
+        "description": "elegant fox",
+        "visual_details": {},
+    }]
+    (tmp_path / book_id / "characters.json").write_text(
+        json.dumps(characters), encoding="utf-8"
     )
-    assert hist_entry["quality"]["overall_score"] == 72, (
-        f"Expected score 72 for history entry; got {hist_entry.get('quality')}"
+
+    def _fake_generate_character_sheets(profiles, book_id, **kwargs):
+        sheet_path = chars_dir / f"{safe_name}_sheet.png"
+        sheet_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return [{"sheet_path": str(sheet_path)}]
+
+    monkeypatch.setattr(
+        "src.generation.character_sheet.generate_character_sheets",
+        _fake_generate_character_sheets,
+    )
+
+    # Stub _run_character_sheet_quality to return a real QA result (score 84).
+    monkeypatch.setattr(
+        "src.routes.generation._run_character_sheet_quality",
+        lambda *a, **kw: {"overall_score": 84, "checks": []},
+    )
+
+    monkeypatch.setattr("src.routes.helpers.load_characters", lambda book_id: characters)
+
+    import src.gemini_backend as gb
+    monkeypatch.setattr(gb, "set_user_api_key", lambda key: None)
+    monkeypatch.setattr(gb, "reset_user_api_key", lambda token: None)
+    monkeypatch.setattr(gb, "set_gen_error_box", lambda box: None)
+    monkeypatch.setattr(gb, "reset_gen_error_box", lambda token: None)
+    monkeypatch.setattr(gb, "friendly_gen_error", lambda box: "")
+
+    import src.routes.generation as gen_mod
+    from src.routes.helpers import _active_regens
+    from fastapi import BackgroundTasks
+
+    _active_regens.discard((book_id, "character", char_name))
+
+    bt = BackgroundTasks()
+    asyncio.run(
+        gen_mod.regenerate_character_sheet(
+            book_id=book_id,
+            char_name=char_name,
+            background_tasks=bt,
+            user_key="",
+        )
+    )
+    asyncio.run(bt())
+
+    # Verify the recorded version carries the QA score.
+    versions = store.list_asset_versions(book_id, "character", char_name)["versions"]
+    assert len(versions) >= 1, "Expected at least one version recorded after regen"
+    last_ver = versions[-1]
+    assert "quality" in last_ver, (
+        f"Version must carry QA after character regen; got version={last_ver}\n"
+        "BUG: _regen_inner discarded the _run_character_sheet_quality return value."
+    )
+    assert last_ver["quality"]["overall_score"] == 84, (
+        f"Expected quality.overall_score == 84; got {last_ver.get('quality')}"
     )

@@ -773,17 +773,19 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
     if not base:
         raise HTTPException(status_code=400, detail=f"Unknown special page type '{page_type}'.")
     from src.core import storage
-    from src.core.store import list_asset_versions
     special_dir = GENERATED_DIR / book_id / "special"
     images: list[dict] = []
 
-    # Build a url -> quality map from the immutable version store so each
-    # carousel entry can carry its own per-version QA (survives regens/switches).
+    # Per-version QA for the CURRENT/selected entry: read from the selected version's
+    # stored quality. The old url-key lookup (_quality_by_url) was dead — the version
+    # URL is content-addressed (.../specials/{key}_{hash}.png) while the carousel's
+    # current url is the page file (.../special/{base}.png) — they NEVER match.
+    # Historical carousel entries (history/ files) don't correspond to version records
+    # either — no per-version QA there; accepted limitation.
     asset_key = f"{page_type}:{chapter}"
-    _ver_records = list_asset_versions(book_id, "special", asset_key)["versions"]
-    _quality_by_url: dict[str, dict] = {
-        v["url"]: v["quality"] for v in _ver_records if v.get("quality") and v.get("url")
-    }
+    from src.core.store import get_selected_version
+    _sel_ver = get_selected_version(book_id, "special", asset_key)
+    _sel_quality: dict | None = _sel_ver.get("quality") if _sel_ver else None
 
     # Current — from DURABLE storage (GCS) so it survives a redeploy that wiped
     # the local disk (the bug that made history "vanish").
@@ -796,9 +798,9 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
                 "version": "current",
                 "timestamp": 0,
             }
-            # Per-version QA first; fall back to the legacy per-page quality file.
-            if current_url in _quality_by_url:
-                entry["quality"] = _quality_by_url[current_url]
+            # Per-version QA from selected version; fall back to legacy per-page quality file.
+            if _sel_quality is not None:
+                entry["quality"] = _sel_quality
             else:
                 rel_q = f"{book_id}/special/quality/{base}_quality.json"
                 q = _load_quality(rel_q)
@@ -821,8 +823,7 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
             "version": _ver(k),
             "timestamp": int(_ver(k)),
         }
-        if hist_url in _quality_by_url:
-            hist_entry["quality"] = _quality_by_url[hist_url]
+        # Historical carousel entries don't correspond to version records — no per-version QA.
         images.append(hist_entry)
     return {"images": images}
 
@@ -1106,19 +1107,21 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
     # Versions from DURABLE storage (GCS) so they survive a redeploy that wiped
     # the local disk (the bug that made history "vanish").
     from src.core import storage
-    from src.core.store import list_asset_versions
     images = []
     ch_dir = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
     pdir = f"{book_id}/chapters/ch{ch_idx:02d}/pages"
     hdir = f"{book_id}/chapters/ch{ch_idx:02d}/history"
 
-    # Build a url -> version-record map from the immutable version store so each
-    # carousel entry can carry its own per-version QA (survives regens/switches).
+    # Per-version QA for the CURRENT/selected entry: read from the selected version's
+    # stored quality. The old url-key lookup (_quality_by_url) was dead — the version
+    # URL is content-addressed (.../pages/{key}_{hash}.png) while the carousel's
+    # current-page URL is the page file (.../chapters/chNN/pages/page_NNN.png) and
+    # they can NEVER match. Historical carousel entries (the history/-prefix files)
+    # don't correspond to version records either — no per-version QA there; accepted.
     asset_key = f"ch{ch_idx:02d}:p{page_num:03d}"
-    _ver_records = list_asset_versions(book_id, "page", asset_key)["versions"]
-    _quality_by_url: dict[str, dict] = {
-        v["url"]: v["quality"] for v in _ver_records if v.get("quality") and v.get("url")
-    }
+    from src.core.store import get_selected_version
+    _sel_ver = get_selected_version(book_id, "page", asset_key)
+    _sel_quality: dict | None = _sel_ver.get("quality") if _sel_ver else None
 
     # Current image + quality
     for ext in (".png", ".jpg"):
@@ -1130,9 +1133,9 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
                 "version": "current",
                 "timestamp": 0,
             }
-            # Per-version QA first; fall back to the legacy per-page quality file.
-            if current_url in _quality_by_url:
-                entry["quality"] = _quality_by_url[current_url]
+            # Per-version QA from selected version; fall back to legacy per-page quality file.
+            if _sel_quality is not None:
+                entry["quality"] = _sel_quality
             else:
                 rel_q = f"{book_id}/chapters/ch{ch_idx:02d}/quality/page_{page_num:03d}_quality.json"
                 q = _load_quality(rel_q)
@@ -1141,7 +1144,8 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
             images.append(entry)
             break
 
-    # Historical images — attach per-version QA when available.
+    # Historical images — no per-version QA (history carousel files don't correspond
+    # to version records; accepted limitation of the separate carousel system).
     def _ver(k: str) -> str:
         return k.rsplit("/", 1)[-1].rsplit(".", 1)[0].split("_")[-1]
     hkeys = [
@@ -1156,8 +1160,6 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
             "version": _ver(k),
             "timestamp": int(_ver(k)),
         }
-        if hist_url in _quality_by_url:
-            hist_entry["quality"] = _quality_by_url[hist_url]
         images.append(hist_entry)
 
     return {"images": images}

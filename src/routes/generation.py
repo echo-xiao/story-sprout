@@ -160,12 +160,12 @@ async def get_stale_pages(book_id: str, ch_idx: int) -> dict[str, Any]:
         reasons = []
         for name, recorded_vid in (refs.get("characters") or {}).items():
             if not recorded_vid:
-                continue
+                continue  # a ref with no version at gen time is never stale (avoids false red); it won't turn red on a later change — accepted edge.
             if _selected_id("character", name) != recorded_vid:
                 reasons.append({"type": "character", "name": name})
         for name, recorded_vid in (refs.get("scenes") or {}).items():
             if not recorded_vid:
-                continue
+                continue  # a ref with no version at gen time is never stale (avoids false red); it won't turn red on a later change — accepted edge.
             if _selected_id("scene", name) != recorded_vid:
                 reasons.append({"type": "scene", "name": name})
 
@@ -433,7 +433,7 @@ async def regenerate_segment_illustration(
                 for nm in [_ln] + [str(a) for a in _loc.get("aliases", [])]
             ):
                 _scene_refs[_ln] = (_store.get_selected_version(book_id, "scene", _ln) or {}).get("id")
-                break
+                break  # records one scene, 1:1 with _find_scene_sheet's first-match behavior.
         _refs = {"characters": _char_refs, "scenes": _scene_refs}
         for ext in (".png", ".jpg"):
             img = ch_dir / f"page_{page_num:03d}{ext}"
@@ -870,6 +870,7 @@ async def regenerate_special_page(
                     if _sp.exists():
                         try:
                             from src.core.storage import record_image_version
+                            # No QA on this path — special page regen skips quality-check intentionally.
                             record_image_version(
                                 book_id, "special", f"{page_type}:{chapter}",
                                 _sp.read_bytes(),
@@ -1059,6 +1060,7 @@ async def regenerate_scene_sheet(
                 logger.info("Scene sheet saved: %s", final)
                 try:
                     from src.core.storage import record_image_version
+                    # No QA on this path — scene regen skips quality-check intentionally.
                     record_image_version(
                         book_id, "scene", scene_name, Path(final).read_bytes(),
                         content_type="image/png" if final.endswith(".png") else "image/jpeg",
@@ -1201,8 +1203,9 @@ async def regenerate_character_sheet(
                 )
                 return (sheets[0].get("sheet_path", "") if sheets else "") or ""
 
+            _char_qa_result = None
             try:
-                await run_in_threadpool(
+                _char_qa_result = await run_in_threadpool(
                     _run_character_sheet_quality, book_id, char_name, _sheet_regen_fn,
                 )
             except Exception as e:
@@ -1210,16 +1213,26 @@ async def regenerate_character_sheet(
 
             # Durable storage: register the final post-QA sheet as a pickable
             # version (spec §11.2 rule 2 — mirrors the page regen path).
+            # Attach the QA result to the version so it survives regens/switches.
             for _ext in (".png", ".jpg"):
                 _sheet = chars_dir / f"{safe}_sheet{_ext}"
                 if _sheet.exists():
                     try:
                         from src.core.storage import record_image_version
-                        record_image_version(
+                        _char_vid = record_image_version(
                             book_id, "character", char_name,
                             _sheet.read_bytes(),
                             content_type="image/png" if _ext == ".png" else "image/jpeg",
                         )
+                        if _char_qa_result and _char_qa_result.get("overall_score") is not None:
+                            try:
+                                from src.core import store as _cstore
+                                _cstore.set_version_quality(
+                                    book_id, "character", char_name,
+                                    _char_vid, _char_qa_result,
+                                )
+                            except Exception as _qe:
+                                logger.warning("character version QA attach failed: %s", _qe)
                     except Exception as _e:
                         logger.warning("character sheet version record failed: %s", _e)
                     break
