@@ -275,6 +275,9 @@ def _find_scene_sheet(book_id: str, scene_background: str) -> str | None:
 
         for n in all_names:
             if n.lower() in bg_lower:
+                sel = storage.selected_version_image(book_id, "scene", name)
+                if sel:
+                    return sel
                 safe = re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
                 safe = re.sub(r'\s+', '_', safe.strip()).lower()[:50]
                 for ext in (".png", ".jpg"):
