@@ -5,7 +5,9 @@ it to verify if the characters match. If not, returns specific feedback
 about what's wrong (e.g., "missing glasses", "wrong hair color").
 """
 
+import json as _json
 import logging
+import re
 from pathlib import Path
 
 from google import genai
@@ -14,6 +16,51 @@ from src.config import GEMINI_MODEL
 from src.generation.image_utils import _get_client, _load_image_part
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_quality_json(raw: str) -> dict:
+    """Tolerantly parse a Gemini model reply that should contain a JSON object.
+
+    Handles common model misbehaviours:
+    1. Markdown fences — ```json ... ``` or ``` ... ```.
+    2. Prose surrounding the JSON (extracts the first balanced ``{...}`` block).
+    3. Trailing commas before ``}`` / ``]`` (the "Expecting ',' delimiter" class).
+    4. Any remaining parse failure → returns ``{"overall_score": None, "parse_error": ...}``.
+
+    Never raises.
+    """
+    try:
+        text = raw or ""
+
+        # 1. Strip markdown fences.
+        text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text.strip())
+
+        # 2. Extract the first balanced {...} block.
+        start = text.find("{")
+        if start != -1:
+            depth = 0
+            end = start
+            for i, ch in enumerate(text[start:], start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+            text = text[start : end + 1]
+
+        # 3. Remove trailing commas before } or ].
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+
+        # 4. Parse.
+        return _json.loads(text)
+
+    except Exception as exc:
+        short = str(exc)[:120]
+        logger.debug("_parse_quality_json failed: %s", short)
+        return {"overall_score": None, "parse_error": short}
 
 
 def check_page_quality(
@@ -122,7 +169,6 @@ Return JSON:
 }}"""})
 
     try:
-        import json as _json
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=parts,
@@ -130,7 +176,7 @@ Return JSON:
                 response_mime_type="application/json",
             ),
         )
-        result = _normalize_page_quality(_json.loads(response.text))
+        result = _normalize_page_quality(_parse_quality_json(response.text))
 
         logger.info(
             "Page %d quality check: overall=%s, char=%s, spell=%s, dup=%s, name=%s, count=%s",
@@ -256,7 +302,6 @@ Return JSON:
 }}"""})
 
     try:
-        import json as _json
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=parts,
@@ -264,7 +309,7 @@ Return JSON:
                 response_mime_type="application/json",
             ),
         )
-        result = _json.loads(response.text)
+        result = _parse_quality_json(response.text)
         result["character_name"] = character_name
         # Recompute overall from the dimensions — never trust the LLM headline
         # (it routinely passes a sheet whose appearance_match is 20).
