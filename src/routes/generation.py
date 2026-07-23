@@ -29,10 +29,18 @@ router = APIRouter()
 def _sheets_for(book_id: str, names: list[str]) -> list[dict]:
     """Reference-sheet entries for the named characters (exact filename match).
     The one sheet-lookup used by story pages AND special pages — keeps the two
-    flows referencing characters identically."""
+    flows referencing characters identically.
+
+    Prefers the selected immutable version (content-addressed, cross-page
+    consistent) over the current mutable file; falls back to the current file
+    when no version has been selected yet."""
     chars_dir = GENERATED_DIR / book_id / "characters"
     out: list[dict] = []
     for name in names:
+        sel = storage.selected_version_image(book_id, "character", name)
+        if sel:
+            out.append({"character_name": name, "sheet_path": sel})
+            continue
         safe = _safe_filename(name)
         for ext in (".png", ".jpg"):
             # Materialize the durable (GCS) sheet to /tmp before the local read
@@ -239,6 +247,10 @@ async def regenerate_segment_illustration(
         by_canonical = {c.get("canonical_name"): c for c in load_characters(book_id)}
 
         for name in target.get("characters_in_scene", []):
+            sel = storage.selected_version_image(book_id, "character", name)
+            if sel:
+                character_sheets.append({"character_name": name, "sheet_path": sel})
+                continue
             safe = _safe_filename(name)
             found = False
             for ext in (".png", ".jpg"):
