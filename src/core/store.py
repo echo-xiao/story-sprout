@@ -194,7 +194,8 @@ def add_asset_version(book_id: str, asset_type: str, asset_key: str, url: str,
         if image_hash:
             for v in versions:
                 if v.get("hash") == image_hash:
-                    rec["selected_version_id"] = v["id"]
+                    if not rec.get("user_selected"):
+                        rec["selected_version_id"] = v["id"]
                     assets[k] = rec
                     out["id"] = v["id"]
                     return
@@ -204,7 +205,8 @@ def add_asset_version(book_id: str, asset_type: str, asset_key: str, url: str,
                          "created_at": datetime.now(timezone.utc).isoformat()})
         if len(versions) > _MAX_ASSET_VERSIONS:
             rec["versions"] = versions[-_MAX_ASSET_VERSIONS:]
-        rec["selected_version_id"] = vid
+        if not rec.get("user_selected"):
+            rec["selected_version_id"] = vid
         assets[k] = rec
         out["id"] = vid
 
@@ -222,6 +224,7 @@ def set_selected_version(book_id: str, asset_type: str, asset_key: str,
         if not rec or not any(v["id"] == version_id for v in rec["versions"]):
             return
         rec["selected_version_id"] = version_id
+        rec["user_selected"] = True
         assets[k] = rec
         out["ok"] = True
 
