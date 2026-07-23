@@ -43,6 +43,7 @@ def book(monkeypatch, tmp_path):
     monkeypatch.setattr("src.routes.editor._load_json", load)
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
 
     img = tmp_path / "somebook" / "chapters" / "ch00" / "pages" / "page_001.png"
     img.parent.mkdir(parents=True)

@@ -714,17 +714,18 @@ def _page_counts(book_id: str) -> tuple[int, int]:
     """(generated_chapters, total_pages) from disk. A chapter only counts as
     generated when it actually contains at least one page image — a bare chXX
     dir (e.g. from a crashed run) used to count."""
-    chapters_dir = GENERATED_DIR / book_id / "chapters"
-    generated_chapters = 0
-    total_pages = 0
-    if chapters_dir.exists():
-        for ch_dir in chapters_dir.iterdir():
-            if ch_dir.is_dir() and ch_dir.name.startswith("ch"):
-                pages_dir = ch_dir / "pages"
-                n_pages = len(list(pages_dir.glob("page_*.*"))) if pages_dir.exists() else 0
-                if n_pages > 0:
-                    generated_chapters += 1
-                    total_pages += n_pages
+    from src.core import storage
+    # Count durable page images from GCS, not this instance's ephemeral /tmp
+    # (empty on a cold serverless instance → the Library showed 0 pages).
+    by_chapter: dict[str, int] = {}
+    for key in storage.list_keys(f"{book_id}/chapters/"):
+        parts = key.split("/")
+        # {book_id}/chapters/chXX/pages/page_NNN.ext
+        if len(parts) >= 5 and parts[-2] == "pages" \
+                and parts[-1].startswith("page_") and parts[-1].endswith((".png", ".jpg")):
+            by_chapter[parts[-3]] = by_chapter.get(parts[-3], 0) + 1
+    generated_chapters = sum(1 for n in by_chapter.values() if n > 0)
+    total_pages = sum(by_chapter.values())
     return generated_chapters, total_pages
 
 

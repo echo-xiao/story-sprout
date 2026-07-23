@@ -156,6 +156,26 @@ def exists(key: str) -> bool:
     return (GENERATED_DIR / key).exists()
 
 
+def list_keys(prefix: str) -> list[str]:
+    """List durable object keys under `prefix` RECURSIVELY, with the SAME
+    semantics in GCS and local mode. Unlike list_prefix (which treats the last
+    path component as a filename stem in local mode), this returns every
+    key/file whose path starts with `prefix` — the right primitive for asking
+    "which page/sheet/cover images exist under this directory" on serverless,
+    where the local /tmp is empty but the durable copy lives in GCS."""
+    b = _bucket()
+    if b is not None:
+        try:
+            return [blob.name for blob in b.list_blobs(prefix=prefix)]
+        except Exception as e:
+            logger.warning("GCS list_keys failed for %s: %s", prefix, e)
+            return []
+    root = GENERATED_DIR / prefix
+    if not root.exists():
+        return []
+    return [str(p.relative_to(GENERATED_DIR)) for p in root.rglob("*") if p.is_file()]
+
+
 def list_prefix(prefix: str) -> list[str]:
     """List stored image keys under `prefix`. Reads GCS when configured (so it
     works after a Cloud Run redeploy wiped the local disk — the durable copy is

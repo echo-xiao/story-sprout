@@ -80,6 +80,7 @@ def test_editor_segments_route_uses_canonical_page_numbers(client, monkeypatch, 
 
     monkeypatch.setattr("src.routes.editor._load_json", fake_load)
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
     pages_dir = tmp_path / "somebook" / "chapters" / "ch00" / "pages"
     pages_dir.mkdir(parents=True)
     (pages_dir / "page_002.png").write_bytes(b"png")
@@ -101,6 +102,7 @@ def test_editor_segments_route_contiguous_ids(client, monkeypatch, tmp_path):
 
     monkeypatch.setattr("src.routes.editor._load_json", fake_load)
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
     pages_dir = tmp_path / "somebook" / "chapters" / "ch00" / "pages"
     pages_dir.mkdir(parents=True)
     (pages_dir / "page_001.png").write_bytes(b"png")

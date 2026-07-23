@@ -339,19 +339,27 @@ async def get_characters(book_id: str) -> dict[str, Any]:
     chars_dir = GENERATED_DIR / book_id / "characters"
     sheets = {}
     portraits = {}
-    if chars_dir.exists():
-        sheet_files = {f.stem.replace("_sheet", ""): f for f in chars_dir.glob("*_sheet.*")}
-        portrait_files = {f.stem.replace("_portrait", ""): f for f in chars_dir.glob("*_portrait.*")}
-        for char in chars:
-            name = char.get("canonical_name", "")
-            safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
-            safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
-            if safe in sheet_files:
-                sheets[name] = versioned_static_url(
-                    f"{book_id}/characters/{sheet_files[safe].name}", sheet_files[safe])
-            if safe in portrait_files:
-                portraits[name] = versioned_static_url(
-                    f"{book_id}/characters/{portrait_files[safe].name}", portrait_files[safe])
+    # Durable existence from GCS, not this instance's /tmp (which is empty on a
+    # cold serverless instance \u2014 sheets would vanish on refresh otherwise).
+    sheet_files: dict[str, str] = {}    # safe_name -> gcs key
+    portrait_files: dict[str, str] = {}
+    for key in storage.list_keys(f"{book_id}/characters/"):
+        fname = key.rsplit("/", 1)[-1]
+        stem = fname.rsplit(".", 1)[0]
+        if stem.endswith("_sheet"):
+            sheet_files[stem[:-len("_sheet")]] = key
+        elif stem.endswith("_portrait"):
+            portrait_files[stem[:-len("_portrait")]] = key
+    for char in chars:
+        name = char.get("canonical_name", "")
+        safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
+        safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
+        if safe in sheet_files:
+            sheets[name] = versioned_static_url(
+                sheet_files[safe], chars_dir / sheet_files[safe].rsplit("/", 1)[-1])
+        if safe in portrait_files:
+            portraits[name] = versioned_static_url(
+                portrait_files[safe], chars_dir / portrait_files[safe].rsplit("/", 1)[-1])
 
     return {
         "characters": chars,
@@ -1039,16 +1047,21 @@ async def get_chapter_segments(book_id: str, ch_idx: int) -> dict[str, Any]:
     # shared helper — the previous `id - min(ids) + 1` formula diverged from
     # the regen/quality endpoints as soon as chapter ids had a gap.
     ch_dir = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
+    # Existence MUST come from GCS (the durable store), not this instance's
+    # ephemeral /tmp — on serverless a generated illustration lives in GCS but
+    # the local /tmp is empty on the next (cold) instance, so a local .exists()
+    # made the page look un-generated after a refresh.
+    pages_prefix = f"{book_id}/chapters/ch{ch_idx:02d}/pages/"
+    page_keys = set(storage.list_keys(pages_prefix))
     for seg in ch_segments:
         page_num = segment_page_num(segments, ch_idx, seg.get("id", 0))
         for ext in (".png", ".jpg"):
-            img_path = ch_dir / "pages" / f"page_{page_num:03d}{ext}"
-            if img_path.exists():
-                # ?v=<mtime>: a redraw overwrites the file in place at the same
-                # path, so without a version token the editor kept showing the
-                # cached old image and "Gen chapter" looked like a no-op.
+            key = f"{pages_prefix}page_{page_num:03d}{ext}"
+            if key in page_keys:
+                # versioned_static_url adds ?v=<mtime> when a local copy exists
+                # (fresh redraw, same instance), else the bare durable GCS URL.
                 seg["illustration_url"] = versioned_static_url(
-                    f"{book_id}/chapters/ch{ch_idx:02d}/pages/{img_path.name}", img_path)
+                    key, ch_dir / "pages" / f"page_{page_num:03d}{ext}")
                 break
 
     # Chapter info
