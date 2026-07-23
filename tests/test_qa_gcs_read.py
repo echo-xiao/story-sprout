@@ -143,3 +143,41 @@ def test_segment_history_reads_quality_from_gcs(seg_history_book):
     assert current is not None
     assert "quality" in current, "quality must be attached from GCS store"
     assert current["quality"]["overall_score"] == 77
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: _load_quality must not propagate GCS errors to the carousel
+# ---------------------------------------------------------------------------
+
+def test_load_quality_gcs_error_falls_through_to_local_file(tmp_path, monkeypatch):
+    """When store.get_json raises (transient GCS blip), _load_quality must NOT
+    propagate the exception — it must fall through to the local file fallback
+    and return the local data."""
+    import src.core.store as _s
+
+    # Make store.get_json raise unconditionally (simulates GCS down)
+    monkeypatch.setattr(_s, "get_json", lambda key: (_ for _ in ()).throw(RuntimeError("GCS timeout")))
+    monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+
+    rel_key = "book1/chapters/ch00/quality/page_001_quality.json"
+    local = tmp_path / rel_key
+    local.parent.mkdir(parents=True)
+    local.write_text(json.dumps({"overall_score": 61}), encoding="utf-8")
+
+    # Must NOT raise; must return local file data
+    result = _load_quality(rel_key)
+    assert result is not None
+    assert result["overall_score"] == 61
+
+
+def test_load_quality_gcs_error_returns_none_when_no_local(tmp_path, monkeypatch):
+    """When store.get_json raises AND there is no local file, _load_quality must
+    return None — never propagate the exception."""
+    import src.core.store as _s
+
+    monkeypatch.setattr(_s, "get_json", lambda key: (_ for _ in ()).throw(RuntimeError("GCS down")))
+    monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+
+    # No local file
+    result = _load_quality("book1/chapters/ch00/quality/missing.json")
+    assert result is None

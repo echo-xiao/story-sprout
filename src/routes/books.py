@@ -531,6 +531,15 @@ async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
             # a missing image by rendering a text-only page; do not crash.
             pass
 
+    # Localize special/cover images (book_cover, chapter_NN_cover, back_cover)
+    # so export_pdf's os.path.exists() checks find them on a cold serverless instance.
+    for k in storage.list_keys(f"{book_id}/special/"):
+        if k.endswith((".png", ".jpg")):
+            try:
+                storage.localize(k)
+            except Exception as e:
+                logger.warning("special image localize failed for %s: %s", k, e)
+
     title = (_load_json(book_id, "meta.json") or {}).get("title", book_id)
     special_dir = str(book_dir / "special")
 

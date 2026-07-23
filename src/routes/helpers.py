@@ -263,6 +263,7 @@ def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
         if text is not None:
             entry["text"] = text
         write_json_atomic(path, data)
+        # SOLE GCS sync point for chapter_data — any future bulk chapter generator MUST also write here or the serverless PDF/viewer will miss it.
         try:
             from src.core import store
             store.put_json(f"{book_id}/chapters/ch{ch_idx:02d}/chapter_data.json", data)

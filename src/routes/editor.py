@@ -35,9 +35,12 @@ def _load_quality(rel_key: str) -> dict | None:
     Returns the parsed dict or None if neither source has it.
     """
     from src.core import store
-    data = store.get_json(rel_key)
-    if data is not None:
-        return data
+    try:
+        data = store.get_json(rel_key)
+        if data is not None:
+            return data
+    except Exception as e:
+        logger.warning("QA GCS read failed for %s: %s", rel_key, e)
     p = GENERATED_DIR / rel_key
     try:
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None

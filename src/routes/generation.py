@@ -549,6 +549,11 @@ async def check_segment_quality(
     quality_dir.mkdir(parents=True, exist_ok=True)
     quality_file = quality_dir / f"page_{page_num:03d}_quality.json"
     quality_file.write_text(json.dumps(result, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    try:
+        from src.core import store
+        store.put_json(str(quality_file.relative_to(GENERATED_DIR)), result)
+    except Exception as e:
+        logger.warning("QA result GCS persist failed for %s: %s", quality_file, e)
 
     return result
 
@@ -899,6 +904,11 @@ async def check_special_page_quality(
 
     quality_dir = special_dir / "quality"
     write_json_atomic(quality_dir / f"{base}_quality.json", result)
+    try:
+        from src.core import store
+        store.put_json(str((quality_dir / f"{base}_quality.json").relative_to(GENERATED_DIR)), result)
+    except Exception as e:
+        logger.warning("QA result GCS persist failed for %s: %s", quality_dir / f"{base}_quality.json", e)
     return result
 
 

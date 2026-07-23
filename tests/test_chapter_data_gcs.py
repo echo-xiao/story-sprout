@@ -350,3 +350,84 @@ class TestLocalizePageImagesBeforePdf:
 
         resp = client.get("/api/book/failbook/pdf")
         assert resp.status_code == 200, "localize failure must not crash the PDF build"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: localize special/cover images before building the PDF
+# ---------------------------------------------------------------------------
+
+class TestLocalizeSpecialImagesBeforePdf:
+    """Special images (book_cover, chapter dividers, back_cover) in GCS must be
+    localized before export_pdf so export_pdf's os.path.exists() finds them."""
+
+    @pytest.fixture()
+    def setup(self, monkeypatch, tmp_path):
+        bucket = _FakeBucket()
+        monkeypatch.setattr(_store, "_bucket", lambda: bucket)
+        monkeypatch.setattr(_storage, "GCS_BUCKET", "fake-bucket", raising=False)
+        monkeypatch.setattr(_storage, "GENERATED_DIR", tmp_path)
+        monkeypatch.setattr(_books, "GENERATED_DIR", tmp_path)
+        monkeypatch.setattr(_books, "_load_json", lambda bid, fn: {"title": "CoverBook"})
+        return bucket, tmp_path
+
+    def test_localize_called_for_special_image(self, setup, monkeypatch, client):
+        """storage.localize must be invoked for a special image key seeded in GCS."""
+        bucket, tmp_path = setup
+
+        # Seed one chapter_data page (required for PDF build to proceed)
+        bucket._s["coverbook/chapters/ch00/chapter_data.json"] = json.dumps({
+            "chapter_idx": 0,
+            "pages": [{"page_number": 1, "image_path": "", "text": "page"}],
+        })
+        # Seed a special cover image key in GCS
+        special_image_key = "coverbook/special/book_cover.png"
+        bucket._s[special_image_key] = b"COVER_BYTES"
+
+        def _list_keys(prefix):
+            return [k for k in bucket._s if k.startswith(prefix)]
+
+        monkeypatch.setattr(_storage, "list_keys", _list_keys)
+
+        localized_keys = []
+
+        def _fake_localize(key):
+            localized_keys.append(key)
+            return None
+
+        monkeypatch.setattr(_storage, "localize", _fake_localize)
+
+        def _fake_export(pages, title, out_path, special_dir=""):
+            Path(out_path).write_bytes(b"%PDF-1.4 fake")
+
+        monkeypatch.setattr("src.renderer.pdf_export.export_pdf", _fake_export)
+
+        resp = client.get("/api/book/coverbook/pdf")
+        assert resp.status_code == 200
+        assert special_image_key in localized_keys, (
+            f"localize must be called for special image '{special_image_key}'; got {localized_keys}"
+        )
+
+    def test_special_image_localize_failure_does_not_crash_pdf(self, setup, monkeypatch, client):
+        """A localize failure for a special image must NOT raise — PDF still builds."""
+        bucket, tmp_path = setup
+
+        bucket._s["coverbook2/chapters/ch00/chapter_data.json"] = json.dumps({
+            "chapter_idx": 0,
+            "pages": [{"page_number": 1, "image_path": "", "text": "page"}],
+        })
+        bucket._s["coverbook2/special/book_cover.png"] = b"COVER"
+
+        def _list_keys(prefix):
+            return [k for k in bucket._s if k.startswith(prefix)]
+
+        monkeypatch.setattr(_storage, "list_keys", _list_keys)
+        monkeypatch.setattr(_storage, "localize",
+                            lambda key: (_ for _ in ()).throw(RuntimeError("GCS miss")))
+
+        def _fake_export(pages, title, out_path, special_dir=""):
+            Path(out_path).write_bytes(b"%PDF-1.4 fake")
+
+        monkeypatch.setattr("src.renderer.pdf_export.export_pdf", _fake_export)
+
+        resp = client.get("/api/book/coverbook2/pdf")
+        assert resp.status_code == 200, "special image localize failure must not crash PDF build"
