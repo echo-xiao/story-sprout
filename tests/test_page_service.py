@@ -12,8 +12,9 @@ import json
 
 import pytest
 
+import src.core.store as _store
 import src.generation.gemini_consistency_check as gcc
-from src.generation.page_service import qa_and_self_correct
+from src.generation.page_service import qa_and_self_correct, sheet_qa_and_self_correct
 
 
 @pytest.fixture()
@@ -155,3 +156,147 @@ def test_self_correct_disabled_never_regenerates(setup):
     run(setup, regenerate_fn=lambda fb: pytest.fail("must not regenerate"),
         self_correct=False)
     assert setup["img"].read_bytes() == b"OLD"
+
+
+# ---------------------------------------------------------------------------
+# GCS dual-write tests (Task 1)
+# ---------------------------------------------------------------------------
+
+def _make_fake_bucket():
+    """Return a fresh in-memory bucket + the backing dict (so tests can inspect it)."""
+    backing: dict = {}
+
+    class _Blob:
+        def __init__(self, key):
+            self._key = key
+
+        def exists(self):
+            return self._key in backing
+
+        def download_as_text(self):
+            return backing[self._key]
+
+        def upload_from_string(self, data, content_type="application/json"):
+            backing[self._key] = data
+
+    class _Bucket:
+        def blob(self, key):
+            return _Blob(key)
+
+    return _Bucket(), backing
+
+
+@pytest.fixture()
+def gcs_setup(tmp_path, monkeypatch):
+    """Like ``setup`` but quality_path is UNDER config.GENERATED_DIR (= tmp_path)
+    so relative_to(GENERATED_DIR) succeeds and we can assert the store write."""
+    import src.config as _cfg
+    monkeypatch.setattr(_cfg, "GENERATED_DIR", tmp_path)
+
+    bucket, store_backing = _make_fake_bucket()
+    monkeypatch.setattr(_store, "_bucket", lambda: bucket)
+
+    pages = tmp_path / "book1" / "chapters" / "ch00" / "pages"
+    pages.mkdir(parents=True)
+    img = pages / "page_001.png"
+    img.write_bytes(b"PIXEL")
+
+    quality_path = tmp_path / "book1" / "chapters" / "ch00" / "quality" / "page_001_quality.json"
+
+    state = {
+        "img": img,
+        "history": tmp_path / "book1" / "chapters" / "ch00" / "history",
+        "quality": quality_path,
+        "qa_results": [],
+        "qa_calls": 0,
+        "store_backing": store_backing,
+    }
+
+    def fake_qa(path, sheets, text, chars, page_num):
+        result = state["qa_results"][state["qa_calls"]]
+        state["qa_calls"] += 1
+        return dict(result)
+
+    monkeypatch.setattr(gcc, "check_page_quality", fake_qa)
+    return state
+
+
+def run_gcs(state, regenerate_fn=None, **kwargs):
+    return qa_and_self_correct(
+        image_path=str(state["img"]),
+        character_sheets=[],
+        expected_text="text",
+        expected_characters=[],
+        page_num=1,
+        seg_id=1,
+        history_dir=state["history"],
+        quality_path=state["quality"],
+        regenerate_fn=regenerate_fn or (lambda fb: ""),
+        **kwargs,
+    )
+
+
+def test_page_qa_writes_to_gcs(gcs_setup):
+    """A passing QA result should be dual-written to the GCS store."""
+    gcs_setup["qa_results"] = [{"overall_score": 85, "regeneration_feedback": "ok"}]
+    run_gcs(gcs_setup)
+
+    expected_key = "book1/chapters/ch00/quality/page_001_quality.json"
+    assert expected_key in gcs_setup["store_backing"], "QA JSON was not written to GCS store"
+    stored = json.loads(gcs_setup["store_backing"][expected_key])
+    assert stored["overall_score"] == 85
+
+
+def test_page_qa_no_gcs_write_when_score_is_none(gcs_setup):
+    """A failed QA call (overall_score None) must NOT write to GCS (no stale data)."""
+    gcs_setup["qa_results"] = [{"overall_score": None, "qa_failed": True}]
+    run_gcs(gcs_setup)
+
+    assert not gcs_setup["store_backing"], "Failed QA must not be persisted to GCS"
+
+
+def test_sheet_qa_writes_to_gcs(tmp_path, monkeypatch):
+    """sheet_qa_and_self_correct dual-writes to GCS when overall_score is set."""
+    import src.config as _cfg
+    import src.generation.gemini_consistency_check as qc
+
+    monkeypatch.setattr(_cfg, "GENERATED_DIR", tmp_path)
+    bucket, store_backing = _make_fake_bucket()
+    monkeypatch.setattr(_store, "_bucket", lambda: bucket)
+
+    monkeypatch.setattr(qc, "check_character_sheet_quality",
+                        lambda *a, **kw: {"overall_score": 72})
+
+    sheet_path = tmp_path / "book1" / "characters" / "alice_sheet.png"
+    sheet_path.parent.mkdir(parents=True)
+    sheet_path.write_bytes(b"SHEET")
+
+    quality_path = tmp_path / "book1" / "characters" / "quality" / "alice_quality.json"
+
+    sheet_qa_and_self_correct(
+        sheet_path=str(sheet_path),
+        char_name="Alice",
+        appearance="blue dress",
+        visual_details={},
+        gender="female",
+        role="protagonist",
+        history_dir=tmp_path / "book1" / "characters" / "history",
+        quality_path=quality_path,
+        regenerate_fn=None,
+    )
+
+    expected_key = "book1/characters/quality/alice_quality.json"
+    assert expected_key in store_backing, "Sheet QA JSON was not written to GCS store"
+    stored = json.loads(store_backing[expected_key])
+    assert stored["overall_score"] == 72
+
+
+def test_gcs_persist_graceful_on_value_error(setup, monkeypatch):
+    """quality_path outside GENERATED_DIR logs a warning but never raises."""
+    # setup uses tmp_path (not under GENERATED_DIR) — relative_to raises ValueError.
+    # The except clause should swallow it.
+    setup["qa_results"] = [{"overall_score": 60, "regeneration_feedback": "ok"}]
+    result = run(setup)
+    # The local file must still be written even when GCS persist fails silently.
+    assert written_quality(setup)["overall_score"] == 60
+    assert result["overall_score"] == 60

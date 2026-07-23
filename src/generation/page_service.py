@@ -12,9 +12,12 @@ own retry loop.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 # Single source of truth for the self-correction policy.
 SELF_CORRECT_THRESHOLD = 50
@@ -107,6 +110,13 @@ def qa_and_self_correct(
         quality_path.write_text(
             json.dumps(result, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
         )
+        try:
+            from src.config import GENERATED_DIR
+            from src.core import store
+            rel = str(quality_path.relative_to(GENERATED_DIR))
+            store.put_json(rel, result)
+        except Exception as e:
+            logger.warning("QA result GCS persist failed for %s: %s", quality_path, e)
     return result
 
 
@@ -177,4 +187,11 @@ def sheet_qa_and_self_correct(
         quality_path.write_text(
             json.dumps(result, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
         )
+        try:
+            from src.config import GENERATED_DIR
+            from src.core import store
+            rel = str(quality_path.relative_to(GENERATED_DIR))
+            store.put_json(rel, result)
+        except Exception as e:
+            logger.warning("QA result GCS persist failed for %s: %s", quality_path, e)
     return result

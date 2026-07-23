@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+def _load_quality(rel_key: str) -> dict | None:
+    """GCS-first quality-JSON loader with local-file fallback.
+
+    `rel_key` is the GENERATED_DIR-relative path to the quality file
+    (e.g. "<book_id>/chapters/ch00/quality/page_001_quality.json").
+    Returns the parsed dict or None if neither source has it.
+    """
+    from src.core import store
+    data = store.get_json(rel_key)
+    if data is not None:
+        return data
+    p = GENERATED_DIR / rel_key
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+    except (OSError, ValueError):
+        return None
+
 # Per-book lock so concurrent edits serialize their analysis.json read-modify-write
 # instead of clobbering each other (last-writer-wins lost updates).
 _analysis_locks: dict[str, asyncio.Lock] = {}
@@ -764,12 +782,10 @@ async def get_special_page_history(book_id: str, page_type: str, chapter: int = 
                 "version": "current",
                 "timestamp": 0,
             }
-            qf = special_dir / "quality" / f"{base}_quality.json"
-            if qf.exists():
-                try:
-                    entry["quality"] = json.loads(qf.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    pass
+            rel_q = f"{book_id}/special/quality/{base}_quality.json"
+            q = _load_quality(rel_q)
+            if q is not None:
+                entry["quality"] = q
             images.append(entry)
             break
 
@@ -1159,12 +1175,10 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
                 "version": "current",
                 "timestamp": 0,
             }
-            qf = ch_dir / "quality" / f"page_{page_num:03d}_quality.json"
-            if qf.exists():
-                try:
-                    entry["quality"] = json.loads(qf.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    pass
+            rel_q = f"{book_id}/chapters/ch{ch_idx:02d}/quality/page_{page_num:03d}_quality.json"
+            q = _load_quality(rel_q)
+            if q is not None:
+                entry["quality"] = q
             images.append(entry)
             break
 
