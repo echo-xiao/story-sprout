@@ -1141,6 +1141,22 @@ async def regenerate_character_sheet(
             except Exception as e:
                 logger.warning("Auto quality-check failed for %s: %s", char_name, e)
 
+            # Durable storage: register the final post-QA sheet as a pickable
+            # version (spec §11.2 rule 2 — mirrors the page regen path).
+            for _ext in (".png", ".jpg"):
+                _sheet = chars_dir / f"{safe}_sheet{_ext}"
+                if _sheet.exists():
+                    try:
+                        from src.core.storage import record_image_version
+                        record_image_version(
+                            book_id, "character", char_name,
+                            _sheet.read_bytes(),
+                            content_type="image/png" if _ext == ".png" else "image/jpeg",
+                        )
+                    except Exception as _e:
+                        logger.warning("character sheet version record failed: %s", _e)
+                    break
+
     async def _regen():
         from src.gemini_backend import (
             friendly_gen_error, reset_gen_error_box, set_gen_error_box,
