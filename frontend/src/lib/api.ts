@@ -125,11 +125,6 @@ export async function getLocations(bookId: string) {
   return data as { locations: any[]; scene_sheets: Record<string, string> };
 }
 
-export async function getCharacterSheetHistory(bookId: string, charName: string) {
-  const { data } = await api.get(`/book/${bookId}/preprocess/characters/${encodeURIComponent(charName)}/history`);
-  return data as { images: Array<{ url: string; version: string; timestamp: number }> };
-}
-
 export async function updateCharacter(
   bookId: string,
   charName: string,
@@ -198,11 +193,6 @@ export async function regenerateCharacterSheet(bookId: string, charName: string)
 export async function autofillCharacterDetails(bookId: string, charName: string) {
   const { data } = await api.post(`/book/${bookId}/preprocess/characters/${encodeURIComponent(charName)}/autofill`);
   return data as { appearance: string; visual_details: Record<string, string> };
-}
-
-export async function getSceneSheetHistory(bookId: string, sceneName: string) {
-  const { data } = await api.get(`/book/${bookId}/preprocess/scenes/${encodeURIComponent(sceneName)}/history`);
-  return data as { images: Array<{ url: string; version: string; timestamp: number }> };
 }
 
 export type SpecialPageData = {

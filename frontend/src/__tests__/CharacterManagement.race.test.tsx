@@ -15,7 +15,6 @@ import CharacterManagement from "@/components/editor/CharacterManagement";
 import {
   autofillCharacterDetails,
   checkCharacterSheetQuality,
-  getCharacterSheetHistory,
   getCharacters,
 } from "@/lib/api";
 
@@ -23,7 +22,6 @@ vi.mock("@/lib/api", () => ({
   updateCharacter: vi.fn(),
   regenerateCharacterSheet: vi.fn(),
   getCharacters: vi.fn(),
-  getCharacterSheetHistory: vi.fn(),
   autofillCharacterDetails: vi.fn(),
   checkCharacterSheetQuality: vi.fn(),
   getRegenActive: vi.fn(),
@@ -35,7 +33,6 @@ vi.mock("@/lib/api", () => ({
 
 const mockAutofill = vi.mocked(autofillCharacterDetails);
 const mockQuality = vi.mocked(checkCharacterSheetQuality);
-const mockHistory = vi.mocked(getCharacterSheetHistory);
 const mockGetCharacters = vi.mocked(getCharacters);
 
 function deferred<T>() {
@@ -67,7 +64,6 @@ async function renderPanel() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockHistory.mockResolvedValue({ images: [] });
   mockGetCharacters.mockResolvedValue({ characters: CHARS, sheets: SHEETS });
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
