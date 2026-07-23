@@ -78,6 +78,7 @@ def test_special_cover_url_is_versioned(monkeypatch, tmp_path):
     from src.routes import editor
 
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
     special = tmp_path / "somebook" / "special"
     special.mkdir(parents=True)
     cover = special / "book_cover.png"

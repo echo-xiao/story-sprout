@@ -655,11 +655,13 @@ def load_special_records(book_id: str) -> dict[str, dict]:
 def _special_image_url(book_id: str, base: str) -> str | None:
     special_dir = GENERATED_DIR / book_id / "special"
     for ext in (".png", ".jpg"):
-        p = special_dir / f"{base}{ext}"
-        if p.exists():
-            # Covers are overwritten in place at a stable path — version the URL
-            # by mtime so a re-gen actually refreshes (same fix as page images).
-            return versioned_static_url(f"{book_id}/special/{p.name}", p)
+        key = f"{book_id}/special/{base}{ext}"
+        # Existence from GCS (durable), not this instance's /tmp — empty on a
+        # cold serverless instance, which made covers vanish on refresh.
+        if storage.exists(key):
+            # Covers overwrite in place at a stable path — version by mtime when a
+            # local copy exists (fresh re-gen), else the bare durable GCS URL.
+            return versioned_static_url(key, special_dir / f"{base}{ext}")
     return None
 
 
@@ -861,18 +863,18 @@ async def get_locations(book_id: str) -> dict[str, Any]:
     # Find scene reference images
     scenes_dir = GENERATED_DIR / book_id / "scenes"
     scene_sheets = {}
-    if scenes_dir.exists():
-        import re as _re
-        for loc in locations:
-            name = loc.get("name", "")
-            safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
-            safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
-            for ext in (".png", ".jpg"):
-                scene_file = scenes_dir / f"{safe}_scene{ext}"
-                if scene_file.exists():
-                    scene_sheets[name] = versioned_static_url(
-                        f"{book_id}/scenes/{scene_file.name}", scene_file)
-                    break
+    # Existence from GCS (durable), not this instance's /tmp.
+    scene_keys = set(storage.list_keys(f"{book_id}/scenes/"))
+    import re as _re
+    for loc in locations:
+        name = loc.get("name", "")
+        safe = _re.sub(r'[^\w\s\u4e00-\u9fff-]', '', name)
+        safe = _re.sub(r'\s+', '_', safe.strip()).lower()[:50]
+        for ext in (".png", ".jpg"):
+            key = f"{book_id}/scenes/{safe}_scene{ext}"
+            if key in scene_keys:
+                scene_sheets[name] = versioned_static_url(key, scenes_dir / f"{safe}_scene{ext}")
+                break
 
     return {"locations": locations, "scene_sheets": scene_sheets}
 
