@@ -221,6 +221,18 @@ def record_image_version(book_id: str, asset_type: str, asset_key: str,
     return url
 
 
+def selected_version_image(book_id: str, asset_type: str, asset_key: str) -> str | None:
+    """Localized path of the SELECTED version's immutable, content-addressed
+    image, or None. The hash key never changes content, so localize's cache is
+    safe and every serverless instance resolves the identical bytes — the anchor
+    for cross-page consistency."""
+    from src.core.store import get_selected_version
+    sel = get_selected_version(book_id, asset_type, asset_key)
+    if not sel or not sel.get("storage_key"):
+        return None
+    return localize(sel["storage_key"])
+
+
 def delete_prefix(prefix: str) -> None:
     """Delete every stored image whose key starts with `prefix` (book deletion)."""
     b = _bucket()
