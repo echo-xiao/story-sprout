@@ -477,14 +477,36 @@ async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
     import re as _re
     import tempfile
 
+    from src.core import storage, store
+
     book_dir = GENERATED_DIR / book_id
     chapters_root = book_dir / "chapters"
+
+    # GCS-first: enumerate chapter indices from durable storage so a cold
+    # serverless instance (empty /tmp) can still build the PDF.
     all_chapters = []
-    if chapters_root.exists():
+    try:
+        gcs_keys = storage.list_keys(f"{book_id}/chapters/")
+        ch_idxs = sorted({
+            int(_re.search(r"/chapters/ch(\d+)/", k).group(1))
+            for k in gcs_keys
+            if k.endswith("/chapter_data.json") and _re.search(r"/chapters/ch(\d+)/", k)
+        })
+        for ci in ch_idxs:
+            data = store.get_json(f"{book_id}/chapters/ch{ci:02d}/chapter_data.json")
+            if isinstance(data, dict) and data.get("pages"):
+                all_chapters.append(data)
+    except Exception as e:
+        logger.warning("GCS chapter_data enumeration failed for %s: %s", book_id, e)
+        ch_idxs = []
+
+    # Local fallback: dev mode or when GCS has no chapter_data keys yet.
+    if not all_chapters and chapters_root.exists():
         for ch_dir in sorted(chapters_root.glob("ch*")):
             data = _read_json_guarded(ch_dir / "chapter_data.json")
             if isinstance(data, dict) and data.get("pages"):
                 all_chapters.append(data)
+
     if not all_chapters:
         raise HTTPException(status_code=404, detail="No generated pages yet — generate a chapter first.")
 
@@ -495,6 +517,20 @@ async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
         for p in ch.get("pages", []):
             p["_chapter_num"] = ch_num
             combined.append(p)
+
+    # Step 4: materialize each page's image from GCS to local disk so reportlab
+    # can read it as a local path (export_pdf checks os.path.exists(image_path)).
+    for p in combined:
+        image_path = p.get("image_path", "")
+        if not image_path:
+            continue
+        try:
+            key = str(Path(image_path).relative_to(GENERATED_DIR))
+            storage.localize(key)
+        except (ValueError, Exception):
+            # Not under GENERATED_DIR, or localize failed — export_pdf handles
+            # a missing image by rendering a text-only page; do not crash.
+            pass
 
     title = (_load_json(book_id, "meta.json") or {}).get("title", book_id)
     special_dir = str(book_dir / "special")

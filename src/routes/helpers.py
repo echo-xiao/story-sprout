@@ -263,6 +263,11 @@ def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
         if text is not None:
             entry["text"] = text
         write_json_atomic(path, data)
+        try:
+            from src.core import store
+            store.put_json(f"{book_id}/chapters/ch{ch_idx:02d}/chapter_data.json", data)
+        except Exception as e:
+            logger.warning("chapter_data GCS persist failed for %s ch%d: %s", book_id, ch_idx, e)
 
 
 def invalidate_chapter_consistency(book_id: str, ch_idx: int) -> None:
