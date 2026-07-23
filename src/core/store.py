@@ -249,5 +249,31 @@ def list_asset_versions(book_id: str, asset_type: str, asset_key: str) -> dict:
             "selected_version_id": rec.get("selected_version_id")}
 
 
+def set_version_quality(book_id: str, asset_type: str, asset_key: str,
+                        version_id: str, quality: dict) -> bool:
+    """Store `quality` on the specific version identified by `version_id`.
+
+    Mirrors `set_selected_version`'s `_mutate_json` shape.
+    Returns True if the version was found and updated, False otherwise.
+    Never raises — callers must not break generation on a QA-persist failure.
+    """
+    k = _rec_key(asset_type, asset_key)
+    out: dict[str, bool] = {"ok": False}
+
+    def _mut(assets: dict) -> None:
+        rec = assets.get(k)
+        if not rec:
+            return
+        for v in rec["versions"]:
+            if v["id"] == version_id:
+                v["quality"] = quality
+                assets[k] = rec
+                out["ok"] = True
+                return
+
+    _mutate_json(_assets_key(book_id), _mut)
+    return out["ok"]
+
+
 def delete_asset_versions(book_id: str) -> None:
     put_json(_assets_key(book_id), {})

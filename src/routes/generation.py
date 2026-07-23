@@ -350,6 +350,8 @@ async def regenerate_segment_illustration(
 
         # Auto QA + bounded self-correction via the SHARED page service — same
         # policy/threshold the pipeline uses; the frontend only triggers regen.
+        # Capture the QA result so we can attach it to the recorded version below.
+        _page_qa_result: dict | None = None
         try:
             from src.generation.page_service import qa_and_self_correct
 
@@ -368,7 +370,7 @@ async def regenerate_segment_illustration(
                     )
                     return _find_page_image()
 
-                await run_in_threadpool(
+                _page_qa_result = await run_in_threadpool(
                     qa_and_self_correct,
                     image_path=ill_path,
                     character_sheets=character_sheets,
@@ -385,16 +387,26 @@ async def regenerate_segment_illustration(
             logger.warning("Auto quality check failed for segment %d: %s", seg_id, e)
 
         # Durable storage + register the final page image as a pickable version.
+        # Attach the QA result to the version so it survives across regens/version-switches.
         for _ext in (".png", ".jpg"):
             _pimg = ch_dir / f"page_{page_num:03d}{_ext}"
             if _pimg.exists():
                 try:
                     from src.core.storage import record_image_version
-                    record_image_version(
+                    _vid = record_image_version(
                         book_id, "page", f"ch{ch_idx:02d}:p{page_num:03d}",
                         _pimg.read_bytes(),
                         content_type="image/png" if _ext == ".png" else "image/jpeg",
                     )
+                    if _page_qa_result and _page_qa_result.get("overall_score") is not None:
+                        try:
+                            from src.core import store as _store
+                            _store.set_version_quality(
+                                book_id, "page", f"ch{ch_idx:02d}:p{page_num:03d}",
+                                _vid, _page_qa_result,
+                            )
+                        except Exception as _qe:
+                            logger.warning("page version QA attach failed: %s", _qe)
                 except Exception as _e:
                     logger.warning("page version record failed: %s", _e)
                 break

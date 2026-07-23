@@ -205,7 +205,8 @@ def record_image_version(book_id: str, asset_type: str, asset_key: str,
     The ONE call every regeneration path uses so a new image automatically (a)
     lands in durable storage and (b) becomes a pickable version. Content-hashed
     key -> identical bytes reuse the same object and dedupe in the version list.
-    Returns the stored URL.
+    Returns the new version id (callers that need to attach QA capture this;
+    callers that only need durable storage may ignore it).
     """
     import hashlib
     import re as _re
@@ -216,9 +217,9 @@ def record_image_version(book_id: str, asset_type: str, asset_key: str,
     safe_key = _re.sub(r"[^\w.-]+", "_", asset_key).strip("_")[:60] or "asset"
     key = f"{book_id}/{asset_type}s/{safe_key}_{digest[:12]}.{ext}"
     url = put_image(key, data, content_type)
-    add_asset_version(book_id, asset_type, asset_key, url,
-                      image_hash=digest, storage_key=key)
-    return url
+    vid = add_asset_version(book_id, asset_type, asset_key, url,
+                            image_hash=digest, storage_key=key)
+    return vid
 
 
 def selected_version_image(book_id: str, asset_type: str, asset_key: str) -> str | None:
