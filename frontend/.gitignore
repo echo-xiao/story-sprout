@@ -1,3 +1,5 @@
 
 # TypeScript incremental build info (build artifact)
 tsconfig.tsbuildinfo
+.vercel
+.env*
