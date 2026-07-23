@@ -130,9 +130,22 @@ def call_gemini_with_backoff(fn, *, max_retries: int = 3, base: float = 5.0, lab
     - anything else → raise straight through.
     """
     last: Exception | None = None
+    result = None
     for attempt in range(max(1, max_retries)):
         try:
-            return fn()
+            result = fn()
+            if result:
+                return result
+            # A 200 response that carried NO image — gemini-3-pro-image does this
+            # intermittently (text-only reply). Treat like a transient failure and
+            # retry, else one flaky reply silently fails the whole regen (blank
+            # page in "gen all" / scene "no reaction" / character sheet not saved).
+            if attempt >= max_retries - 1:
+                return result
+            wait = min(base, 2.0)  # short — model flakiness, not a rate limit
+            logger.warning("Gemini%s returned no image, retry %d/%d in %.1fs",
+                           f" [{label}]" if label else "", attempt + 1, max_retries, wait)
+            time.sleep(wait)
         except Exception as e:
             last = e
             es = str(e)
@@ -147,6 +160,7 @@ def call_gemini_with_backoff(fn, *, max_retries: int = 3, base: float = 5.0, lab
             time.sleep(wait)
     if last:
         raise last
+    return result
 
 
 def make_genai_client():

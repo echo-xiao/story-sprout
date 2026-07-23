@@ -969,9 +969,12 @@ async def regenerate_scene_sheet(
         def _gen_scene_image():
             from google import genai
             from src.config import GEMINI_IMAGE_MODEL
-            from src.gemini_backend import make_genai_client
+            from src.gemini_backend import (
+                make_genai_client, call_gemini_with_backoff, note_gen_failure,
+            )
             from src.generation.illustration import _build_reference_content
             from src.generation.special_pages import get_style_ref
+            from src.generation.image_utils import save_inline_image
             client = make_genai_client()
             # Anchor every scene to the SAME book-wide style reference (the cover)
             # through the shared reference builder pages already use. This path
@@ -981,36 +984,42 @@ async def regenerate_scene_sheet(
             # a plain text prompt, so this is safe before a cover exists.
             cover = get_style_ref(book_id)
             scene_contents = _build_reference_content(prompt, [], style_ref_path=cover)
-            try:
+            save_path = scenes_dir / f"{safe}_scene"
+
+            # Go through the SHARED retry + save path (like pages/characters):
+            # call_gemini_with_backoff retries a 200-with-no-image reply, and
+            # save_inline_image mirrors to GCS + logs why a reply had no image.
+            # Previously a raw call silently no-op'd on a no-image reply, and the
+            # outer finally restored the OLD scene — the "regen does nothing" bug.
+            def _attempt() -> str:
                 response = client.models.generate_content(
                     model=GEMINI_IMAGE_MODEL,
                     contents=scene_contents,
                     config=genai.types.GenerateContentConfig(
                         response_modalities=["IMAGE", "TEXT"],
                         # Keep scene sheets square like character sheets and book
-                        # pages — the Vertex image model defaults to landscape.
+                        # pages — the image model defaults to landscape.
                         image_config=genai.types.ImageConfig(aspect_ratio="1:1"),
                     ),
                 )
-                for part in response.candidates[0].content.parts:
-                    if part.inline_data and part.inline_data.mime_type.startswith("image/"):
-                        ext = ".png" if "png" in part.inline_data.mime_type else ".jpg"
-                        out_path = scenes_dir / f"{safe}_scene{ext}"
-                        out_path.write_bytes(part.inline_data.data)
-                        logger.info("Scene sheet saved: %s", out_path)
-                        # Durable storage + register as a pickable version.
-                        try:
-                            from src.core.storage import record_image_version
-                            record_image_version(book_id, "scene", scene_name,
-                                                  part.inline_data.data,
-                                                  content_type=part.inline_data.mime_type)
-                        except Exception as _e:
-                            logger.warning("scene version record failed: %s", _e)
-                        break
+                return save_inline_image(response, save_path)
+
+            try:
+                final = call_gemini_with_backoff(_attempt, max_retries=3, label=f"scene:{safe}")
             except Exception as e:
                 logger.error("Scene generation failed for %s: %s", scene_name, e)
-                from src.gemini_backend import note_gen_failure
                 note_gen_failure(e)
+                return
+            if final:
+                logger.info("Scene sheet saved: %s", final)
+                try:
+                    from src.core.storage import record_image_version
+                    record_image_version(
+                        book_id, "scene", scene_name, Path(final).read_bytes(),
+                        content_type="image/png" if final.endswith(".png") else "image/jpeg",
+                    )
+                except Exception as _e:
+                    logger.warning("scene version record failed: %s", _e)
 
         # Run the blocking Gemini call off the event loop.
         await run_in_threadpool(_gen_scene_image)
