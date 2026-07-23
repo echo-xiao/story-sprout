@@ -35,6 +35,10 @@ def _call_deepseek(prompt: str, system: str = "", timeout: float = 120.0) -> str
             "messages": messages,
             "response_format": {"type": "json_object"},
             "temperature": 0.7,
+            # DeepSeek defaults to only 4096 output tokens; a long structured
+            # response (e.g. detailed character lists over several chapters) gets
+            # truncated mid-JSON → parse failure. 8192 is deepseek-chat's max.
+            "max_tokens": 8192,
         },
         timeout=timeout,
     )

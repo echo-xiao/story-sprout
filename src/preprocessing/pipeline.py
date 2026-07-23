@@ -38,7 +38,9 @@ def _llm_identify_characters(title: str, chapters: list[dict]) -> list[dict]:
     """LLM reads chapters in batches of 5 → merge and deduplicate characters."""
     from src.llm_client import generate_json
 
-    BATCH_SIZE = 5
+    # 2 chapters per batch: batching all chapters at once produced a character
+    # list too long for DeepSeek's output cap → truncated JSON → 0 characters.
+    BATCH_SIZE = 2
     all_raw_characters = []
 
     for batch_start in range(0, len(chapters), BATCH_SIZE):
