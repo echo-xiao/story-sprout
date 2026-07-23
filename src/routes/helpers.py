@@ -217,7 +217,8 @@ def segment_page_num(segments: list[dict], ch_idx: int, seg_id: int) -> int:
 
 
 def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
-                             image_path: str | None = None, text: str | None = None) -> None:
+                             image_path: str | None = None, text: str | None = None,
+                             refs: dict | None = None) -> None:
     """Keep chapter_data.json's entry for one page in step after a
     single-page change (regen / restore-version / text edit).
 
@@ -262,6 +263,8 @@ def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
             entry["image_path"] = image_path
         if text is not None:
             entry["text"] = text
+        if refs is not None:
+            entry["refs"] = refs
         write_json_atomic(path, data)
         # SOLE GCS sync point for chapter_data — any future bulk chapter generator MUST also write here or the serverless PDF/viewer will miss it.
         try:

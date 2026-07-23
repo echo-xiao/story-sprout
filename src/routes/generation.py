@@ -114,13 +114,14 @@ async def get_regen_active(book_id: str, kind: str, key: str) -> dict[str, Any]:
 
 @router.get("/api/book/{book_id}/chapter/{ch_idx}/stale-pages")
 async def get_stale_pages(book_id: str, ch_idx: int) -> dict[str, Any]:
-    """Pages whose image is OLDER than a character/scene it depends on.
+    """Pages whose recorded provenance version-id differs from the currently-selected version.
 
-    A page is stale when any character in its `characters_in_scene` (exact), or a
-    location matched in its `scene_background` (heuristic), has a reference-sheet
-    file newer than the page image — i.e. the page should be regenerated. Pure
-    mtime comparison; no persisted state.
+    A page is stale when any character or scene ref it was generated against (stored in
+    chapter_data.json as `refs`) no longer matches the currently-selected version-id for
+    that asset. Pages with no `refs` (legacy, pre-Task-7) are never marked stale —
+    fallback avoids false reds on a serverless regen-but-keep-selection.
     """
+    from src.core import store as _store
 
     analysis = _load_json(book_id, "analysis.json") or {}
     segments = analysis.get("segments", [])
@@ -128,48 +129,46 @@ async def get_stale_pages(book_id: str, ch_idx: int) -> dict[str, Any]:
         [s for s in segments if s.get("chapter_idx") == ch_idx],
         key=lambda s: s.get("id", 0),
     )
-    base = GENERATED_DIR / book_id
-    chars_dir = base / "characters"
-    scenes_dir = base / "scenes"
-    pages_dir = base / "chapters" / f"ch{ch_idx:02d}" / "pages"
 
-    def _mtime(stem: Path) -> float | None:
-        for ext in (".png", ".jpg"):
-            p = Path(f"{stem}{ext}")
-            if p.exists():
-                return p.stat().st_mtime
-        return None
+    # Load chapter_data once — contains per-page refs (provenance) written at regen time.
+    chapter_data = _store.get_json(f"{book_id}/chapters/ch{ch_idx:02d}/chapter_data.json") or {}
+    pages_by_num: dict[int, dict] = {
+        p["page_number"]: p
+        for p in chapter_data.get("pages", [])
+        if "page_number" in p
+    }
 
-    char_cache: dict[str, float | None] = {}
-    scene_cache: dict[str, float | None] = {}
-    locations = [loc for loc in (_load_json(book_id, "llm_locations.json") or {}).get("locations", []) if loc.get("name")]
+    # Cache selected version ids to avoid repeated store reads for the same asset.
+    _sel_cache: dict[tuple[str, str], str | None] = {}
+
+    def _selected_id(asset_type: str, name: str) -> str | None:
+        k = (asset_type, name)
+        if k not in _sel_cache:
+            _sel_cache[k] = (_store.get_selected_version(book_id, asset_type, name) or {}).get("id")
+        return _sel_cache[k]
 
     stale = []
     for idx, seg in enumerate(ch_segs):
         page_num = idx + 1
-        page_mtime = _mtime(pages_dir / f"page_{page_num:03d}")
-        if page_mtime is None:
-            continue  # not generated yet — handled by the existing grey/green dot
+        page_entry = pages_by_num.get(page_num)
+        if page_entry is None:
+            continue  # page not yet generated — grey dot; not stale
+        refs = page_entry.get("refs")
+        if refs is None:
+            continue  # legacy page (no provenance recorded) — skip, avoid false red
+
         reasons = []
-        for name in seg.get("characters_in_scene", []):
-            if name not in char_cache:
-                char_cache[name] = _mtime(chars_dir / f"{_safe_filename(name)}_sheet")
-            m = char_cache[name]
-            if m and m > page_mtime:
+        for name, recorded_vid in (refs.get("characters") or {}).items():
+            if not recorded_vid:
+                continue
+            if _selected_id("character", name) != recorded_vid:
                 reasons.append({"type": "character", "name": name})
-        haystack = " ".join(
-            (seg.get(f) or "")
-            for f in ("scene_background", "scene_summary", "scene_direction", "text")
-        ).lower()
-        for loc in locations:
-            ln = loc.get("name", "")
-            needles = [ln.lower()] + [str(a).lower() for a in loc.get("aliases", [])]
-            if any(n and n in haystack for n in needles):
-                if ln not in scene_cache:
-                    scene_cache[ln] = _mtime(scenes_dir / f"{_safe_filename(ln)}_scene")
-                m = scene_cache[ln]
-                if m and m > page_mtime:
-                    reasons.append({"type": "scene", "name": ln})
+        for name, recorded_vid in (refs.get("scenes") or {}).items():
+            if not recorded_vid:
+                continue
+            if _selected_id("scene", name) != recorded_vid:
+                reasons.append({"type": "scene", "name": name})
+
         if reasons:
             stale.append({"page": page_num, "segment_id": seg.get("id"), "reasons": reasons})
     return {"stale": stale}
@@ -415,12 +414,34 @@ async def regenerate_segment_illustration(
         # Keep chapter_data.json (what the combined PDF reads) pointing at the
         # new image + text — a regen that switched extensions used to leave a
         # dead path there, silently blanking this page in the next book.pdf.
+        # Also record provenance (which version-ids were used) so get_stale_pages
+        # can do a version-id comparison instead of fragile file-mtime comparison.
+        from src.core import store as _store
+        _char_refs = {
+            n: (_store.get_selected_version(book_id, "character", n) or {}).get("id")
+            for n in target.get("characters_in_scene", [])
+        }
+        _scene_refs: dict = {}
+        _bg = " ".join(
+            (target.get(f) or "")
+            for f in ("scene_background", "scene_summary", "scene_direction", "text")
+        ).lower()
+        for _loc in (_load_json(book_id, "llm_locations.json") or {}).get("locations", []):
+            _ln = _loc.get("name", "")
+            if _ln and any(
+                nm and nm.lower() in _bg
+                for nm in [_ln] + [str(a) for a in _loc.get("aliases", [])]
+            ):
+                _scene_refs[_ln] = (_store.get_selected_version(book_id, "scene", _ln) or {}).get("id")
+                break
+        _refs = {"characters": _char_refs, "scenes": _scene_refs}
         for ext in (".png", ".jpg"):
             img = ch_dir / f"page_{page_num:03d}{ext}"
             if img.exists():
                 update_chapter_data_page(book_id, ch_idx, page_num,
                                          image_path=str(img),
-                                         text=simplified_text or target.get("text", ""))
+                                         text=simplified_text or target.get("text", ""),
+                                         refs=_refs)
                 break
 
         # The page image changed — the chapter-level consistency.json (served
