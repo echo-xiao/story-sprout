@@ -1091,7 +1091,14 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
 
 @router.get("/api/book/{book_id}/segment/{seg_id}/history")
 async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[str, Any]:
-    """Get all historical illustrations for a segment."""
+    """Get all historical illustrations for a segment, built from the version store.
+
+    Every stored version carries its own QA (set at regen time via
+    set_version_quality). The selected version is mapped to version="current" so
+    the frontend's carousel logic is unchanged. For pages that have no version
+    records yet (_backfill_versions migrates legacy history/ files on first call;
+    never-recorded pages fall back to the current GCS image so nothing regresses).
+    """
     analysis = _load_json(book_id, "analysis.json")
     if not analysis:
         return {"images": []}
@@ -1103,86 +1110,77 @@ async def get_segment_illustration_history(book_id: str, seg_id: int) -> dict[st
 
     ch_idx = target.get("chapter_idx", 0)
     page_num = segment_page_num(segments, ch_idx, seg_id)
-
-    # Versions from DURABLE storage (GCS) so they survive a redeploy that wiped
-    # the local disk (the bug that made history "vanish").
-    from src.core import storage
-    images = []
-    ch_dir = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
-    pdir = f"{book_id}/chapters/ch{ch_idx:02d}/pages"
-    hdir = f"{book_id}/chapters/ch{ch_idx:02d}/history"
-
-    # Per-version QA for the CURRENT/selected entry: read from the selected version's
-    # stored quality. The old url-key lookup (_quality_by_url) was dead — the version
-    # URL is content-addressed (.../pages/{key}_{hash}.png) while the carousel's
-    # current-page URL is the page file (.../chapters/chNN/pages/page_NNN.png) and
-    # they can NEVER match. Historical carousel entries (the history/-prefix files)
-    # don't correspond to version records either — no per-version QA there; accepted.
     asset_key = f"ch{ch_idx:02d}:p{page_num:03d}"
-    from src.core.store import get_selected_version
-    _sel_ver = get_selected_version(book_id, "page", asset_key)
-    _sel_quality: dict | None = _sel_ver.get("quality") if _sel_ver else None
 
-    # Current image + quality
+    # Migrate legacy history/ files into the store on first call (no-op if already done).
+    _backfill_versions(book_id, "page", asset_key)
+
+    from src.core.store import list_asset_versions as _list_asset_versions
+    rec = _list_asset_versions(book_id, "page", asset_key)
+    versions = rec["versions"]
+    selected_id = rec["selected_version_id"]
+
+    def _epoch(ts_str: str | None) -> int:
+        if not ts_str:
+            return 0
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(ts_str)
+            return int(dt.astimezone(timezone.utc).timestamp())
+        except Exception:
+            return 0
+
+    if versions:
+        # Build newest-first (stored order is oldest→newest).
+        images: list[dict[str, Any]] = []
+        for v in reversed(versions):
+            is_selected = v["id"] == selected_id
+            entry: dict[str, Any] = {
+                "url": v["url"],
+                "version": "current" if is_selected else v["id"],
+                "timestamp": _epoch(v.get("created_at")),
+            }
+            q = v.get("quality")
+            if q is not None:
+                entry["quality"] = q
+            elif is_selected:
+                # Legacy fallback: selected entry with no stored quality falls
+                # back to the per-page quality JSON so existing QA is not lost.
+                rel_q = f"{book_id}/chapters/ch{ch_idx:02d}/quality/page_{page_num:03d}_quality.json"
+                q_legacy = _load_quality(rel_q)
+                if q_legacy is not None:
+                    entry["quality"] = q_legacy
+            images.append(entry)
+        return {"images": images}
+
+    # Fallback for pages that have never been recorded in the version store.
+    # Return the single current GCS image so the carousel still shows something.
+    from src.core import storage as _storage
+    pdir = f"{book_id}/chapters/ch{ch_idx:02d}/pages"
     for ext in (".png", ".jpg"):
         ck = f"{pdir}/page_{page_num:03d}{ext}"
-        if storage.exists(ck):
-            current_url = storage.image_url(ck)
-            entry: dict[str, Any] = {
-                "url": current_url,
-                "version": "current",
-                "timestamp": 0,
-            }
-            # Per-version QA from selected version; fall back to legacy per-page quality file.
-            if _sel_quality is not None:
-                entry["quality"] = _sel_quality
-            else:
-                rel_q = f"{book_id}/chapters/ch{ch_idx:02d}/quality/page_{page_num:03d}_quality.json"
-                q = _load_quality(rel_q)
-                if q is not None:
-                    entry["quality"] = q
-            images.append(entry)
-            break
-
-    # Historical images — no per-version QA (history carousel files don't correspond
-    # to version records; accepted limitation of the separate carousel system).
-    def _ver(k: str) -> str:
-        return k.rsplit("/", 1)[-1].rsplit(".", 1)[0].split("_")[-1]
-    hkeys = [
-        k for k in storage.list_prefix(f"{hdir}/page_{page_num:03d}_")
-        if k.endswith((".png", ".jpg")) and "_quality" not in k and _ver(k).isdigit()
-    ]
-    hkeys.sort(key=lambda k: int(_ver(k)), reverse=True)
-    for k in hkeys:
-        hist_url = storage.image_url(k)
-        hist_entry: dict[str, Any] = {
-            "url": hist_url,
-            "version": _ver(k),
-            "timestamp": int(_ver(k)),
-        }
-        images.append(hist_entry)
-
-    return {"images": images}
+        if _storage.exists(ck):
+            entry = {"url": _storage.image_url(ck), "version": "current", "timestamp": 0}
+            rel_q = f"{book_id}/chapters/ch{ch_idx:02d}/quality/page_{page_num:03d}_quality.json"
+            q = _load_quality(rel_q)
+            if q is not None:
+                entry["quality"] = q
+            return {"images": [entry]}
+    return {"images": []}
 
 
 @router.post("/api/book/{book_id}/segment/{seg_id}/restore-version")
 async def restore_segment_version(book_id: str, seg_id: int, version: str) -> dict[str, Any]:
-    """Make a historical illustration the current one (the editor's version
-    carousel calls this — without it, picking an old version only changed
-    local state and the PDF/viewer kept using the newest image)."""
-    import shutil
-    import time as _time
+    """Select a stored version as the current one for a page segment.
 
-    if not version.isdigit():
-        raise HTTPException(status_code=400, detail="Invalid version.")
-
+    Delegates entirely to the version store: set_selected_version flips the
+    pointer, then _promote_selected copies the stored bytes onto the live page
+    image and updates chapter_data.json so the PDF stays consistent. The old
+    history/-file rename dance is gone; all versions live in the store.
+    """
     if (book_id, "segment", seg_id) in _active_regens:
-        # A regen is mid-flight for this page; interleaving the two file
-        # shuffles leaves both a .png and a .jpg current image behind.
         raise HTTPException(status_code=409, detail="This page is regenerating — try again when it finishes.")
     if book_generation_active(book_id):
-        # The chapter subprocess writes this same page file and rebuilds
-        # chapter_data.json at the end, which would override the restore.
         raise HTTPException(status_code=409,
                             detail="A chapter is generating for this book — restore after it finishes.")
 
@@ -1196,67 +1194,32 @@ async def restore_segment_version(book_id: str, seg_id: int, version: str) -> di
 
     ch_idx = target.get("chapter_idx", 0)
     page_num = segment_page_num(segments, ch_idx, seg_id)
-    ch_base = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}"
-    pages_dir = ch_base / "pages"
-    history_dir = ch_base / "history"
+    asset_key = f"ch{ch_idx:02d}:p{page_num:03d}"
 
-    restored = None
-    for ext in (".png", ".jpg"):
-        candidate = history_dir / f"page_{page_num:03d}_{version}{ext}"
-        if candidate.exists():
-            restored = candidate
-            break
-    if restored is None:
+    from src.core.store import set_selected_version as _set_selected
+    ok = _set_selected(book_id, "page", asset_key, version)
+    if not ok:
         raise HTTPException(status_code=404, detail=f"Version {version} not found.")
 
-    # Copy the restored version to a temp name FIRST: if the copy fails (disk
-    # full), the current image is still in place and nothing is lost. The old
-    # order renamed the current image away before copying — a failed copy left
-    # the page with no image at all.
-    pages_dir.mkdir(parents=True, exist_ok=True)
-    tmp_restore = pages_dir / f".restore_tmp_{page_num:03d}{restored.suffix}"
-    shutil.copy2(restored, tmp_restore)
+    await run_in_threadpool(_promote_selected, book_id, "page", asset_key)
 
-    try:
-        # Archive the current image (+ its quality verdict) into history, same
-        # naming scheme as the regen endpoints, so nothing is lost by restoring.
-        # Bump ts past any taken slot — restoring a version archived this same
-        # second would otherwise overwrite the very history file just copied.
-        ts = int(_time.time())
-        history_dir.mkdir(parents=True, exist_ok=True)
-        while any(
-            (history_dir / f"page_{page_num:03d}_{ts}{suffix}").exists()
-            for suffix in (".png", ".jpg", "_quality.json")
-        ):
-            ts += 1
-        for ext in (".png", ".jpg"):
-            current = pages_dir / f"page_{page_num:03d}{ext}"
-            if current.exists():
-                current.rename(history_dir / f"page_{page_num:03d}_{ts}{ext}")
-        quality_file = ch_base / "quality" / f"page_{page_num:03d}_quality.json"
-        if quality_file.exists():
-            quality_file.rename(history_dir / f"page_{page_num:03d}_{ts}_quality.json")
-
-        new_current = pages_dir / f"page_{page_num:03d}{restored.suffix}"
-        tmp_restore.rename(new_current)
-    finally:
-        tmp_restore.unlink(missing_ok=True)
-
-    # The restored image may have a different extension than the entry in
-    # chapter_data.json (the PDF's source) — keep it pointing at the new file.
-    update_chapter_data_page(book_id, ch_idx, page_num, image_path=str(new_current))
-    hist_quality = history_dir / f"page_{page_num:03d}_{version}_quality.json"
-    if hist_quality.exists():
-        quality_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(hist_quality, quality_file)
     # The page image changed — the chapter summary cache describes the old one.
     invalidate_chapter_consistency(book_id, ch_idx)
+
+    # Build the live URL from _canonical_current (same path _promote_selected wrote to).
+    cdir, fbase, static_base = _canonical_current(book_id, "page", asset_key)
+    live_url = ""
+    if cdir is not None:
+        for ext in (".png", ".jpg"):
+            p = cdir / f"{fbase}{ext}"
+            if p.exists():
+                live_url = versioned_static_url(f"{static_base}{ext}", p)
+                break
 
     return {
         "status": "restored",
         "segment_id": seg_id,
-        "illustration_url": versioned_static_url(
-            f"{book_id}/chapters/ch{ch_idx:02d}/pages/{new_current.name}", new_current),
+        "illustration_url": live_url,
     }
 
 

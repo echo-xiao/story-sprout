@@ -69,8 +69,10 @@ def test_noop_when_chapter_never_generated(monkeypatch, tmp_path):
 
 
 def test_restore_version_updates_chapter_data(client, monkeypatch, tmp_path):
-    """End-to-end: restoring a .jpg version over a .png current must repoint
-    chapter_data.json at the restored file."""
+    """End-to-end: restoring a .jpg version must repoint chapter_data.json at the
+    restored file. Uses the version store (Task 1 new contract)."""
+    import src.core.store as store
+
     analysis = {"segments": [make_segment(0)]}
     monkeypatch.setattr(
         "src.routes.editor._load_json",
@@ -78,17 +80,32 @@ def test_restore_version_updates_chapter_data(client, monkeypatch, tmp_path):
     )
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
+    monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
 
-    ch = tmp_path / "somebook" / "chapters" / "ch00"
-    (ch / "pages").mkdir(parents=True)
-    (ch / "history").mkdir()
-    (ch / "pages" / "page_001.png").write_bytes(b"CURRENT")
-    (ch / "history" / "page_001_1000.jpg").write_bytes(b"OLD")
+    book_id = "somebook"
+    ch = tmp_path / book_id / "chapters" / "ch00"
+    pages_dir = ch / "pages"
+    pages_dir.mkdir(parents=True)
+    (pages_dir / "page_001.png").write_bytes(b"CURRENT")
     (ch / "chapter_data.json").write_text(json.dumps({
-        "pages": [{"text": "t", "image_path": str(ch / "pages" / "page_001.png"), "page_number": 1}],
+        "pages": [{"text": "t", "image_path": str(pages_dir / "page_001.png"), "page_number": 1}],
     }))
 
-    resp = client.post("/api/book/somebook/segment/0/restore-version?version=1000")
+    # Seed two versions: v1=.png (current), v2=.jpg (to be restored).
+    asset_key = "ch00:p001"
+    # Write the v2 bytes into tmp_path so _promote_selected can write the live file.
+    storage_key_v2 = f"{book_id}/chapters/ch00/pages/page_001_v2.jpg"
+    (tmp_path / storage_key_v2).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / storage_key_v2).write_bytes(b"OLD-JPG")
+    v1 = store.add_asset_version(book_id, "page", asset_key, "u1", image_hash="h1", storage_key="s1.png")
+    v2 = store.add_asset_version(book_id, "page", asset_key, "u2", image_hash="h2", storage_key=storage_key_v2)
+    store.set_selected_version(book_id, "page", asset_key, v1)
+
+    # get_image reads from local storage (GCS_BUCKET is "" → local file fallback).
+    # put_image is a no-op.
+    monkeypatch.setattr("src.core.storage.put_image", lambda *a, **kw: None)
+
+    resp = client.post(f"/api/book/{book_id}/segment/0/restore-version?version={v2}")
     assert resp.status_code == 200
     pages = json.loads((ch / "chapter_data.json").read_text())["pages"]
     assert pages[0]["image_path"].endswith("page_001.jpg")
