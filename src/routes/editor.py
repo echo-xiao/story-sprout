@@ -154,10 +154,14 @@ def _backfill_versions(book_id: str, asset_type: str, asset_key: str) -> None:
     if static_base is None:
         return
     subdir = static_base.rsplit("/", 1)[0]  # e.g. "<book_id>/scenes"
+    # Page history lives at the CHAPTER level (<book>/chapters/chNN/history/),
+    # NOT under the pages/ subdir — so its backfill prefix is the chapter dir.
+    # Scene/character/special keep their history as a sibling of the current.
+    hist_dir = subdir.rsplit("/", 1)[0] if asset_type == "page" else subdir
 
     # History versions first (the filename's timestamp sorts them chronologically).
     keys = [
-        k for k in storage.list_prefix(f"{subdir}/history/{fbase}_")
+        k for k in storage.list_prefix(f"{hist_dir}/history/{fbase}_")
         if k.endswith((".png", ".jpg")) and "_quality" not in k
     ]
     keys.sort()
