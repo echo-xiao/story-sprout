@@ -1,6 +1,0 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "https://storysprout-echoxiao666-9525s-projects.vercel.app/api/$1" }
-  ]
-}
