@@ -1,6 +1,7 @@
-# StorySprout — DeepSeek (text) + Gemini (images/QA) + GCS
+# StorySprout — DeepSeek (text) + Gemini (images/QA) + GCS (image bytes) + Firestore (JSON store)
 google-genai>=1.0.0
 google-cloud-storage>=2.16.0
+google-cloud-firestore>=2.16.0
 
 # Image handling
 Pillow>=10.2.0
