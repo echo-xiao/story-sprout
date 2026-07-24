@@ -3,134 +3,17 @@
 Uses an in-memory fake Firestore collection monkeypatched onto
 `store._fs_collection` so no real Firestore is ever reached.
 
-The fake supports:
-- `.document(doc_id)` -> FakeDocRef
-- `.stream()` -> iter of FakeDocSnapshot
-- `firestore.transactional` decorator via FakeTransaction
-
-The no-lost-update test simulates contention: the fake raises a conflict
-error on the FIRST commit attempt inside a transaction, forcing a retry.
-Firestore handles this automatically in production; here the fake does one
-retry to prove the mutator re-runs and both updates survive.
+The shared fake infrastructure (classes + ``fake_fs`` fixture) lives in
+``conftest.py`` and is re-used here.  These tests request ``fake_fs`` directly
+so they get a named handle to the collection (e.g. to inject contention via
+``fake_fs._conflict_raises_remaining``).  All other tests in the suite that
+run on the Firestore backend get the fake via the autouse
+``_fake_fs_collection`` conftest fixture without needing to ask for it.
 """
 
 from __future__ import annotations
 
-import threading
 import pytest
-
-
-# ── In-memory fake Firestore ────────────────────────────────────────────────
-
-class _FakeDocSnapshot:
-    def __init__(self, data, exists):
-        # Store a deep copy so mutations to the returned dict don't bleed
-        # back into the collection store (mirrors Firestore: each read returns
-        # a fresh deserialized snapshot, not a reference to stored bytes).
-        import copy
-        self._data = copy.deepcopy(data) if data is not None else {}
-        self.exists = exists
-
-    def to_dict(self):
-        import copy
-        return copy.deepcopy(self._data) if self.exists else {}
-
-
-class _FakeDocRef:
-    def __init__(self, collection_store: dict, doc_id: str):
-        self._store = collection_store
-        self._doc_id = doc_id
-
-    def get(self, transaction=None):
-        data = self._store.get(self._doc_id)
-        return _FakeDocSnapshot(data, data is not None)
-
-    def set(self, data):
-        self._store[self._doc_id] = dict(data)
-
-
-class _FakeCollection:
-    """In-memory Firestore collection."""
-
-    def __init__(self):
-        self._store: dict = {}  # doc_id -> body dict
-        # Contention injection: if > 0, the next N commits will raise
-        # _ConflictError to simulate a concurrent write forcing a retry.
-        self._conflict_raises_remaining = 0
-
-    def document(self, doc_id: str) -> _FakeDocRef:
-        return _FakeDocRef(self._store, doc_id)
-
-    def stream(self):
-        for doc_id, data in list(self._store.items()):
-            yield _FakeDocSnapshot(data, True)
-
-
-class _ConflictError(Exception):
-    """Simulated Firestore transaction contention error."""
-
-
-class _FakeTransaction:
-    """Simulates a Firestore transactional context, with optional contention."""
-
-    def __init__(self, collection: _FakeCollection):
-        self._collection = collection
-        self._pending: dict = {}  # doc_id -> body
-
-    def set(self, ref: _FakeDocRef, data: dict):
-        self._pending[ref._doc_id] = dict(data)
-
-    def _commit(self):
-        if self._collection._conflict_raises_remaining > 0:
-            self._collection._conflict_raises_remaining -= 1
-            self._pending.clear()
-            raise _ConflictError("simulated contention")
-        for doc_id, data in self._pending.items():
-            self._collection._store[doc_id] = data
-        self._pending.clear()
-
-
-def make_fake_transactional(collection: _FakeCollection):
-    """Return a decorator that mimics `firestore.transactional`.
-
-    The decorated function receives a transaction object as its first argument.
-    If _ConflictError is raised on commit, it retries once (Firestore retries
-    automatically in production on contention).
-    """
-    def transactional(fn):
-        def wrapper(*args, **kwargs):
-            for attempt in range(2):  # up to 1 retry
-                txn = _FakeTransaction(collection)
-                result = fn(txn, *args, **kwargs)
-                try:
-                    txn._commit()
-                    return result
-                except _ConflictError:
-                    if attempt == 1:
-                        raise RuntimeError("fake transaction exceeded retry budget")
-                    # re-run on retry
-            raise RuntimeError("unreachable")
-        return wrapper
-    return transactional
-
-
-@pytest.fixture
-def fake_fs(monkeypatch):
-    """Monkeypatch store._fs_collection to return our in-memory fake.
-    Also patches firestore.transactional inside store so transactions work."""
-    col = _FakeCollection()
-
-    import src.core.store as store
-
-    # Patch _fs_collection to always return the same fake collection
-    monkeypatch.setattr(store, "_fs_collection", lambda: col, raising=False)
-
-    # Patch the transactional decorator that store.py imports inside _fs_mutate_json
-    # We need to patch it at the module level where it gets looked up
-    fake_transactional = make_fake_transactional(col)
-    monkeypatch.setattr(store, "_firestore_transactional", fake_transactional, raising=False)
-
-    return col
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────

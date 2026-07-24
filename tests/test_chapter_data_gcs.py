@@ -14,10 +14,26 @@ from pathlib import Path
 
 import pytest
 
+import src.config as _cfg
 import src.core.store as _store
 import src.core.storage as _storage
 import src.routes.helpers as _helpers
 import src.routes.books as _books
+
+# GCS-specific tests seed data directly into a fake GCS bucket dict and then
+# expect _store.get_json / _store._list_keys to read from the same dict.  On
+# the Firestore backend those calls go to the Firestore fake, not the GCS
+# bucket, so the seeded data is never visible.  These tests are marked to skip
+# on the Firestore backend; the equivalent Firestore coverage lives in the
+# public-API tests and in test_store_firestore_primitives.py.
+_SKIP_ON_FIRESTORE = pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific: seeds/reads data via fake GCS bucket internals. "
+        "On Firestore backend store.get_json and _list_keys route to the "
+        "Firestore fake, making GCS-seeded data invisible."
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +99,7 @@ class TestUpdateChapterDataPageDualWrite:
         pages = stored["pages"]
         assert pages[0]["text"] == "updated"
 
+    @_SKIP_ON_FIRESTORE
     def test_dual_write_key_matches_local_path(self, wired):
         """GCS key must be '<book_id>/chapters/chXX/chapter_data.json'."""
         bucket, _ = wired
@@ -107,6 +124,7 @@ class TestUpdateChapterDataPageDualWrite:
         assert len(stored["pages"]) == 2
         assert stored["pages"][1]["text"] == "p2", "other pages preserved"
 
+    @_SKIP_ON_FIRESTORE
     def test_dual_write_silent_on_store_failure(self, monkeypatch, tmp_path):
         """A GCS failure must NOT raise — it only logs a warning."""
         monkeypatch.setattr(_store, "_bucket",
@@ -128,6 +146,15 @@ class TestUpdateChapterDataPageDualWrite:
 # Step 3: GCS-first PDF chapter enumeration
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific: seeds chapter_data into bucket._s and uses a list_keys "
+        "lambda that reads from the same dict.  On Firestore backend "
+        "store.get_json reads from the Firestore fake, making the seeded data "
+        "invisible."
+    ),
+)
 class TestPdfGcsFirstEnumeration:
     """download_book_pdf must read chapter_data from the GCS store on a cold
     serverless instance (no local /tmp files)."""
@@ -252,6 +279,15 @@ class TestPdfGcsFirstEnumeration:
 # Step 4: localize page images before export_pdf
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific: seeds chapter_data into bucket._s and uses a list_keys "
+        "lambda that reads from the same dict.  On Firestore backend "
+        "store.get_json reads from the Firestore fake, making the seeded data "
+        "invisible."
+    ),
+)
 class TestLocalizePageImagesBeforePdf:
     """Page images referenced in chapter_data must be localized from GCS
     before export_pdf so they exist as local files for reportlab."""
@@ -356,6 +392,14 @@ class TestLocalizePageImagesBeforePdf:
 # Fix 2: localize special/cover images before building the PDF
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific: seeds special image keys into bucket._s and uses a "
+        "list_keys lambda that reads from the same dict.  On Firestore backend "
+        "those keys are invisible to the store layer."
+    ),
+)
 class TestLocalizeSpecialImagesBeforePdf:
     """Special images (book_cover, chapter dividers, back_cover) in GCS must be
     localized before export_pdf so export_pdf's os.path.exists() finds them."""

@@ -11,10 +11,21 @@ import json
 
 import pytest
 
+import src.config as _cfg
 import src.core.store as _store
 import src.routes.editor as editor
 import src.routes.generation as _gen
 from src.routes.helpers import _active_regens
+
+_SKIP_ON_FIRESTORE = pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific: inspects the GCS backing dict to verify the QA result was "
+        "written via store.put_json. On the Firestore backend put_json writes to the "
+        "Firestore fake, not to the backing dict. QA-store persistence on Firestore "
+        "is covered by test_qa_per_version.py."
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +93,7 @@ def test_rename_drops_chapter_consistency(monkeypatch, tmp_path):
 # Fix 1: check_segment_quality dual-writes quality JSON to GCS store
 # ---------------------------------------------------------------------------
 
+@_SKIP_ON_FIRESTORE
 def test_segment_quality_dual_writes_to_gcs(monkeypatch, tmp_path, client):
     """check_segment_quality must persist the quality result to the GCS store
     so _load_quality can find it on a cold serverless instance."""
@@ -126,6 +138,7 @@ def test_segment_quality_dual_writes_to_gcs(monkeypatch, tmp_path, client):
 # Fix 1: check_special_page_quality dual-writes quality JSON to GCS store
 # ---------------------------------------------------------------------------
 
+@_SKIP_ON_FIRESTORE
 def test_special_page_quality_dual_writes_to_gcs(monkeypatch, tmp_path, client):
     """check_special_page_quality must persist the quality result to the GCS
     store so _load_quality can find it on a cold serverless instance."""

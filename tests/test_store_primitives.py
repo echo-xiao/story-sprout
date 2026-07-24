@@ -1,4 +1,9 @@
 import pytest
+import src.config as _cfg
+
+
+def _on_firestore():
+    return _cfg.STORE_BACKEND == "firestore"
 
 
 class FakeBlob:
@@ -40,6 +45,10 @@ def test_get_missing_returns_none(fake_store):
     assert fake_store.get_json("nope/x.json") is None
 
 
+@pytest.mark.skipif(
+    _on_firestore(),
+    reason="Inspects GCS bucket internals; Firestore backend stores data in _FakeCollection, not _bucket._store",
+)
 def test_put_json_is_utf8_not_ascii_escaped(fake_store):
     fake_store.put_json("b/c.json", {"name": "李雷"})
     raw = fake_store._bucket()._store["b/c.json"]

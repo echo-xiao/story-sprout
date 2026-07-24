@@ -15,6 +15,9 @@ TDD: RED before `_mutate_json` exists / add_asset_version is atomic; GREEN after
 
 from __future__ import annotations
 
+import pytest
+
+import src.config as _cfg
 import src.core.store as store
 
 
@@ -39,6 +42,15 @@ def test_mutate_json_no_lost_update_on_interleaved_write():
     assert len(saw_snapshots) == 2, "A must re-read + retry after B's interleaved write"
 
 
+@pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific test: injects PreconditionFailed via store._bucket to exercise the "
+        "if_generation_match retry loop. The Firestore backend uses transaction-based "
+        "optimistic concurrency instead; that path is covered by "
+        "test_store_firestore_primitives.py::test_firestore_mutate_no_lost_update."
+    ),
+)
 def test_add_asset_version_retries_on_concurrent_write(monkeypatch):
     """add_asset_version must go through the optimistic-concurrency path: if a
     concurrent write bumps the blob generation mid-flight (PreconditionFailed on

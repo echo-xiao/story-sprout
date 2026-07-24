@@ -1,5 +1,6 @@
 from tests.test_store_primitives import FakeBucket  # reuse the in-memory fake
 import pytest
+import src.config as _cfg
 
 
 @pytest.fixture
@@ -8,10 +9,16 @@ def store(monkeypatch):
     import src.core.store as store
     monkeypatch.setattr(store, "_bucket", lambda: bucket)
 
-    def list_prefix(suffix=""):
-        return [k for k in bucket._store if k.endswith(suffix)]
+    # On the Firestore backend the GCS bucket is never written to, so
+    # overriding _list_keys to read bucket._store would always return [].
+    # Leave _list_keys alone on Firestore — the autouse _fake_fs_collection
+    # fixture already provides a working implementation via _fs_list_keys.
+    if _cfg.STORE_BACKEND != "firestore":
+        def list_prefix(suffix=""):
+            return [k for k in bucket._store if k.endswith(suffix)]
 
-    monkeypatch.setattr(store, "_list_keys", list_prefix, raising=False)
+        monkeypatch.setattr(store, "_list_keys", list_prefix, raising=False)
+
     return store
 
 

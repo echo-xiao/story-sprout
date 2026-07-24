@@ -12,9 +12,20 @@ import json
 
 import pytest
 
+import src.config as _cfg
 import src.core.store as _store
 import src.generation.gemini_consistency_check as gcc
 from src.generation.page_service import qa_and_self_correct, sheet_qa_and_self_correct
+
+_SKIP_ON_FIRESTORE = pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific: inspects the GCS backing dict (store_backing) to verify the "
+        "QA result was written via store.put_json. On the Firestore backend put_json "
+        "writes to the Firestore fake, not to store_backing. Firestore-backend QA "
+        "persistence is covered by test_qa_per_version.py."
+    ),
+)
 
 
 @pytest.fixture()
@@ -236,6 +247,7 @@ def run_gcs(state, regenerate_fn=None, **kwargs):
     )
 
 
+@_SKIP_ON_FIRESTORE
 def test_page_qa_writes_to_gcs(gcs_setup):
     """A passing QA result should be dual-written to the GCS store."""
     gcs_setup["qa_results"] = [{"overall_score": 85, "regeneration_feedback": "ok"}]
@@ -255,6 +267,7 @@ def test_page_qa_no_gcs_write_when_score_is_none(gcs_setup):
     assert not gcs_setup["store_backing"], "Failed QA must not be persisted to GCS"
 
 
+@_SKIP_ON_FIRESTORE
 def test_sheet_qa_writes_to_gcs(tmp_path, monkeypatch):
     """sheet_qa_and_self_correct dual-writes to GCS when overall_score is set."""
     import src.config as _cfg

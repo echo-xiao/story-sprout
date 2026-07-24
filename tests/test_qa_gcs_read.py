@@ -13,8 +13,19 @@ import json
 
 import pytest
 
+import src.config as _cfg
 import src.core.store as _store
 from src.routes.editor import _load_quality
+
+_SKIP_ON_FIRESTORE = pytest.mark.skipif(
+    _cfg.STORE_BACKEND == "firestore",
+    reason=(
+        "GCS-specific: seeds data via _install_bucket (GCS backing dict). "
+        "On the Firestore backend store.get_json reads from the Firestore fake, "
+        "not the GCS bucket, so these fixtures cannot populate the read path. "
+        "Firestore-backend QA-store coverage lives in test_qa_per_version.py."
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +54,7 @@ def _install_bucket(monkeypatch, backing: dict):
     monkeypatch.setattr(_store, "_bucket", lambda: _Bucket())
 
 
+@_SKIP_ON_FIRESTORE
 def test_load_quality_returns_gcs_data_when_local_missing(tmp_path, monkeypatch):
     """GCS has the file; local /tmp is empty (cold instance). Must return GCS data."""
     backing = {}
@@ -81,6 +93,7 @@ def test_load_quality_returns_none_when_neither_source_has_it(tmp_path, monkeypa
     assert result is None
 
 
+@_SKIP_ON_FIRESTORE
 def test_load_quality_gcs_preferred_over_local(tmp_path, monkeypatch):
     """Both GCS and local exist — GCS wins (most recent durable state)."""
     rel_key = "book1/chapters/ch00/quality/page_001_quality.json"
@@ -132,6 +145,7 @@ def seg_history_book(monkeypatch, tmp_path, client):
     return client
 
 
+@_SKIP_ON_FIRESTORE
 def test_segment_history_reads_quality_from_gcs(seg_history_book):
     """GET /segment/{id}/history must attach quality from the GCS store even when
     the local quality file does not exist (cold serverless instance)."""
