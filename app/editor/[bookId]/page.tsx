@@ -231,17 +231,24 @@ export default function EditorPage() {
   // Generate every missing/stale page in one chapter, sequentially, streaming
   // each finished image in as it completes. Shared by the per-chapter "Gen"
   // button and "Gen All".
-  const runChapterGeneration = async (chIdx: number): Promise<BatchResult> => {
+  const runChapterGeneration = async (chIdx: number, force = false): Promise<BatchResult> => {
     const data = await getChapterSegments(bookId, chIdx).catch(() => null);
     const segs: Segment[] = data?.segments || [];
-    // Fetch this chapter's stale pages authoritatively — the staleSegIds state is
-    // only populated for the currently-selected chapter, so Gen All must not rely
-    // on it (it would skip stale pages in every non-selected chapter).
-    const staleData = await getStalePages(bookId, chIdx).catch(() => null);
-    const staleIds = new Set<number>((staleData?.stale || []).map((s) => s.segment_id));
-    const targets = segs
-      .filter((s) => !s.illustration_url || staleIds.has(s.id))
-      .map((s) => s.id);
+    let targets: number[];
+    if (force) {
+      // Force: redo EVERY already-rendered page in the chapter, regardless of
+      // stale state — "Regenerate All" after a character/reference change.
+      targets = segs.filter((s) => s.illustration_url).map((s) => s.id);
+    } else {
+      // Fetch this chapter's stale pages authoritatively — the staleSegIds state is
+      // only populated for the currently-selected chapter, so Gen All must not rely
+      // on it (it would skip stale pages in every non-selected chapter).
+      const staleData = await getStalePages(bookId, chIdx).catch(() => null);
+      const staleIds = new Set<number>((staleData?.stale || []).map((s) => s.segment_id));
+      targets = segs
+        .filter((s) => !s.illustration_url || staleIds.has(s.id))
+        .map((s) => s.id);
+    }
     if (targets.length === 0) return { completed: 0, failed: [], cancelled: false };
     const result = await generatePagesSequential(
       targets,
@@ -280,9 +287,37 @@ export default function EditorPage() {
     }
   };
 
-  // "Gen All" button — every chapter, in order.
-  const handleGenAll = async () => {
+  // Regenerate one special page (cover) and resolve when its regen claim clears.
+  // Reused by the per-cover button (handleRegenSpecial) and force Regen-All. The
+  // first poll is skipped so a claim not yet visible on the polled serverless
+  // instance can't read as "done" and move on prematurely.
+  const regenSpecialAwait = (spType: string, spChapter: number): Promise<void> =>
+    new Promise<void>((resolve) => {
+      regenerateSpecialPage(bookId, spType, spChapter)
+        .then(() => {
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          let firstPoll = true;
+          const stop = (poll: ReturnType<typeof setInterval>) => {
+            clearInterval(poll);
+            if (timeout) clearTimeout(timeout);
+          };
+          const poll = setInterval(async () => {
+            if (genCancelRef.current || unmountedRef.current) { stop(poll); resolve(); return; }
+            if (firstPoll) { firstPoll = false; return; }
+            const st = await getRegenActive(bookId, "special", `${spType}:${spChapter}`).catch(() => null);
+            if (!st || st.active !== false) return;
+            stop(poll); resolve();
+          }, 5000);
+          timeout = setTimeout(() => { stop(poll); resolve(); }, 130000);
+        })
+        .catch(() => resolve());
+    });
+
+  // "Gen All" button — every chapter, in order. force=true (Regenerate All)
+  // redoes every rendered page + every cover regardless of stale state.
+  const handleGenAll = async (force = false) => {
     if (genRunning) return;
+    if (force && !confirm("Regenerate ALL pages + covers? This redraws the whole book (keeps character sheets) and can take a while. Old versions are kept — you can restore any page. Keep this tab open.")) return;
     genCancelRef.current = false;
     setGenRunning(true);
     const chapterIndices = Object.keys(chapters).map(Number).sort((a, b) => a - b);
@@ -290,8 +325,17 @@ export default function EditorPage() {
       let totalFailed = 0;
       for (const chIdx of chapterIndices) {
         if (genCancelRef.current || unmountedRef.current) break;
-        const r = await runChapterGeneration(chIdx);
+        const r = await runChapterGeneration(chIdx, force);
         totalFailed += r.failed.length;
+      }
+      // Force also redoes the covers (special pages), after the chapters.
+      if (force && !genCancelRef.current && !unmountedRef.current) {
+        const covers = specialPages.slice();
+        for (let i = 0; i < covers.length; i++) {
+          if (genCancelRef.current || unmountedRef.current) break;
+          setGenProgress({ done: i, total: covers.length, segId: -1, chIdx: -1 });
+          await regenSpecialAwait(covers[i].type, covers[i].chapter ?? 0);
+        }
       }
       if (totalFailed && !unmountedRef.current) {
         alert(`${totalFailed} page(s) failed to generate — check the red/gray dots and retry.`);
@@ -912,13 +956,24 @@ export default function EditorPage() {
                   Stop
                 </button>
               ) : (
-                <button
-                  onClick={handleGenAll}
-                  disabled={regenerating}
-                  className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
-                >
-                  Gen All
-                </button>
+                <>
+                  <button
+                    onClick={() => handleGenAll(false)}
+                    disabled={regenerating}
+                    className="text-[9px] bg-coral/80 text-white px-2 py-0.5 rounded hover:bg-coral transition-colors disabled:opacity-50"
+                    title="Generate only missing / stale pages"
+                  >
+                    Gen All
+                  </button>
+                  <button
+                    onClick={() => handleGenAll(true)}
+                    disabled={regenerating}
+                    className="text-[9px] bg-purple-500/80 text-white px-2 py-0.5 rounded hover:bg-purple-500 transition-colors disabled:opacity-50"
+                    title="Force-regenerate EVERY page + cover (keeps character sheets)"
+                  >
+                    Regen All
+                  </button>
+                </>
               )}
             </div>
           </div>
