@@ -15,9 +15,9 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// vitest runs from the frontend/ dir.
+// vitest runs from the repo root (Next.js co-located with the Python api).
 const src = readFileSync(
-  resolve(process.cwd(), "src/components/editor/CharacterManagement.tsx"),
+  resolve(process.cwd(), "components/editor/CharacterManagement.tsx"),
   "utf-8",
 );
 
