@@ -1070,21 +1070,48 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
     """Update a single segment's fields."""
     update_dict = update.model_dump(exclude_none=True)
     # Serialize the read-modify-write so two concurrent edits to the same book
-    # can't lose each other's updates.
-    async with _analysis_lock(book_id):
-        analysis = _load_json(book_id, "analysis.json")
-        if not analysis:
-            raise HTTPException(status_code=404, detail="No analysis data found.")
-        target = next((s for s in analysis.get("segments", []) if s.get("id") == seg_id), None)
+    # can't lose each other's updates. The in-process lock only serializes ONE
+    # serverless instance; analysis.json is a big shared GCS blob edited by
+    # segment saves AND regen's text-simplification, so a cross-instance /
+    # cross-request race (the user editing while a regen runs, or two edits at
+    # once) lost updates with the old plain load+save — the "编辑了之后无法保存"
+    # bug. Route it through GCS optimistic concurrency (if_generation_match +
+    # retry) so no edit is clobbered, and surface a real write failure as 500
+    # instead of a fake 200.
+    from src.core import store
+    captured: dict = {}
+
+    def _apply(analysis: dict) -> None:
+        segments = analysis.get("segments") if isinstance(analysis, dict) else None
+        if not segments:
+            raise KeyError("no-analysis")
+        target = next((s for s in segments if s.get("id") == seg_id), None)
         if target is None:
-            raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+            raise KeyError("no-segment")
         for key, value in update_dict.items():
             target[key] = value
         # A hand-edit takes ownership of this page's text: mark it so a later
         # "Gen chapter" / regen keeps it instead of overwriting with new text.
         if "simplified_text" in update_dict:
             target["text_source"] = TEXT_SOURCE_USER
-        _save_json(book_id, "analysis.json", analysis)
+        captured["analysis"] = analysis
+        captured["target"] = target
+
+    async with _analysis_lock(book_id):
+        try:
+            store.mutate_preprocess_file(book_id, "analysis.json", _apply)
+        except KeyError as e:
+            if str(e.args[0]) == "no-analysis":
+                raise HTTPException(status_code=404, detail="No analysis data found.")
+            raise HTTPException(status_code=404, detail=f"Segment {seg_id} not found.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("segment save failed to persist for %s/%d: %s", book_id, seg_id, e)
+            raise HTTPException(status_code=500, detail=f"Save failed to persist: {e}")
+        analysis = captured["analysis"]
+        # Local same-invocation mirror (reads hit GCS first; this is a fast path).
+        write_local_preprocess(book_id, "analysis.json", analysis)
 
     # The page text changed — the cached text-image-match verdict is stale now,
     # so drop it (best-effort) rather than keep reporting the old result.
@@ -1095,7 +1122,7 @@ async def update_segment(book_id: str, seg_id: int, update: SegmentUpdate) -> di
     # used to stay stranded in analysis.json and never reach the next book.pdf.
     if "simplified_text" in update_dict:
         segments = analysis.get("segments", [])
-        ch_idx = target.get("chapter_idx", 0)
+        ch_idx = captured["target"].get("chapter_idx", 0)
         update_chapter_data_page(
             book_id, ch_idx, segment_page_num(segments, ch_idx, seg_id),
             text=update_dict["simplified_text"],
