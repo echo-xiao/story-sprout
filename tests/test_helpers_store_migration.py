@@ -19,11 +19,26 @@ def test_load_json_reads_from_store(wired):
     assert helpers._load_json("b1", "analysis.json") == {"segments": [1, 2]}
 
 
-def test_load_json_falls_back_to_local_file(wired):
+def test_load_json_falls_back_to_local_file_when_store_raises(wired, monkeypatch):
+    """Local-file fallback is used ONLY when ALL store read attempts raise
+    (store unreachable / unconfigured).  When the store returns None (object
+    absent), that is authoritative and local is not consulted.
+
+    Task 2B: the old test wrote only to local and expected _load_json to serve
+    it via the GCS-absent fallback.  That path was the source of the stale-local
+    bug.  The correct fallback is store-raises → local, not store-absent → local.
+    """
+    import src.core.store as store_mod
     helpers, store, tmp = wired
     p = tmp / "b1" / "preprocess" / "meta.json"
     p.parent.mkdir(parents=True)
     p.write_text(json.dumps({"title": "Local"}), encoding="utf-8")
+
+    # Make the store raise on every attempt (simulates unreachable backend).
+    def _always_raise(book_id, filename):
+        raise RuntimeError("store unreachable")
+    monkeypatch.setattr(store_mod, "load_preprocess_file", _always_raise)
+
     assert helpers._load_json("b1", "meta.json") == {"title": "Local"}
 
 

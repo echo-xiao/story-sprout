@@ -67,7 +67,11 @@ def page_regen_env(monkeypatch, tmp_path):
     monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.core.storage.GCS_BUCKET", "")
 
-    # Seed analysis.json — _load_json looks in GENERATED_DIR/<book_id>/preprocess/
+    # Seed analysis.json — _load_json reads from the durable store first (Task 2B:
+    # the store is the single source of truth; local files are only consulted when
+    # the store raises).  We must seed the store AND the local file so that both
+    # the store-read path and any fast-path local consumers (e.g. generators that
+    # read the freshly written local mirror) see correct data.
     analysis = {
         "segments": [
             {
@@ -88,6 +92,9 @@ def page_regen_env(monkeypatch, tmp_path):
     preprocess_dir.mkdir(parents=True)
     (preprocess_dir / "analysis.json").write_text(json.dumps(analysis), encoding="utf-8")
     (book_dir / "characters.json").write_text("[]", encoding="utf-8")
+
+    # Seed the store so _load_json returns the fresh data (not local-only).
+    store.save_preprocess_file(BOOK_ID, "analysis.json", analysis)
 
     # Also patch helpers.GENERATED_DIR
     monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)

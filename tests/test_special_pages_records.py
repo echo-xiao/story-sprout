@@ -60,15 +60,30 @@ def test_file_base_is_single_naming_authority():
 
 @pytest.fixture()
 def book(monkeypatch, tmp_path):
-    """A legacy book on disk: analysis + meta, but NO special_pages.json."""
+    """A legacy book on disk: analysis + meta, but NO special_pages.json.
+
+    Task 2B: _load_json now treats the durable store as the single source of
+    truth — a successful store read (even returning None) is authoritative and
+    local files are NOT consulted.  Data must be seeded into the store so that
+    routes reading via _load_json find it.  The local files are also written as
+    a best-effort cache for any paths that read directly from disk.
+    """
+    import src.core.store as store
     monkeypatch.setattr("src.routes.helpers.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.routes.editor.GENERATED_DIR", tmp_path)
     monkeypatch.setattr("src.core.storage.GENERATED_DIR", tmp_path)
     pre = tmp_path / "b1" / "preprocess"
     pre.mkdir(parents=True)
-    (pre / "analysis.json").write_text(json.dumps({"segments": _segments()}))
-    (pre / "meta.json").write_text(json.dumps({"title": "Gatsby"}))
-    (pre / "chapter_segments.json").write_text(json.dumps(_ch_map()))
+    analysis = {"segments": _segments()}
+    meta = {"title": "Gatsby"}
+    ch_map = _ch_map()
+    (pre / "analysis.json").write_text(json.dumps(analysis))
+    (pre / "meta.json").write_text(json.dumps(meta))
+    (pre / "chapter_segments.json").write_text(json.dumps(ch_map))
+    # Also seed the durable store so _load_json serves them authoritatively.
+    store.save_preprocess_file("b1", "analysis.json", analysis)
+    store.save_preprocess_file("b1", "meta.json", meta)
+    store.save_preprocess_file("b1", "chapter_segments.json", ch_map)
     return tmp_path
 
 

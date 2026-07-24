@@ -122,34 +122,45 @@ def _get_lock(key: str) -> threading.Lock:
 
 
 def _load_json(book_id: str, filename: str, prefetched=None) -> dict | list | None:
-    """THE single accessor for a preprocess file. The GCS-JSON store is the
-    authority; a local file under GENERATED_DIR is a same-invocation fast path
-    and offline fallback.
+    """THE single accessor for a preprocess file.
 
-    `prefetched` is accepted for backward compatibility (the old MongoDB-MCP
+    The durable store (Firestore or GCS, per STORE_BACKEND) is the SINGLE source
+    of truth.  A successful store read — even one that returns ``None`` (the
+    document is genuinely absent) — is AUTHORITATIVE and is returned immediately
+    without consulting the local file.  The local file under GENERATED_DIR is
+    ONLY used when ALL store read attempts raise (store unconfigured / unreachable),
+    which keeps local-dev (no backend) and a total-outage last-resort working.
+
+    ``prefetched`` is accepted for backward compatibility (the old MongoDB-MCP
     batch-read path) and IGNORED — MCP is gone.
     """
     from src.core import store
-    # Retry the GCS read on transient failures BEFORE falling back to the local
-    # /tmp copy. On serverless the /tmp copy is per-instance and cross-request
-    # STALE — an earlier write on this instance left an old special_pages.json,
-    # so a single GCS hiccup right after a save served that stale copy and the
-    # edit "vanished" (and Save-&-Regen read the pre-edit summary). GCS is the
-    # authority and strongly consistent, so a brief retry almost always returns
-    # the fresh value instead of falling through to stale local data.
+    # Retry the store read on transient failures.  On serverless the /tmp copy
+    # is per-instance and cross-request STALE — an earlier write on this instance
+    # left an old special_pages.json, so serving the stale local copy after a
+    # save caused the edit to "vanish" (and Save-&-Regen read the pre-edit
+    # summary).  The store is strongly consistent; distinguish a SUCCESSFUL read
+    # (data or None) from a RAISED read (store unavailable) so we never let a
+    # stale local copy shadow a fresh or genuinely-absent store value.
+    store_ok = False
     data = None
     for attempt in range(3):
         try:
             data = store.load_preprocess_file(book_id, filename)
-            break  # GCS read succeeded (data may be None if the object is absent)
-        except Exception as e:  # store unconfigured (local dev) or transient GCS error
+            store_ok = True
+            break  # store read succeeded (data may be None if the object is absent)
+        except Exception as e:  # store unconfigured (local dev) or transient error
             logger.debug("store load failed (attempt %d) for %s/%s: %s",
                          attempt + 1, book_id, filename, e)
             if attempt < 2:
                 import time as _t
                 _t.sleep(0.2 * (attempt + 1))
-    if data is not None:
+    if store_ok:
+        # Store read SUCCEEDED — its answer is authoritative (data or None).
+        # Never fall through to the local file; that copy is per-instance stale.
         return data
+    # ALL attempts raised — store is unreachable (local dev / total outage).
+    # Fall back to the local file as a last resort.
     path = GENERATED_DIR / book_id / "preprocess" / filename
     if not path.exists():
         return None
@@ -370,11 +381,13 @@ def invalidate_chapter_consistency(book_id: str, ch_idx: int) -> None:
 
 
 def write_local_preprocess(book_id: str, filename: str, data: Any) -> None:
-    """Write ONLY the local GENERATED_DIR copy of a preprocess file (the
-    same-invocation fast path for the generators / PDF). Reads go to GCS first,
-    so this is a mirror — callers that need durability write GCS separately
-    (via _save_json for a full overwrite, or store.mutate_preprocess_file for
-    an atomic overlay update)."""
+    """Write ONLY the local GENERATED_DIR copy of a preprocess file.
+
+    This is a best-effort same-invocation cache for the PDF/generator fast path.
+    It is NEVER a read authority: _load_json only consults the local file when
+    ALL durable-store read attempts raise (store unreachable).  Callers that need
+    durability write to the store separately — via _save_json for a full overwrite,
+    or store.mutate_preprocess_file for an atomic overlay update."""
     path = GENERATED_DIR / book_id / "preprocess" / filename
     lock = _get_lock(f"{book_id}/{filename}")
     with lock:
@@ -383,13 +396,15 @@ def write_local_preprocess(book_id: str, filename: str, data: Any) -> None:
 
 
 def _save_json(book_id: str, filename: str, data: Any) -> None:
-    """Persist a preprocess file to the GCS-JSON store (authority) and a local
-    GENERATED_DIR copy (same-invocation fast path for the generators / PDF).
+    """Persist a preprocess file to the durable store (authority) AND a local
+    GENERATED_DIR copy (best-effort same-invocation cache for generators / PDF).
 
-    This is a whole-file OVERWRITE and swallows the GCS error (best-effort).
-    For an OVERLAY updated in place (read-modify-write, e.g. special_pages.json
-    edits) use store.mutate_preprocess_file so concurrent writers don't clobber
-    each other and a real write failure is surfaced, not faked as success."""
+    The durable store (Firestore or GCS) is written first and is the SINGLE
+    source of truth; the local copy is a cache that _load_json uses ONLY when
+    the store is unreachable.  This is a whole-file OVERWRITE and swallows the
+    store error (best-effort).  For an OVERLAY updated in place (read-modify-write,
+    e.g. special_pages.json edits) use store.mutate_preprocess_file so concurrent
+    writers don't clobber each other and a real write failure is surfaced."""
     from src.core import store
     try:
         store.save_preprocess_file(book_id, filename, data)
