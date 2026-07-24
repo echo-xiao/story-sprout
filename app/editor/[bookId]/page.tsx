@@ -266,14 +266,17 @@ export default function EditorPage() {
     return result;
   };
 
-  // Per-chapter "Gen" button.
-  const handleGenChapter = async (chIdx: number) => {
+  // Per-chapter "Regen" button. force=true (the default use now) redraws every
+  // already-rendered page in the chapter regardless of stale state; force=false
+  // still only fills missing/stale (used by the whole-book "Gen All").
+  const handleGenChapter = async (chIdx: number, force = false) => {
     if (genRunning) return;
+    if (force && !confirm(`Regenerate every page in Chapter ${chIdx + 1}? Redraws the whole chapter (keeps character sheets). Old versions are kept — you can restore any page. Keep this tab open.`)) return;
     genCancelRef.current = false;
     setGenRunning(true);
     setGenProgress({ done: 0, total: 0, segId: -1, chIdx });
     try {
-      const r = await runChapterGeneration(chIdx);
+      const r = await runChapterGeneration(chIdx, force);
       if (r.failed.length && !unmountedRef.current) {
         alert(`${r.failed.length} page(s) failed to generate — check the red/gray dots and retry.`);
       }
@@ -1040,13 +1043,13 @@ export default function EditorPage() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleGenChapter(+chIdx);
+                        handleGenChapter(+chIdx, true);
                       }}
                       disabled={genRunning || regenerating}
-                      className="w-8 h-6 mr-1 text-[9px] bg-coral/80 text-white rounded hover:bg-coral transition-colors disabled:opacity-50 shrink-0"
-                      title="Generate illustrations for this chapter"
+                      className="px-1.5 h-6 mr-1 text-[9px] bg-purple-500/80 text-white rounded hover:bg-purple-500 transition-colors disabled:opacity-50 shrink-0"
+                      title="Regenerate every page in this chapter (keeps character sheets)"
                     >
-                      Gen
+                      Regen
                     </button>
                   )}
                 </div>

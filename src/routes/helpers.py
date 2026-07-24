@@ -130,11 +130,24 @@ def _load_json(book_id: str, filename: str, prefetched=None) -> dict | list | No
     batch-read path) and IGNORED — MCP is gone.
     """
     from src.core import store
-    try:
-        data = store.load_preprocess_file(book_id, filename)
-    except Exception as e:  # store unconfigured (no GCS) or transient — fall back
-        logger.debug("store load failed for %s/%s: %s", book_id, filename, e)
-        data = None
+    # Retry the GCS read on transient failures BEFORE falling back to the local
+    # /tmp copy. On serverless the /tmp copy is per-instance and cross-request
+    # STALE — an earlier write on this instance left an old special_pages.json,
+    # so a single GCS hiccup right after a save served that stale copy and the
+    # edit "vanished" (and Save-&-Regen read the pre-edit summary). GCS is the
+    # authority and strongly consistent, so a brief retry almost always returns
+    # the fresh value instead of falling through to stale local data.
+    data = None
+    for attempt in range(3):
+        try:
+            data = store.load_preprocess_file(book_id, filename)
+            break  # GCS read succeeded (data may be None if the object is absent)
+        except Exception as e:  # store unconfigured (local dev) or transient GCS error
+            logger.debug("store load failed (attempt %d) for %s/%s: %s",
+                         attempt + 1, book_id, filename, e)
+            if attempt < 2:
+                import time as _t
+                _t.sleep(0.2 * (attempt + 1))
     if data is not None:
         return data
     path = GENERATED_DIR / book_id / "preprocess" / filename
