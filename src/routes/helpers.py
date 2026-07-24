@@ -324,21 +324,20 @@ def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
     editor but were silently absent from every PDF.
     """
     import re as _re
+    from src.core import store
 
+    store_key = f"{book_id}/chapters/ch{ch_idx:02d}/chapter_data.json"
     path = GENERATED_DIR / book_id / "chapters" / f"ch{ch_idx:02d}" / "chapter_data.json"
     lock = _get_lock(f"{book_id}/ch{ch_idx:02d}/chapter_data.json")
-    with lock:
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                logger.warning("chapter_data.json unreadable for %s ch%d — page %d update dropped",
-                               book_id, ch_idx, page_num)
-                return
-        else:
-            # Chapter built page-by-page via segment regen before any full
-            # pipeline run — bootstrap so the PDF can include it.
-            data = {"chapter_idx": ch_idx, "pages": []}
+
+    # Capture the final state after the store mutate so we can mirror locally.
+    _final_data: list = []
+
+    def _mutator(data: dict) -> None:
+        # Bootstrap only when the store has no doc yet (genuinely absent).
+        if not data:
+            data["chapter_idx"] = ch_idx
+            data["pages"] = []
         pages = data.setdefault("pages", [])
         for p in pages:  # legacy entries lack page_number — derive from filename
             if "page_number" not in p:
@@ -356,13 +355,27 @@ def update_chapter_data_page(book_id: str, ch_idx: int, page_num: int,
             entry["text"] = text
         if refs is not None:
             entry["refs"] = refs
-        write_json_atomic(path, data)
-        # SOLE GCS sync point for chapter_data — any future bulk chapter generator MUST also write here or the serverless PDF/viewer will miss it.
-        try:
-            from src.core import store
-            store.put_json(f"{book_id}/chapters/ch{ch_idx:02d}/chapter_data.json", data)
-        except Exception as e:
-            logger.warning("chapter_data GCS persist failed for %s ch%d: %s", book_id, ch_idx, e)
+        _final_data.append(data)
+
+    # AUTHORITATIVE sync point for chapter_data — store._mutate_json is
+    # atomic (Firestore transaction or GCS optimistic-concurrency retry) so
+    # concurrent page updates to the same chapter never clobber each other.
+    # The base of the read-modify-write is the STORE, not the local file,
+    # so a cold serverless instance with an empty /tmp cannot lose pages.
+    try:
+        store._mutate_json(store_key, _mutator)
+    except Exception as e:
+        logger.warning("chapter_data store mutate failed for %s ch%d: %s", book_id, ch_idx, e)
+        return
+
+    # Local mirror: best-effort so same-invocation PDF/generator fast path
+    # still has the file on disk; never used as the read authority.
+    with lock:
+        if _final_data:
+            write_json_atomic(path, _final_data[0])
+        else:
+            logger.warning("chapter_data mutator did not capture final state for %s ch%d — local mirror skipped",
+                           book_id, ch_idx)
 
 
 def invalidate_chapter_consistency(book_id: str, ch_idx: int) -> None:

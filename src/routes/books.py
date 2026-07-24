@@ -482,22 +482,25 @@ async def download_book_pdf(book_id: str, inline: bool = False) -> FileResponse:
     book_dir = GENERATED_DIR / book_id
     chapters_root = book_dir / "chapters"
 
-    # GCS-first: enumerate chapter indices from durable storage so a cold
-    # serverless instance (empty /tmp) can still build the PDF.
+    # Store-first: enumerate chapter indices from the JSON store (Firestore or
+    # GCS, per STORE_BACKEND) so a cold serverless instance (empty /tmp) can
+    # still build the PDF.  Post-Firestore-cutover chapter_data.json lives in
+    # Firestore, NOT as a GCS blob, so the old storage.list_keys() call would
+    # find nothing for books generated after cutover.
     all_chapters = []
     try:
-        gcs_keys = storage.list_keys(f"{book_id}/chapters/")
+        store_keys = store._list_keys("/chapter_data.json")
         ch_idxs = sorted({
             int(_re.search(r"/chapters/ch(\d+)/", k).group(1))
-            for k in gcs_keys
-            if k.endswith("/chapter_data.json") and _re.search(r"/chapters/ch(\d+)/", k)
+            for k in store_keys
+            if k.startswith(f"{book_id}/chapters/") and _re.search(r"/chapters/ch(\d+)/", k)
         })
         for ci in ch_idxs:
             data = store.get_json(f"{book_id}/chapters/ch{ci:02d}/chapter_data.json")
             if isinstance(data, dict) and data.get("pages"):
                 all_chapters.append(data)
     except Exception as e:
-        logger.warning("GCS chapter_data enumeration failed for %s: %s", book_id, e)
+        logger.warning("Store chapter_data enumeration failed for %s: %s", book_id, e)
 
     # Local fallback: dev mode or when GCS has no chapter_data keys yet.
     if not all_chapters and chapters_root.exists():

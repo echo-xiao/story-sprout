@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+import src.core.store as _store
 from src.routes.helpers import update_chapter_data_page
 from tests.conftest import make_segment
 
@@ -22,13 +23,16 @@ def chapter_data(monkeypatch, tmp_path):
     ch = tmp_path / "somebook" / "chapters" / "ch00"
     ch.mkdir(parents=True)
     path = ch / "chapter_data.json"
-    path.write_text(json.dumps({
+    data = {
         "chapter_idx": 0, "chapter_title": "Ch 1",
         "pages": [
             {"text": "old text", "image_path": "/app/data/ch00/pages/page_001.png", "page_number": 1},
             {"text": "page two", "image_path": "/app/data/ch00/pages/page_002.png", "page_number": 2},
         ],
-    }))
+    }
+    path.write_text(json.dumps(data))
+    # Seed the store (authoritative RMW base).
+    _store.put_json("somebook/chapters/ch00/chapter_data.json", data)
     return path
 
 
@@ -58,6 +62,8 @@ def test_legacy_entry_matched_via_filename(chapter_data):
     for p in data["pages"]:
         del p["page_number"]  # pre-page_number schema
     chapter_data.write_text(json.dumps(data))
+    # Also update the store (authoritative) with the legacy-schema data.
+    _store.put_json("somebook/chapters/ch00/chapter_data.json", data)
 
     update_chapter_data_page("somebook", 0, 2, text="legacy edited")
     assert _pages(chapter_data)[1]["text"] == "legacy edited"
@@ -87,9 +93,12 @@ def test_restore_version_updates_chapter_data(client, monkeypatch, tmp_path):
     pages_dir = ch / "pages"
     pages_dir.mkdir(parents=True)
     (pages_dir / "page_001.png").write_bytes(b"CURRENT")
-    (ch / "chapter_data.json").write_text(json.dumps({
+    chapter_data = {
         "pages": [{"text": "t", "image_path": str(pages_dir / "page_001.png"), "page_number": 1}],
-    }))
+    }
+    (ch / "chapter_data.json").write_text(json.dumps(chapter_data))
+    # Seed the store (authoritative RMW base).
+    store.put_json(f"{book_id}/chapters/ch00/chapter_data.json", chapter_data)
 
     # Seed two versions: v1=.png (current), v2=.jpg (to be restored).
     asset_key = "ch00:p001"

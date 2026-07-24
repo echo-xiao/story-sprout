@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+import src.core.store as _store
 from src.routes.helpers import update_chapter_data_page
 
 
@@ -22,7 +23,7 @@ def _pages(book_dir):
 
 
 def test_bootstraps_missing_chapter_data(book_dir):
-    # Chapter never pipeline-generated: the file doesn't exist at all.
+    # Chapter never pipeline-generated: neither local file nor store entry exists.
     update_chapter_data_page("somebook", 0, 3,
                              image_path="/x/pages/page_003.png", text="hello")
     pages = _pages(book_dir)
@@ -31,13 +32,16 @@ def test_bootstraps_missing_chapter_data(book_dir):
 
 def test_inserts_missing_page_sorted(book_dir):
     book_dir.mkdir(parents=True)
-    (book_dir / "chapter_data.json").write_text(json.dumps({
+    data = {
         "chapter_idx": 0,
         "pages": [
             {"page_number": 1, "image_path": "a.png", "text": "one"},
             {"page_number": 4, "image_path": "d.png", "text": "four"},
         ],
-    }))
+    }
+    (book_dir / "chapter_data.json").write_text(json.dumps(data))
+    # Seed the store (authoritative) so the RMW base has all existing pages.
+    _store.put_json("somebook/chapters/ch00/chapter_data.json", data)
     # Page 3 had no row (segment was <10 words at pipeline time).
     update_chapter_data_page("somebook", 0, 3, image_path="c.png", text="three")
     pages = _pages(book_dir)
@@ -48,9 +52,10 @@ def test_inserts_missing_page_sorted(book_dir):
 
 def test_existing_entry_still_updated_in_place(book_dir):
     book_dir.mkdir(parents=True)
-    (book_dir / "chapter_data.json").write_text(json.dumps({
-        "pages": [{"page_number": 1, "image_path": "a.png", "text": "one"}],
-    }))
+    data = {"pages": [{"page_number": 1, "image_path": "a.png", "text": "one"}]}
+    (book_dir / "chapter_data.json").write_text(json.dumps(data))
+    # Seed the store (authoritative) so the RMW base has the existing page.
+    _store.put_json("somebook/chapters/ch00/chapter_data.json", data)
     update_chapter_data_page("somebook", 0, 1, text="edited")
     pages = _pages(book_dir)
     assert len(pages) == 1

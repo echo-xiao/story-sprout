@@ -110,15 +110,23 @@ class TestUpdateChapterDataPageDualWrite:
         assert data["pages"][0]["image_path"] == "/y/page_001.jpg"
 
     def test_dual_write_contains_all_pages(self, wired):
-        """All pages (not just the updated one) must be in the stored JSON."""
+        """All pages (not just the updated one) must be in the stored JSON.
+
+        The store is the read authority: seed both pages in the store so the
+        mutate-based RMW starts from the full authoritative doc (not just the
+        local file) and preserves every existing page.
+        """
         ch_dir = wired[1] / "b1" / "chapters" / "ch00"
-        (ch_dir / "chapter_data.json").write_text(json.dumps({
+        two_page_data = {
             "chapter_idx": 0,
             "pages": [
                 {"page_number": 1, "image_path": "/x/p1.png", "text": "p1"},
                 {"page_number": 2, "image_path": "/x/p2.png", "text": "p2"},
             ],
-        }))
+        }
+        # Seed both the local file AND the store (store is the RMW base).
+        (ch_dir / "chapter_data.json").write_text(json.dumps(two_page_data))
+        _store.put_json("b1/chapters/ch00/chapter_data.json", two_page_data)
         _helpers.update_chapter_data_page("b1", 0, 1, text="edited p1")
         stored = _store.get_json("b1/chapters/ch00/chapter_data.json")
         assert len(stored["pages"]) == 2
@@ -126,20 +134,31 @@ class TestUpdateChapterDataPageDualWrite:
 
     @_SKIP_ON_FIRESTORE
     def test_dual_write_silent_on_store_failure(self, monkeypatch, tmp_path):
-        """A GCS failure must NOT raise — it only logs a warning."""
+        """A GCS store failure must NOT raise — it logs a warning and returns.
+
+        Post-Firestore-cutover the store is authoritative: when the store mutate
+        fails the function returns early (no local write) so the in-flight edit
+        is dropped rather than writing a stale / bootstrapped local file.  The
+        critical invariant is that no exception propagates to the caller.
+        """
         monkeypatch.setattr(_store, "_bucket",
                             lambda: (_ for _ in ()).throw(RuntimeError("GCS down")))
         monkeypatch.setattr(_helpers, "GENERATED_DIR", tmp_path)
         ch = tmp_path / "b2" / "chapters" / "ch01"
         ch.mkdir(parents=True)
-        (ch / "chapter_data.json").write_text(json.dumps({
+        original_text = json.dumps({
             "chapter_idx": 1, "pages": [{"page_number": 1, "image_path": "", "text": "x"}],
-        }))
-        # Must not raise
+        })
+        (ch / "chapter_data.json").write_text(original_text)
+        # Must not raise — store failure is swallowed and logged.
         _helpers.update_chapter_data_page("b2", 1, 1, text="y")
-        # Local file still updated correctly
+        # Store failed → function returned early → local file is unchanged
+        # (the store is authoritative; we do not write local without a durable store commit).
         local = json.loads((ch / "chapter_data.json").read_text())
-        assert local["pages"][0]["text"] == "y"
+        assert local["pages"][0]["text"] == "x", (
+            "local file must be unchanged when the store mutate fails — "
+            "no local write happens without a successful durable store commit"
+        )
 
 
 # ---------------------------------------------------------------------------
