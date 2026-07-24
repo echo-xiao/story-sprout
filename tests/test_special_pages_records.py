@@ -101,16 +101,38 @@ def test_get_merges_records_and_put_persists(book, client):
     assert client.put("/api/book/b1/special/banana", json={}).status_code == 400
 
 
-def test_history_lists_only_timestamp_versions(book, client):
-    special = book / "b1" / "special"
-    hist = special / "history"
-    hist.mkdir(parents=True)
-    (special / "book_cover.png").write_bytes(b"x")
-    (hist / "book_cover_1700000001.png").write_bytes(b"x")
-    (hist / "book_cover_selfcorrect_prev.png").write_bytes(b"x")  # not a version
-    r = client.get("/api/book/b1/special/book_cover/history")
-    versions = [i["version"] for i in r.json()["images"]]
-    assert versions == ["current", "1700000001"]
+def test_history_uses_version_store(book, client):
+    """History carousel is built from the version store, not the history/ directory.
+
+    Seeding two versions + selecting v1 must produce two entries (newest-first),
+    with the selected one mapped to version="current" and each entry carrying
+    its own quality — the same contract as the segment carousel (Task 1/Task 2).
+    """
+    import src.core.store as store
+    asset_key = "book_cover:0"
+    v1 = store.add_asset_version(
+        "b1", "special", asset_key, "http://example.com/bc_v1.png",
+        image_hash="h1", storage_key="sk_v1.png",
+    )
+    v2 = store.add_asset_version(
+        "b1", "special", asset_key, "http://example.com/bc_v2.png",
+        image_hash="h2", storage_key="sk_v2.png",
+    )
+    store.set_version_quality("b1", "special", asset_key, v1, {"overall_score": 70})
+    store.set_version_quality("b1", "special", asset_key, v2, {"overall_score": 85})
+    store.set_selected_version("b1", "special", asset_key, v1)
+
+    r = client.get("/api/book/b1/special/book_cover/history?chapter=0")
+    assert r.status_code == 200
+    images = r.json()["images"]
+    assert len(images) == 2, f"Expected 2 entries from store; got {images}"
+    # Selected version (v1) maps to "current".
+    current = [img for img in images if img["version"] == "current"]
+    assert len(current) == 1 and current[0]["url"] == "http://example.com/bc_v1.png"
+    # Per-version quality is present on both entries.
+    by_url = {img["url"]: img.get("quality", {}).get("overall_score") for img in images}
+    assert by_url["http://example.com/bc_v1.png"] == 70
+    assert by_url["http://example.com/bc_v2.png"] == 85
 
 
 def test_friendly_error_names_billing_for_free_tier():
