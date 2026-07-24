@@ -154,7 +154,11 @@ def make_fake_transactional(collection: _FakeCollection):
     mutator body—see the mutator re-run with the updated state).
     """
     def transactional(fn):
-        def wrapper(*args, **kwargs):
+        # Mirror the REAL firestore.transactional call convention: the decorated
+        # function is invoked as `_txn(transaction)` (the caller passes a
+        # transaction from the client). The wrapper ignores the passed handle and
+        # uses a FRESH _FakeTransaction per attempt so a retry re-reads state.
+        def wrapper(transaction, *args, **kwargs):
             for attempt in range(2):  # up to 1 retry
                 txn = _FakeTransaction(collection)
                 result = fn(txn, *args, **kwargs)
@@ -271,6 +275,10 @@ def _fake_fs_collection(monkeypatch):
 
     monkeypatch.setattr(_store, "_fs_collection", lambda: col, raising=False)
     monkeypatch.setattr(_store, "_firestore_transactional", fake_transactional, raising=False)
+    # _fs_transaction() is the seam that returns a transaction handle for the
+    # decorated function; the fake wrapper ignores the handle (fresh txn per
+    # attempt) but store._fs_mutate_json still calls it, so provide a stub.
+    monkeypatch.setattr(_store, "_fs_transaction", lambda: _FakeTransaction(col), raising=False)
 
     # Reset the real Firestore client singleton so a future test that re-enables
     # the real path (e.g. one that un-patches _fs_collection) starts fresh.

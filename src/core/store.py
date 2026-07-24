@@ -161,6 +161,15 @@ def _fs_put_json(key: str, data: Any) -> None:
     col.document(_doc_id(key)).set({"key": key, "data": data})
 
 
+def _fs_transaction():
+    """Return a NEW Firestore transaction. A seam so tests can monkeypatch it
+    with an in-memory fake. The real `firestore.transactional` decorator (unlike
+    the test fake) does NOT create the transaction itself — the caller obtains
+    one from the client and passes it to the decorated function."""
+    _fs_collection()  # ensure the client singleton is built
+    return _fs_client.transaction()
+
+
 def _fs_mutate_json(key: str, mutator, retries: int = 8):
     """Firestore-backed atomic read-modify-write via a Firestore transaction.
 
@@ -168,8 +177,11 @@ def _fs_mutate_json(key: str, mutator, retries: int = 8):
     if_generation_match retry loop is NOT needed here. The `retries` param
     is kept for signature compatibility but is unused on this backend.
 
-    The `_firestore_transactional` module attribute holds the decorator so
-    tests can monkeypatch it with an in-memory fake.
+    Uses the canonical firestore idiom: the document ref is captured in the
+    closure and the decorated function takes ONLY the transaction, called as
+    `_txn(transaction)` where the transaction comes from the client. The
+    `_firestore_transactional` / `_fs_transaction` module attributes are seams
+    tests monkeypatch with an in-memory fake.
     """
     import src.core.store as _self  # self-reference to pick up monkeypatches
 
@@ -186,15 +198,15 @@ def _fs_mutate_json(key: str, mutator, retries: int = 8):
     result_holder: list = []
 
     @txn_decorator
-    def _txn(txn, ref):
-        snap = ref.get(transaction=txn)
+    def _txn(transaction):
+        snap = ref.get(transaction=transaction)
         obj = (snap.to_dict() or {}).get("data") or {}
         result = mutator(obj)
-        txn.set(ref, {"key": key, "data": obj})
+        transaction.set(ref, {"key": key, "data": obj})
         result_holder.append(result)
         return result
 
-    _txn(ref)
+    _txn(_self._fs_transaction())
     return result_holder[-1] if result_holder else None
 
 
