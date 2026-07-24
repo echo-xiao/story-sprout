@@ -7,6 +7,10 @@ Read = download+parse one object; write = overwrite one object. No database.
 Auth: GCS_SA_JSON (service-account JSON string) -> from_service_account_info
 (Vercel has no ambient GCP identity); empty -> ADC (local dev). In tests,
 monkeypatch `_bucket` to an in-memory fake.
+
+Backend switch: STORE_BACKEND="gcs" (default) keeps existing behaviour.
+STORE_BACKEND="firestore" routes all four primitives to Firestore instead.
+Monkeypatch `_fs_collection` in tests to avoid hitting real Firestore.
 """
 from __future__ import annotations
 
@@ -19,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 _client = None
 _lock = threading.Lock()
+
+# Firestore module-level singleton (separate from GCS _client).
+_fs_client = None
+_fs_lock = threading.Lock()
+
+# Holds the `firestore.transactional` decorator so tests can monkeypatch it.
+# Populated lazily inside _fs_mutate_json; tests override via monkeypatch.
+_firestore_transactional = None
 
 
 def _bucket():
@@ -42,43 +54,73 @@ def _bucket():
     return _client.bucket(GCS_BUCKET)
 
 
-def get_json(key: str) -> Optional[Any]:
+# ── Firestore seam ──────────────────────────────────────────────────────────
+
+def _doc_id(key: str) -> str:
+    """Encode a store key as a Firestore document ID.
+
+    Firestore document IDs cannot contain '/', but our keys use '/' as a
+    path separator (e.g. 'the_happy_prince/preprocess/analysis.json').
+    '|' never appears in our keys (which are slug/slug/name patterns) and
+    is legal in Firestore doc IDs, so we swap '/' -> '|'.
+    """
+    return key.replace("/", "|")
+
+
+def _fs_collection():
+    """Return the Firestore 'json_store' CollectionReference.
+
+    Lazily builds a module-singleton Firestore client from the same
+    GCS_SA_JSON service-account JSON that the GCS client uses.
+    Monkeypatch THIS function in tests to inject an in-memory fake:
+        monkeypatch.setattr(store, "_fs_collection", lambda: fake_col)
+    """
+    global _fs_client
+    from src.config import FIRESTORE_DATABASE, GCS_SA_JSON
+
+    with _fs_lock:
+        if _fs_client is None:
+            from google.cloud import firestore
+            if GCS_SA_JSON:
+                from google.oauth2 import service_account
+                info = json.loads(GCS_SA_JSON)
+                creds = service_account.Credentials.from_service_account_info(info)
+                _fs_client = firestore.Client(
+                    project=info["project_id"],
+                    credentials=creds,
+                    database=FIRESTORE_DATABASE,
+                )
+            else:
+                _fs_client = firestore.Client(database=FIRESTORE_DATABASE)
+    return _fs_client.collection("json_store")
+
+
+# ── GCS primitive implementations (renamed from the originals) ───────────────
+
+def _gcs_get_json(key: str) -> Optional[Any]:
     blob = _bucket().blob(key)
     if not blob.exists():
         return None
     return json.loads(blob.download_as_text())
 
 
-def put_json(key: str, data: Any) -> None:
+def _gcs_put_json(key: str, data: Any) -> None:
     _bucket().blob(key).upload_from_string(
         json.dumps(data, ensure_ascii=False),
         content_type="application/json",
     )
 
 
-def _mutate_json(key: str, mutator, retries: int = 8):
-    """Atomically read-modify-write a JSON object under GCS optimistic
-    concurrency, so parallel mutations of a SHARED blob never lose updates.
-
-    Reads the object with its GCS generation, lets `mutator(obj)` edit it in
-    place (obj is {} when the object is absent), then writes with
-    `if_generation_match`. A concurrent write (PreconditionFailed / 412) means
-    our snapshot is stale — re-read and re-apply. Without this, two requests that
-    both read `assets.json` and write it back would clobber each other (the bug
-    where a freshly-recorded version vanished when the editor's page-load fired
-    many /versions writes at once). Returns whatever `mutator` returns.
-
-    Falls back to a plain read-modify-write for stores whose bucket has no
-    `get_blob` (some unit-test fakes) — those tests don't exercise concurrency.
-    """
+def _gcs_mutate_json(key: str, mutator, retries: int = 8):
+    """GCS-backed atomic read-modify-write via optimistic concurrency."""
     from google.api_core.exceptions import PreconditionFailed
 
     b = _bucket()
     get_blob = getattr(b, "get_blob", None)
     if get_blob is None:  # test fake without generation support
-        obj = get_json(key) or {}
+        obj = _gcs_get_json(key) or {}
         result = mutator(obj)
-        put_json(key, obj)
+        _gcs_put_json(key, obj)
         return result
 
     for _ in range(retries):
@@ -100,9 +142,112 @@ def _mutate_json(key: str, mutator, retries: int = 8):
     raise RuntimeError(f"assets write contention on {key} after {retries} tries")
 
 
-# ── list helper (overridable in tests) ─────────────────────────────────────
-def _list_keys(suffix: str = "") -> list[str]:
+def _gcs_list_keys(suffix: str = "") -> list[str]:
     return [b.name for b in _bucket().list_blobs() if b.name.endswith(suffix)]
+
+
+# ── Firestore primitive implementations ─────────────────────────────────────
+
+def _fs_get_json(key: str) -> Optional[Any]:
+    col = _fs_collection()
+    doc = col.document(_doc_id(key)).get()
+    if not doc.exists:
+        return None
+    return doc.to_dict().get("data")
+
+
+def _fs_put_json(key: str, data: Any) -> None:
+    col = _fs_collection()
+    col.document(_doc_id(key)).set({"key": key, "data": data})
+
+
+def _fs_mutate_json(key: str, mutator, retries: int = 8):
+    """Firestore-backed atomic read-modify-write via a Firestore transaction.
+
+    Firestore transactions auto-retry on contention, so the manual
+    if_generation_match retry loop is NOT needed here. The `retries` param
+    is kept for signature compatibility but is unused on this backend.
+
+    The `_firestore_transactional` module attribute holds the decorator so
+    tests can monkeypatch it with an in-memory fake.
+    """
+    import src.core.store as _self  # self-reference to pick up monkeypatches
+
+    col = _fs_collection()
+    ref = col.document(_doc_id(key))
+
+    # Resolve the transactional decorator: use the monkeypatched version if
+    # set (tests), otherwise import from the real Firestore library.
+    txn_decorator = _self._firestore_transactional
+    if txn_decorator is None:
+        from google.cloud import firestore as _firestore
+        txn_decorator = _firestore.transactional
+
+    result_holder: list = []
+
+    @txn_decorator
+    def _txn(txn, ref):
+        snap = ref.get(transaction=txn)
+        obj = (snap.to_dict() or {}).get("data") or {}
+        result = mutator(obj)
+        txn.set(ref, {"key": key, "data": obj})
+        result_holder.append(result)
+        return result
+
+    _txn(ref)
+    return result_holder[-1] if result_holder else None
+
+
+def _fs_list_keys(suffix: str = "") -> list[str]:
+    col = _fs_collection()
+    out = []
+    for snap in col.stream():
+        body = snap.to_dict()
+        k = body.get("key", "")
+        if k.endswith(suffix):
+            out.append(k)
+    return out
+
+
+# ── Public dispatchers (read STORE_BACKEND fresh each call) ─────────────────
+
+def get_json(key: str) -> Optional[Any]:
+    from src.config import STORE_BACKEND
+    if STORE_BACKEND == "firestore":
+        return _fs_get_json(key)
+    return _gcs_get_json(key)
+
+
+def put_json(key: str, data: Any) -> None:
+    from src.config import STORE_BACKEND
+    if STORE_BACKEND == "firestore":
+        _fs_put_json(key, data)
+        return
+    _gcs_put_json(key, data)
+
+
+def _mutate_json(key: str, mutator, retries: int = 8):
+    """Atomically read-modify-write a JSON object under optimistic concurrency.
+
+    On GCS: reads with generation, applies mutator, writes with
+    if_generation_match; retries on PreconditionFailed. Returns whatever
+    `mutator` returns.
+
+    On Firestore: uses a Firestore transaction (auto-retried by Firestore on
+    contention). The `retries` param is kept for signature compatibility but
+    is unused on the Firestore backend.
+    """
+    from src.config import STORE_BACKEND
+    if STORE_BACKEND == "firestore":
+        return _fs_mutate_json(key, mutator, retries)
+    return _gcs_mutate_json(key, mutator, retries)
+
+
+def _list_keys(suffix: str = "") -> list[str]:
+    from src.config import STORE_BACKEND
+    if STORE_BACKEND == "firestore":
+        return _fs_list_keys(suffix)
+    return _gcs_list_keys(suffix)
 
 
 # ── Books ──────────────────────────────────────────────────────────────────

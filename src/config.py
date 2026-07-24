@@ -74,4 +74,14 @@ GCS_SA_JSON = os.getenv("GCS_SA_JSON", "")
 # Gemini vision model used ONLY by Vision QA (text gen now goes to DeepSeek).
 GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", GEMINI_MODEL)
 
+# ── Store backend switch ────────────────────────────────────────────────────
+# "gcs" (default) keeps existing GCS-JSON store behaviour unchanged.
+# "firestore" routes the four primitives to Firestore instead (Task 1+).
+# Flip to "firestore" only after the Firestore backend is fully validated —
+# nothing goes live with the current default.
+STORE_BACKEND = os.getenv("STORE_BACKEND", "gcs")
+
+# Firestore database id (default Firestore DB is "(default)").
+FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "(default)")
+
 
