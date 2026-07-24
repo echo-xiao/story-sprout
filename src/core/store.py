@@ -163,6 +163,18 @@ def load_preprocess_file(book_id: str, filename: str) -> Optional[Any]:
     return get_json(f"{book_id}/preprocess/{filename}")
 
 
+def mutate_preprocess_file(book_id: str, filename: str, mutator):
+    """Atomically read-modify-write a preprocess JSON under GCS optimistic
+    concurrency (same protection as assets.json). Use this — NOT a plain
+    load+save — whenever a preprocess file is an OVERLAY updated in place
+    (e.g. special_pages.json edits), so concurrent writers (multiple serverless
+    instances, a stale browser re-saving, Save-then-Regen) never clobber each
+    other's edits. `mutator(obj)` edits the dict in place ({} when absent) and
+    its return value is returned. Raises on a durable-write failure — callers
+    MUST surface it (a silently swallowed failure is a false "saved")."""
+    return _mutate_json(f"{book_id}/preprocess/{filename}", mutator)
+
+
 # ── Asset versions (image version pointers; bytes live in storage.py/GCS) ───
 import uuid
 from datetime import datetime, timezone

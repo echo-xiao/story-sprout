@@ -1,5 +1,6 @@
 import { MapPin } from "lucide-react";
 import type { Segment, CharacterInfo } from "@/types";
+import { resolveSceneCharacter } from "@/lib/characterNames";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -36,12 +37,7 @@ export default function CharacterSheetsPanel({
 
   // Show exactly the characters listed in characters_in_scene (from Characters & Actions editor)
   const sceneChars = selectedSegment?.characters_in_scene || [];
-  const filteredCharacters = sceneChars.map((name) => {
-    // Find matching character info (exact match first, then case-insensitive)
-    return characters.find((c) => c.canonical_name === name)
-      || characters.find((c) => c.canonical_name.toLowerCase() === name.toLowerCase())
-      || { canonical_name: name, gender: "?", role: "?", aliases: [], description: "", appearance: "" } as CharacterInfo;
-  });
+  const filteredCharacters = sceneChars.map((name) => resolveSceneCharacter(name, characters));
 
   // Match location to scene_background — score each location and pick the best
   const bg = (selectedSegment?.scene_background || "").toLowerCase();

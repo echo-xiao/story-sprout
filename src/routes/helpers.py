@@ -185,6 +185,73 @@ def load_character_profiles(book_id: str) -> list[dict]:
     ]
 
 
+def _normalize_character_name(name: str) -> str:
+    """Loose key for matching a scene/segment character name to a canonical
+    record: lowercased, a leading article ("the "/"a "/"an ") dropped,
+    whitespace collapsed.
+
+    Lets "Remarkable Rocket" match canonical "the Remarkable Rocket" WITHOUT
+    hardcoding either. This is the root cause of the cover's missing-character
+    bug: segments name a character by a short form, but the canonical record
+    stores it WITH a leading "the" and its aliases don't list the short form —
+    so an exact/case-insensitive match fails and the sheet is never found.
+    """
+    import re
+    s = (name or "").strip().lower()
+    s = re.sub(r"^(the|a|an)\s+", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def make_character_name_resolver(characters: list[dict]):
+    """Build once, resolve many: returns ``f(name) -> canonical_name`` using
+    canonical → alias → normalized(canonical/alias) matching, falling back to
+    the input name unchanged when nothing matches.
+
+    The SINGLE name-resolution rule shared by every place that maps a
+    ``characters_in_scene`` entry to a character record / sheet / version, so
+    the editor panel and all generation paths resolve a scene name to the same
+    character. Canonical names are registered before aliases, so a character's
+    own canonical form always beats another character's alias for the same key.
+    """
+    exact: dict[str, str] = {}
+    norm: dict[str, str] = {}
+    aliases: list[tuple[str, str]] = []
+    # Pass 1: every canonical name claims its key (highest priority).
+    for c in characters:
+        cn = (c.get("canonical_name") or "").strip()
+        if not cn:
+            continue
+        exact.setdefault(cn.lower(), cn)
+        norm.setdefault(_normalize_character_name(cn), cn)
+        for a in c.get("aliases") or []:
+            a = (a or "").strip()
+            if a:
+                aliases.append((a, cn))
+    # Pass 2: aliases fill only keys no canonical already claimed.
+    for a, cn in aliases:
+        exact.setdefault(a.lower(), cn)
+        norm.setdefault(_normalize_character_name(a), cn)
+
+    def resolve(name: str) -> str:
+        if not name:
+            return name
+        return (
+            exact.get(name.strip().lower())
+            or norm.get(_normalize_character_name(name))
+            or name
+        )
+
+    return resolve
+
+
+def resolve_canonical_name(book_id: str, name: str) -> str:
+    """Resolve one scene character name to its canonical form (loads the book's
+    characters). For many names, build a resolver once via
+    ``make_character_name_resolver(load_characters(book_id))`` instead."""
+    return make_character_name_resolver(load_characters(book_id))(name)
+
+
 def versioned_static_url(rel_path: str, fs_path) -> str:
     """A storage URL with a cache-busting ``?v=<mtime>`` derived from the file.
 
@@ -289,17 +356,31 @@ def invalidate_chapter_consistency(book_id: str, ch_idx: int) -> None:
         pass
 
 
+def write_local_preprocess(book_id: str, filename: str, data: Any) -> None:
+    """Write ONLY the local GENERATED_DIR copy of a preprocess file (the
+    same-invocation fast path for the generators / PDF). Reads go to GCS first,
+    so this is a mirror — callers that need durability write GCS separately
+    (via _save_json for a full overwrite, or store.mutate_preprocess_file for
+    an atomic overlay update)."""
+    path = GENERATED_DIR / book_id / "preprocess" / filename
+    lock = _get_lock(f"{book_id}/{filename}")
+    with lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+
+
 def _save_json(book_id: str, filename: str, data: Any) -> None:
     """Persist a preprocess file to the GCS-JSON store (authority) and a local
-    GENERATED_DIR copy (same-invocation fast path for the generators / PDF)."""
+    GENERATED_DIR copy (same-invocation fast path for the generators / PDF).
+
+    This is a whole-file OVERWRITE and swallows the GCS error (best-effort).
+    For an OVERLAY updated in place (read-modify-write, e.g. special_pages.json
+    edits) use store.mutate_preprocess_file so concurrent writers don't clobber
+    each other and a real write failure is surfaced, not faked as success."""
     from src.core import store
     try:
         store.save_preprocess_file(book_id, filename, data)
     except Exception as e:
         logger.warning("store save failed for %s/%s: %s", book_id, filename, e)
 
-    path = GENERATED_DIR / book_id / "preprocess" / filename
-    lock = _get_lock(f"{book_id}/{filename}")
-    with lock:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    write_local_preprocess(book_id, filename, data)

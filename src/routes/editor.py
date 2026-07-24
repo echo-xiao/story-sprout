@@ -18,7 +18,7 @@ from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
     _active_regens, _load_json, _require_user_key, _save_json, book_generation_active,
     invalidate_chapter_consistency, segment_page_num, update_chapter_data_page,
-    versioned_static_url,
+    versioned_static_url, write_local_preprocess,
 )
 from starlette.concurrency import run_in_threadpool
 
@@ -753,17 +753,38 @@ async def update_special_page(
         rec = records.get(key)
         if rec is None:
             raise HTTPException(status_code=404, detail=f"Special page '{key}' not found.")
-        # Save just the user's edits, not the derived base.
-        stored = _load_json(book_id, "special_pages.json")
-        pages = stored.get("pages") if isinstance(stored, dict) and isinstance(stored.get("pages"), dict) else {}
-        overlay = pages.get(key) if isinstance(pages.get(key), dict) else {}
-        edited = set(overlay.get("_edited") or [])
-        for field, value in update_dict.items():
-            overlay[field] = value
-            edited.add(field)
-        overlay["_edited"] = sorted(edited)
-        pages[key] = overlay
-        _save_json(book_id, "special_pages.json", {"pages": pages})
+
+        # Apply the user's edits as an OVERLAY under GCS optimistic concurrency,
+        # so concurrent writers (multiple serverless instances, a stale browser
+        # re-saving, Save-then-Regen) never clobber each other's edits. The old
+        # plain load+save (_save_json) lost updates AND swallowed a failed GCS
+        # write as a 200 — the "edit doesn't persist / regen uses stale data"
+        # bug. A real durable-write failure now surfaces as 500, not a fake OK.
+        captured: dict = {}
+
+        def _apply(stored: dict) -> None:
+            pages = stored.get("pages")
+            if not isinstance(pages, dict):
+                pages = {}
+                stored["pages"] = pages
+            overlay = pages.get(key) if isinstance(pages.get(key), dict) else {}
+            edited = set(overlay.get("_edited") or [])
+            for field, value in update_dict.items():
+                overlay[field] = value
+                edited.add(field)
+            overlay["_edited"] = sorted(edited)
+            pages[key] = overlay
+            captured["doc"] = stored
+
+        from src.core import store
+        try:
+            store.mutate_preprocess_file(book_id, "special_pages.json", _apply)
+        except Exception as e:
+            logger.warning("special-page save failed to persist for %s/%s: %s", book_id, key, e)
+            raise HTTPException(status_code=500, detail=f"Save failed to persist: {e}")
+
+        # Local same-invocation mirror (reads hit GCS first; this is a fast path).
+        write_local_preprocess(book_id, "special_pages.json", captured.get("doc", {"pages": {}}))
         rec.update(update_dict)
     return {"status": "updated", "key": key, "page": rec}
 

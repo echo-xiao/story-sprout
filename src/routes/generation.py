@@ -16,8 +16,8 @@ from src.generation.character_sheet import _safe_filename
 from src.routes.helpers import (
     _active_generations, _active_regens, _last_regen_errors, _load_json,
     _require_user_key, _save_json, book_generation_active, book_regen_active,
-    invalidate_chapter_consistency, load_characters, segment_page_num,
-    update_chapter_data_page, write_json_atomic,
+    invalidate_chapter_consistency, load_characters, make_character_name_resolver,
+    segment_page_num, update_chapter_data_page, write_json_atomic,
 )
 from starlette.concurrency import run_in_threadpool
 
@@ -35,13 +35,20 @@ def _sheets_for(book_id: str, names: list[str]) -> list[dict]:
     consistent) over the current mutable file; falls back to the current file
     when no version has been selected yet."""
     chars_dir = GENERATED_DIR / book_id / "characters"
+    # Resolve each scene name (e.g. "Remarkable Rocket") to the character's
+    # canonical name (e.g. "the Remarkable Rocket") before looking up its sheet
+    # / version — the scene lists a short form the sheet file is NOT keyed by.
+    # character_name stays the ORIGINAL scene name so downstream scene-based
+    # matching (QA / consistency) still lines up with characters_in_scene.
+    resolve = make_character_name_resolver(load_characters(book_id))
     out: list[dict] = []
     for name in names:
-        sel = storage.selected_version_image(book_id, "character", name)
+        canonical = resolve(name)
+        sel = storage.selected_version_image(book_id, "character", canonical)
         if sel:
             out.append({"character_name": name, "sheet_path": sel})
             continue
-        safe = _safe_filename(name)
+        safe = _safe_filename(canonical)
         for ext in (".png", ".jpg"):
             # Materialize the durable (GCS) sheet to /tmp before the local read
             # — on a cold serverless invocation nothing is on local disk yet.
@@ -243,14 +250,19 @@ async def regenerate_segment_illustration(
         # Read profiles from the consistency hub (characters collection,
         # file-fallback) — the SAME canonical source the editor reads, so a
         # rename/appearance edit can't leave generation drawing the old look.
-        by_canonical = {c.get("canonical_name"): c for c in load_characters(book_id)}
+        _all_chars = load_characters(book_id)
+        by_canonical = {c.get("canonical_name"): c for c in _all_chars}
+        # Resolve short scene names to canonical before every sheet/version/record
+        # lookup, so a character the segment names by a short form isn't dropped.
+        resolve = make_character_name_resolver(_all_chars)
 
         for name in target.get("characters_in_scene", []):
-            sel = storage.selected_version_image(book_id, "character", name)
+            canonical = resolve(name)
+            sel = storage.selected_version_image(book_id, "character", canonical)
             if sel:
                 character_sheets.append({"character_name": name, "sheet_path": sel})
                 continue
-            safe = _safe_filename(name)
+            safe = _safe_filename(canonical)
             found = False
             for ext in (".png", ".jpg"):
                 # Pull the sheet from GCS to /tmp before the local read — on a
@@ -265,10 +277,10 @@ async def regenerate_segment_illustration(
                     found = True
                     break
             if not found:
-                c = by_canonical.get(name)
+                c = by_canonical.get(canonical)
                 if c:
                     chars_to_generate.append({
-                        "name": name,
+                        "name": canonical,
                         "role": c.get("role", "supporting"),
                         "gender": c.get("gender", "unknown"),
                         "appearance_description": [c.get("appearance", ""), c.get("description", "")],
@@ -559,20 +571,18 @@ async def check_segment_quality(
     # Consistency hub (characters collection, file-fallback) — same source the
     # editor reads, so appearance text stays in sync with the sheet image.
     char_profiles = load_characters(book_id)
+    resolve = make_character_name_resolver(char_profiles)
+    by_canonical = {c.get("canonical_name"): c for c in char_profiles}
     scene_chars = target.get("characters_in_scene", [])
     character_sheets = []
     for name in scene_chars:
-        safe = _safe_filename(name)
+        canonical = resolve(name)
+        safe = _safe_filename(canonical)
         for ext in (".png", ".jpg"):
             sheet_path = chars_dir / f"{safe}_sheet{ext}"
             if sheet_path.exists():
-                # Find appearance for visual_identity
-                appearance = ""
-                for c in char_profiles:
-                    cn = c.get("canonical_name", "").lower()
-                    if cn == name.lower() or name.lower() in [a.lower() for a in c.get("aliases", [])]:
-                        appearance = c.get("appearance", "")
-                        break
+                # Appearance for visual_identity — keyed off the resolved record.
+                appearance = (by_canonical.get(canonical) or {}).get("appearance", "")
                 character_sheets.append({
                     "character_name": name,
                     "sheet_path": str(sheet_path),
