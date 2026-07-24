@@ -8,11 +8,11 @@ import { BookLibrary } from "@/components/BookLibrary";
 type View = "home" | "generating" | "library";
 
 export default function Home() {
-  // Initialize from the URL so a full navigation into "/?view=library" (e.g.
-  // the editor's Library link) lands on the Library tab, not always Create.
+  // Library is the landing page — you open the app straight into your books.
+  // Create is still reachable via the "Create" button (?view=home).
   const [view, setViewState] = useState<View>(() => {
-    if (typeof window === "undefined") return "home";
-    return new URLSearchParams(window.location.search).get("view") === "library" ? "library" : "home";
+    if (typeof window === "undefined") return "library";
+    return new URLSearchParams(window.location.search).get("view") === "home" ? "home" : "library";
   });
   const [bookId, setBookId] = useState<string>("");
 
@@ -20,7 +20,7 @@ export default function Home() {
   const setView = (v: View) => {
     setViewState(v);
     if (typeof window !== "undefined" && v !== "generating") {
-      window.history.replaceState(null, "", v === "library" ? "/?view=library" : "/");
+      window.history.replaceState(null, "", v === "home" ? "/?view=home" : "/");
     }
   };
 
@@ -35,7 +35,7 @@ export default function Home() {
       <header className="bg-white/80 backdrop-blur-sm border-b border-peach/30 sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <button
-            onClick={() => setView("home")}
+            onClick={() => setView("library")}
             className="flex items-center gap-3 hover:opacity-80 transition-opacity"
           >
             <img src="/logo.png" alt="StorySprout" className="w-11 h-11 rounded-full object-cover shadow-sm" />
