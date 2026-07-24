@@ -28,6 +28,25 @@ from src.generation.image_utils import _get_client, save_inline_image
 logger = logging.getLogger(__name__)
 
 
+def _is_non_human(profile: dict) -> bool:
+    """True when the character is an animal/creature/object rather than a human —
+    DERIVED from the book data, not a hardcoded species list.
+
+    A human has a skin tone and hair; the preprocess (auto-fill / LLM) marks a
+    non-human's `skin_tone` AND `hair` as "not applicable" (as it did for the
+    Swallow: skin/hair "not applicable", ethnicity "swallow"). We require BOTH to
+    be explicitly not-applicable (not merely empty — an incomplete HUMAN profile
+    has empty fields, so empty must NOT be read as non-human). This keeps the
+    detection conservative and data-driven, so the sheet prompt stops forcing
+    animals into humans without ever enumerating species.
+    """
+    vd = profile.get("visual_details", {}) or {}
+    na = {"not applicable", "n/a", "none"}
+    skin = (vd.get("skin_tone") or "").strip().lower()
+    hair = (vd.get("hair") or "").strip().lower()
+    return skin in na and hair in na
+
+
 def _build_sheet_prompt(profile: dict, style: str, all_profiles: list[dict] | None = None) -> str:
     """Build a character sheet prompt that prioritizes concrete physical details."""
     name = profile.get("name", "Character")
@@ -45,13 +64,22 @@ def _build_sheet_prompt(profile: dict, style: str, all_profiles: list[dict] | No
         if val and val.lower() not in ("not described", "unknown", ""):
             physical_specs.append(f"  {label}: {val}")
 
-    # Fallback to appearance text
+    # The book's own appearance/description — this is where the character's
+    # SPECIES/NATURE lives ("A small bird with brown wings"). It must ALWAYS be in
+    # the prompt (not just a fallback when visual_details is empty), or the model
+    # has nothing telling it the character is an animal and the "be faithful to the
+    # appearance" rule has nothing to be faithful to.
     appearance = profile.get("appearance_description", [])
     if isinstance(appearance, str):
         appearance = [appearance] if appearance else []
-    appearance_text = "\n".join(f"  - {s}" for s in appearance[:2]) if appearance else ""
+    appearance_lines = [f"  - {s.strip()}" for s in appearance[:2] if (s or "").strip()]
 
-    physical_block = "\n".join(physical_specs) if physical_specs else appearance_text or "  Design a friendly, memorable character."
+    blocks = []
+    if appearance_lines:
+        blocks.append("\n".join(appearance_lines))
+    if physical_specs:
+        blocks.append("\n".join(physical_specs))
+    physical_block = "\n\n".join(blocks) or "  Design a friendly, memorable character."
 
     # Key features to repeat for emphasis
     hair_desc = vd.get("hair", "")
@@ -65,7 +93,35 @@ def _build_sheet_prompt(profile: dict, style: str, all_profiles: list[dict] | No
             parts.append(f"{eyes_desc}")
         emphasis = "\n\nREPEAT — THE MOST IMPORTANT FEATURES TO GET RIGHT:\n  " + ", ".join(parts)
 
-    gender_note = "Draw as a MAN/BOY." if gender == "male" else "Draw as a WOMAN/GIRL." if gender == "female" else ""
+    # Species-faithful, NOT hardcoded-human. The old prompt forced "HUMAN only.
+    # NOT an animal", turning the Swallow into a human boy with wings. We NEVER
+    # force a species now: the APPEARANCE text is the ground truth and the model
+    # must render it faithfully (animals as animals). `_is_non_human` is only a
+    # confident-when-true hint for extra emphasis — it misses some animals (the
+    # book data is inconsistent), so it must never gate a "draw as human" branch;
+    # human-specific instructions (gender, clothing) are phrased CONDITIONALLY so
+    # they can't humanize an animal the hint missed.
+    non_human = _is_non_human(profile)
+    faithful_rule = (
+        "- Render the character EXACTLY as the APPEARANCE describes. If it is an\n"
+        "  animal, plant or object, draw its TRUE form — never humanize it (no\n"
+        "  human body/hands and no clothing on an animal unless the book explicitly\n"
+        "  describes them). If it is a person, draw a person."
+    )
+    if non_human:
+        faithful_rule += ("\n- This character IS an animal/creature — its real animal form, "
+                          "expressive and full of character, NOT a human.")
+    gender_note = ""
+    if gender in ("male", "female") and not non_human:
+        gender_note = f"If a person, draw as a {'MAN/BOY' if gender == 'male' else 'WOMAN/GIRL'}."
+
+    rules = [
+        faithful_rule,
+        '- DO NOT add ANY text, labels, or words to the image. No "FRONT", no names, nothing.',
+        "- Period-accurate clothing IF the character wears clothes (modern dress is wrong; animals are unclothed unless the book says otherwise).",
+        "- Cute children's book style, big expressive eyes.",
+    ]
+    rules_block = "\n".join(rules)
 
     prompt = f"""Character Reference Sheet — children's picture book.
 
@@ -78,15 +134,12 @@ MANDATORY PHYSICAL APPEARANCE — follow EXACTLY:
 LAYOUT (clean WHITE background, NO text labels, NO words anywhere):
 
 Row 1: FRONT view (full body) | THREE-QUARTER view | SIDE profile
-Row 2: FACE close-up | OUTFIT close-up | ACCESSORIES close-up
+Row 2: FACE close-up | OUTFIT or KEY-FEATURE close-up | ACCESSORIES or MARKINGS close-up
 Row 3: Happy expression | Sad | Surprised | Angry (head only each)
-Bottom: 4-5 color swatches (circles showing exact hair, skin, outfit colors)
+Bottom: 4-5 color swatches (circles showing exact main colors)
 
 RULES:
-- HUMAN character only. NOT an animal.
-- DO NOT add ANY text, labels, or words to the image. No "FRONT", no names, nothing.
-- Historical period clothing (NOT modern).
-- Cute children's book style, big expressive eyes.
+{rules_block}
 
 Style: {style}
 Do NOT include: {NEGATIVE_PROMPT}"""
@@ -194,6 +247,23 @@ def _generate_portrait(client, profile: dict, output_dir: Path, style: str,
         appearance = [appearance]
     book_desc = "\n".join(f"  - {s}" for s in appearance[:3]) if appearance else "Design a friendly, memorable character."
 
+    # Species-faithful, same rule as the sheet prompt: never force human. The
+    # APPEARANCE is the ground truth; the _is_non_human hint only adds emphasis.
+    faithful = ("- Render EXACTLY as the APPEARANCE describes — animals/plants/objects "
+                "as their TRUE form, never humanized; a person as a person.")
+    if _is_non_human(profile):
+        faithful += (" This character IS an animal/creature — its real animal form, "
+                     "expressive, NOT a human (no human body/clothing unless the book says so).")
+    rules_block = "\n".join([
+        "- ONLY this one character, nothing else.",
+        "- Front-facing, looking at the viewer.",
+        "- Friendly, expressive face with big eyes.",
+        faithful,
+        "- Period-accurate clothing IF the character is clothed (NOT modern; animals unclothed unless the book says otherwise).",
+        "- Clean, simple composition.",
+        "- Do NOT add any text, labels, or names to the image.",
+    ])
+
     prompt = f"""Children's picture book character portrait.
 
 Draw a SINGLE character: {name} ({gender}).
@@ -206,13 +276,7 @@ APPEARANCE:
 {f"VISUAL IDENTITY: {visual_identity}" if visual_identity else ""}
 
 RULES:
-- ONLY this one character, nothing else.
-- Front-facing, looking at the viewer.
-- Friendly, expressive face with big eyes.
-- Show clothing/outfit details clearly.
-- Historical period-accurate clothing (NOT modern).
-- Clean, simple composition.
-- Do NOT add any text, labels, or names to the image.
+{rules_block}
 
 Style: {style}
 Do NOT include: {NEGATIVE_PROMPT}"""
