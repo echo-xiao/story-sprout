@@ -17,16 +17,6 @@ import src.core.store as _store
 import src.generation.gemini_consistency_check as gcc
 from src.generation.page_service import qa_and_self_correct, sheet_qa_and_self_correct
 
-_SKIP_ON_FIRESTORE = pytest.mark.skipif(
-    _cfg.STORE_BACKEND == "firestore",
-    reason=(
-        "GCS-specific: inspects the GCS backing dict (store_backing) to verify the "
-        "QA result was written via store.put_json. On the Firestore backend put_json "
-        "writes to the Firestore fake, not to store_backing. Firestore-backend QA "
-        "persistence is covered by test_qa_per_version.py."
-    ),
-)
-
 
 @pytest.fixture()
 def setup(tmp_path, monkeypatch):
@@ -247,35 +237,36 @@ def run_gcs(state, regenerate_fn=None, **kwargs):
     )
 
 
-@_SKIP_ON_FIRESTORE
 def test_page_qa_writes_to_gcs(gcs_setup):
-    """A passing QA result should be dual-written to the GCS store."""
+    """A passing QA result should be persisted to the store (backend-agnostic).
+    Asserts via store.get_json so the test runs on both GCS and Firestore backends."""
     gcs_setup["qa_results"] = [{"overall_score": 85, "regeneration_feedback": "ok"}]
     run_gcs(gcs_setup)
 
     expected_key = "book1/chapters/ch00/quality/page_001_quality.json"
-    assert expected_key in gcs_setup["store_backing"], "QA JSON was not written to GCS store"
-    stored = json.loads(gcs_setup["store_backing"][expected_key])
+    stored = _store.get_json(expected_key)
+    assert stored is not None, "QA JSON was not written to the store"
     assert stored["overall_score"] == 85
 
 
 def test_page_qa_no_gcs_write_when_score_is_none(gcs_setup):
-    """A failed QA call (overall_score None) must NOT write to GCS (no stale data)."""
+    """A failed QA call (overall_score None) must NOT write to the store (no stale data).
+    Asserts via store.get_json — meaningful on both GCS and Firestore backends."""
     gcs_setup["qa_results"] = [{"overall_score": None, "qa_failed": True}]
     run_gcs(gcs_setup)
 
-    assert not gcs_setup["store_backing"], "Failed QA must not be persisted to GCS"
+    expected_key = "book1/chapters/ch00/quality/page_001_quality.json"
+    stored = _store.get_json(expected_key)
+    assert stored is None, "Failed QA must not be persisted to the store"
 
 
-@_SKIP_ON_FIRESTORE
 def test_sheet_qa_writes_to_gcs(tmp_path, monkeypatch):
-    """sheet_qa_and_self_correct dual-writes to GCS when overall_score is set."""
+    """sheet_qa_and_self_correct persists to the store when overall_score is set.
+    Asserts via store.get_json — works on both GCS and Firestore backends."""
     import src.config as _cfg
     import src.generation.gemini_consistency_check as qc
 
     monkeypatch.setattr(_cfg, "GENERATED_DIR", tmp_path)
-    bucket, store_backing = _make_fake_bucket()
-    monkeypatch.setattr(_store, "_bucket", lambda: bucket)
 
     monkeypatch.setattr(qc, "check_character_sheet_quality",
                         lambda *a, **kw: {"overall_score": 72})
@@ -299,8 +290,8 @@ def test_sheet_qa_writes_to_gcs(tmp_path, monkeypatch):
     )
 
     expected_key = "book1/characters/quality/alice_quality.json"
-    assert expected_key in store_backing, "Sheet QA JSON was not written to GCS store"
-    stored = json.loads(store_backing[expected_key])
+    stored = _store.get_json(expected_key)
+    assert stored is not None, "Sheet QA JSON was not written to the store"
     assert stored["overall_score"] == 72
 
 
