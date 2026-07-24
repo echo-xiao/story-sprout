@@ -1,9 +1,14 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+    // Frontend was moved from frontend/src/* to the repo root during the
+    // Vercel consolidation (root app/, components/, lib/ — no src/ dir, to
+    // dodge the Python src/). These globs must match the new locations or
+    // Tailwind scans nothing and purges every utility class, shipping a
+    // ~6KB reset-only stylesheet that renders the whole app unstyled.
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./lib/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
     extend: {
